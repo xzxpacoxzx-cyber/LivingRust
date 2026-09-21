@@ -1,0 +1,18 @@
+{
+  "Enabled": false,
+  "Config": {
+    "MinimumAuthLevel": 1,
+    "UIRefreshRate": 0.1,
+    "UIDefaultDistance": 10.0,
+    "UIDistanceFlyMultiplier": 2.5,
+    "UIDefaultX": 0.75,
+    "UIDefaultY": 0.25,
+    "DefaultMoveDistance": 5.0,
+    "MoveLerp": 10.0,
+    "MoveEverything": false,
+    "BuildingBatchRefreshRate": 0.25,
+    "BuildingRepairBatchCount": 50,
+    "BuildingDestroyBatchCount": 15
+  },
+  "Version": "3373737231"
+}

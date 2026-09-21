@@ -1,0 +1,56 @@
+{
+  "Enabled": false,
+  "Config": {
+    "NameFilter": {
+      "Mode (0=None 1=Kick 2=Rename)": 0,
+      "BypassPermission": "adminextensions.namefilter.bypass",
+      "CharacterWhitelist": "._- ",
+      "KickMessage": "Your name must only contain English alphanumeric characters."
+    },
+    "Blind": {
+      "Command": "blind",
+      "Permission": "adminextensions.blind"
+    },
+    "Empower": {
+      "Command": "empower",
+      "Permission": "adminextensions.empower"
+    },
+    "PrivateMessage": {
+      "Command": "cpm",
+      "Permission": "adminextensions.pm"
+    },
+    "Lock": {
+      "Command": "lock",
+      "Permission": "adminextensions.lock"
+    },
+    "TeleportMarker": {
+      "Command": "tpm",
+      "Permission": "adminextensions.tpm"
+    },
+    "Mute": {
+      "Command": "mute",
+      "Permission": "adminextensions.mute"
+    },
+    "MuteList": {
+      "Command": "mutelist",
+      "Permission": "adminextensions.mutelist"
+    },
+    "Ban": {
+      "Command": "ban",
+      "Permission": "adminextensions.ban"
+    },
+    "Unban": {
+      "Command": "unban",
+      "Permission": "adminextensions.unban"
+    },
+    "Kick": {
+      "Command": "kick",
+      "Permission": "adminextensions.kick"
+    },
+    "ToggleCadmin": {
+      "Command": "cadmin",
+      "Permission": "adminextensions.cadmin"
+    }
+  },
+  "Version": "1989280399"
+}

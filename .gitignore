@@ -1,0 +1,21 @@
+bin/
+obj/
+.vs/
+
+# Rust server: ignore everything except the project's own data/config
+Rust/steam/
+Rust/run.bat
+Rust/server/*
+!Rust/server/LivingRust/
+!Rust/server/Carbon.targets
+!Rust/server/cfg/
+!Rust/server/carbon/
+Rust/server/LivingRust/testlogs/
+Rust/server/LivingRust/traces/
+Rust/server/carbon/logs/
+Rust/server/carbon/managed/
+Rust/server/carbon/native/
+Rust/server/carbon/developer/
+Rust/server/carbon/temp/
+Rust/server/carbon/plugins/*.cszip
+Rust/server/carbon/config.webpanel.json

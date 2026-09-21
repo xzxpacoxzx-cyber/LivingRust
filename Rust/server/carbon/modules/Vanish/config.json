@@ -1,0 +1,53 @@
+{
+  "Enabled": false,
+  "Config": {
+    "VanishPermission": "vanish.allow",
+    "VanishUnlockWhileVanishedPermission": "vanish.unlock",
+    "PermanentVanishPermission": "vanish.permanent",
+    "VanishCommand": "vanish",
+    "ToggleNoclipOnVanish": true,
+    "ToggleNoclipOnUnvanish": false,
+    "InvisibleText": "You are currently invisible.",
+    "InvisibleTextSize": 10,
+    "InvisibleTextColor": "#8bba49",
+    "InvisibleTextAnchor [Anchor]": 7,
+    "InvisibleTextAnchorX": [
+      0.0,
+      1.0
+    ],
+    "InvisibleTextAnchorY": [
+      0.0,
+      0.025
+    ],
+    "InvisibleIconUrl": "",
+    "InvisibleIconColor": "1 1 1 0.3",
+    "InvisibleIconMinAnchor": [
+      0.5,
+      0.0
+    ],
+    "InvisibleIconMaxAnchor": [
+      0.5,
+      0.0
+    ],
+    "InvisibleIconMinOffset": [
+      -350.0,
+      15.0
+    ],
+    "InvisibleIconMaxOffset": [
+      -250.0,
+      125.0
+    ],
+    "Effect": {
+      "Vanishing": "assets/prefabs/npc/patrol helicopter/effects/rocket_fire.prefab",
+      "Unvanishing": "assets/bundled/prefabs/fx/player/gutshot_scream.prefab"
+    },
+    "BroadcastVanishSounds": false,
+    "WhooshSoundOnVanish": true,
+    "GutshotScreamOnUnvanish": true,
+    "EnableLogs": true,
+    "TeleportBackOnUnvanish": false,
+    "CanDamageWhenVanished": true,
+    "[Anchor] Legend": "(0=UpperLeft, 1=UpperCenter, 2=UpperRight, 3=MiddleLeft, 4=MiddleCenter, 5=MiddleRight, 6=LowerLeft, 7=LowerCenter, 8=LowerRight)"
+  },
+  "Version": "996241117"
+}

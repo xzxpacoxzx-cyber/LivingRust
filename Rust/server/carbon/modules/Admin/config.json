@@ -1,0 +1,18 @@
+{
+  "Enabled": true,
+  "Config": {
+    "OpenCommands": [
+      "cp",
+      "cpanel"
+    ],
+    "MinimumAuthLevel": 2,
+    "MaximumAuthLevel": 2,
+    "SpectatingInfoOverlay": true,
+    "SpectatingEndTeleportBack": false,
+    "QuickActions": [],
+    "HideConsole": false,
+    "PlayPMSound": true,
+    "PMSound": "assets/prefabs/locks/keypad/effects/lock.code.unlock.prefab"
+  },
+  "Version": "4040334826"
+}

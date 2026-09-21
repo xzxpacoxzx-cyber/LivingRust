@@ -1,0 +1,11 @@
+- [LivingRust session history location](reference_livingrust_session_history.md) — session summaries live in G:\Claudes Conversation history\, not here
+- [LivingRust project overview](project_livingrust_overview.md) — quick orientation snapshot, source layout, current next-steps
+- [Lucas's working style](user_lucas_profile.md) — rigorous verify-don't-guess approach, dev loop, pushes back with counter-examples
+- [LivingRust persistence hardening](project_livingrust_persistence_hardening.md) — 6-bug chain (userID collision, sleep, stuck death-state, stale Spawned, missed native saves), confirmed working 2026-08-08
+- [LivingRust feature roadmap](project_livingrust_roadmap.md) — recall EVERY session: movement/combat/needs/looting/base-building/monuments/crafting/animals/ocean/task-autonomy checklist
+- [LivingRust: default to running](feedback_livingrust_default_to_running.md) — bots should sprint by default for all movement/tasks, walking is the rare exception
+- [LivingRust navmesh zero-tolerance](feedback_livingrust_navmesh_zero_tolerance.md) — during monument navmesh pass, flag ANY anomaly no matter how small, not just hard failures
+- [LivingRust verbose default ON (SUPERSEDED)](feedback_livingrust_verbose_default_on.md) — reversed 2026-09-19: default is now OFF, see reload-discipline note
+- [LivingRust 2026-09-21 state](project_livingrust_2026_09_21_state.md) — what shipped + what is UNTESTED (airdrops, base-return, etc.) - read before next session
+- [LivingRust reload discipline](feedback_livingrust_reload_discipline.md) — batch deploys, never hot-reload during a timed test, verbose default OFF
+- [LivingRust KyGotDSL's kills](feedback_livingrust_kygotdsl_kills.md) — deaths from this steam name are deliberate test-ending kills, not real combat events to investigate

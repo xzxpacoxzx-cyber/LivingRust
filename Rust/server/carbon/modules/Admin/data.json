@@ -1,0 +1,37 @@
+{
+  "GreetDisplayed": true,
+  "HidePluginIcons": false,
+  "DisableUMod": true,
+  "Maximize": false,
+  "BackgroundBlur": true,
+  "BackgroundOpacity": 0.75,
+  "BackgroundImageOpacity": 0.75,
+  "BackgroundImage": "https://cdn.carbonmod.gg/content/carbon-background.png",
+  "BackgroundImageYAnchor": {
+    "x": 0.15,
+    "y": 1.0,
+    "normalized": {
+      "x": 0.148340464,
+      "y": 0.988936365,
+      "magnitude": 1.0,
+      "sqrMagnitude": 1.0
+    },
+    "magnitude": 1.01118743,
+    "sqrMagnitude": 1.0225
+  },
+  "BackgroundColumnOpacity": 0.5,
+  "Colors": {
+    "SelectedTabColor": "0.4 0.7 0.2",
+    "EditableInputHighlight": "0.259 0.529 0.961",
+    "NameTextColor": "1 1 1 0.7",
+    "ButtonSelectedColor": "0.4 0.7 0.2 0.75",
+    "ButtonWarnedColor": "0.8 0.7 0.2 0.75",
+    "ButtonImportantColor": "0.97 0.2 0.1 0.75",
+    "OptionColor": "0.2 0.2 0.2 0.75",
+    "OptionColor2": "0.2 0.2 0.2 0.1",
+    "OptionNameColor": "1 1 1 0.7",
+    "TitleUnderlineOpacity": 0.9,
+    "OptionWidth": 0.475
+  },
+  "TabsHiddenStatus": {}
+}

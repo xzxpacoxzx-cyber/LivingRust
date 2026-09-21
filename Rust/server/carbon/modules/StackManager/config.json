@@ -1,0 +1,33 @@
+{
+  "Enabled": false,
+  "Config": {
+    "GlobalMultiplier": 1.0,
+    "GlobalItemsMultiplier": 1.0,
+    "ProhibitItemContainerStacking": false,
+    "ProhibitItemConsumableContainerStacking": true,
+    "ProhibitItemFishableStacking": false,
+    "Categories": {
+      "Ammunition": 1.0,
+      "Attire": 1.0,
+      "Component": 1.0,
+      "Construction": 1.0,
+      "Electrical": 1.0,
+      "Food": 1.0,
+      "Fun": 1.0,
+      "Items": 1.0,
+      "Medical": 1.0,
+      "Misc": 1.0,
+      "Resources": 1.0,
+      "Tool": 1.0,
+      "Traps": 1.0,
+      "Weapon": 1.0
+    },
+    "Items": {},
+    "Blacklist": [
+      "water",
+      "water.salt",
+      "water.radioactive"
+    ]
+  },
+  "Version": "1523036649"
+}

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<Import Project="Rust\server\Carbon.targets" />
+
+	<PropertyGroup>
+		<OutputType>Library</OutputType>
+		<TargetFramework>net48</TargetFramework>
+
+		<AssemblyName>LivingRust</AssemblyName>
+		<RootNamespace>LivingRust</RootNamespace>
+
+		<Nullable>enable</Nullable>
+		<LangVersion>latest</LangVersion>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Folder Include="Properties\" />
+	</ItemGroup>
+
+	<Target Name="DeployPlugin" AfterTargets="Build">
+
+		<MakeDir Directories="$(MSBuildProjectDirectory)\Rust\server\carbon\plugins" />
+
+		<!-- Carbon does not load precompiled .dll plugins from carbon/plugins - only .cs and .cszip
+		     source packages are picked up by the plugin loader. Remove any stale dll from a previous
+		     (non-working) deploy attempt and ship the source as a .cszip package instead. -->
+		<Delete
+			Files="$(MSBuildProjectDirectory)\Rust\server\carbon\plugins\LivingRust.dll"
+			Condition="Exists('$(MSBuildProjectDirectory)\Rust\server\carbon\plugins\LivingRust.dll')" />
+
+		<Exec
+			Condition="'$(NoDeploy)' != 'true'"
+			Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\Scripts\Package-CsZip.ps1&quot; -ProjectDir &quot;$(MSBuildProjectDirectory)&quot; -OutputZip &quot;$(MSBuildProjectDirectory)\Rust\server\carbon\plugins\LivingRust.cszip&quot;" />
+
+		<Message
+			Importance="High"
+			Text="LivingRust packaged as LivingRust.cszip and deployed successfully." />
+
+	</Target>
+
+</Project>

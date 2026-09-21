@@ -1,0 +1,17 @@
+{
+  "Enabled": false,
+  "Config": {
+    "WipeChatCommand": null,
+    "FullWipe": {
+      "PostWipeCommands": null,
+      "PostWipeDeletes": null
+    },
+    "MapWipe": {
+      "PostWipeCommands": null,
+      "PostWipeDeletes": null
+    },
+    "Maps": [],
+    "AvailableWipes": []
+  },
+  "Version": "4073805769"
+}
