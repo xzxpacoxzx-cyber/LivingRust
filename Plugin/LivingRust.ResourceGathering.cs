@@ -1,3 +1,4 @@
+using LivingRust.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -823,7 +824,7 @@ public partial class LivingRust
         MonumentInfo monument = null;
         float bestDistanceSqr = ExtendedOreSearchMonumentSearchRadius * ExtendedOreSearchMonumentSearchRadius;
 
-        foreach (MonumentInfo candidate in TerrainMeta.Path?.Monuments ?? Enumerable.Empty<MonumentInfo>())
+        foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
             if (candidate == null || IsMonumentExcludedFromAutonomy(candidate))
             {

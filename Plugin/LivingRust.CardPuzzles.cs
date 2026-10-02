@@ -641,7 +641,7 @@ public partial class LivingRust
     {
         // Uses direct field access instead of reflection, since Carbon compiles plugins against
         // a publicized reference assembly that exposes private members at compile time.
-        ItemContainer fuseboxInventory = fusebox.inventory;
+        ItemContainer fuseboxInventory = GetFlowRestrictorInventory(fusebox);
 
         if (fuseboxInventory == null)
         {
@@ -746,15 +746,17 @@ public partial class LivingRust
             return;
         }
 
-        wheel.rotatorPlayer = npc;
+        SetWheelRotatorPlayer(wheel, npc);
 
-        VerbosePuts($"card-puzzle: '{survivor.Character.Alias}' started turning a wheel (tick every {wheel.progressTickRate:F2}s, door openProgress={door.openProgress:F2}, distance2D={startDistance2D:F2}m).");
+        float wheelProgressTickRate = GetWheelProgressTickRate(wheel);
+
+        VerbosePuts($"card-puzzle: '{survivor.Character.Alias}' started turning a wheel (tick every {wheelProgressTickRate:F2}s, door openProgress={door.openProgress:F2}, distance2D={startDistance2D:F2}m).");
 
         NetworkableId wheelId = wheel.net.ID;
         Timer turnTimer = null;
         _wheelHoldStartTimes[wheelId] = UnityEngine.Time.realtimeSinceStartup;
 
-        turnTimer = timer.Every(Mathf.Max(wheel.progressTickRate, 0.05f), () =>
+        turnTimer = timer.Every(Mathf.Max(wheelProgressTickRate, 0.05f), () =>
         {
             if (npc == null || npc.IsDestroyed || wheel == null || wheel.IsDestroyed || door.IsDestroyed)
             {
@@ -788,7 +790,7 @@ public partial class LivingRust
                 return;
             }
 
-            if (wheel.rotatorPlayer != npc)
+            if (GetWheelRotatorPlayer(wheel) != npc)
             {
                 float nowDistance2D = Vector2.Distance(
                     new Vector2(npc.transform.position.x, npc.transform.position.z),
@@ -810,9 +812,9 @@ public partial class LivingRust
     /// </summary>
     private static Elevator TryResolveElevatorMover(Elevator elevator)
     {
-        if (elevator is ElevatorStatic elevatorStatic && elevatorStatic.ownerElevator != null)
+        if (elevator is ElevatorStatic elevatorStatic && GetElevatorStaticOwner(elevatorStatic) != null)
         {
-            return elevatorStatic.ownerElevator;
+            return GetElevatorStaticOwner(elevatorStatic);
         }
 
         return elevator;
@@ -851,7 +853,7 @@ public partial class LivingRust
     /// </summary>
     private bool TryRideElevatorDown(Survivor survivor, BasePlayer npc, ElevatorLift elevatorLift)
     {
-        Elevator mover = elevatorLift.ownerElevator.Get(false);
+        Elevator mover = GetElevatorLiftMover(elevatorLift);
 
         if (mover == null)
         {
@@ -917,7 +919,7 @@ public partial class LivingRust
         bool gotPassthroughItem = fusebox.GetPassthroughItem(out Item passthroughItem);
 
         // Uses direct field access, which Carbon's publicized compile-time reference assembly allows.
-        ItemContainer directInventory = fusebox.inventory;
+        ItemContainer directInventory = GetFlowRestrictorInventory(fusebox);
 
         string inventoryFieldReport = directInventory == null
             ? "NULL (direct field access)"
@@ -1105,7 +1107,7 @@ public partial class LivingRust
         foreach (WheelSwitch wheelSwitch in wheelSwitches)
         {
             float distance = Vector3.Distance(player.transform.position, wheelSwitch.transform.position);
-            string report = $"wheelswitch-diag: '{wheelSwitch.ShortPrefabName}' (net.ID={wheelSwitch.net?.ID}) at {wheelSwitch.transform.position}, {distance:F2}m away - rotateProgress={wheelSwitch.rotateProgress:F2} (NOT the completion signal - see ProgressDoor below), rotatorPlayer={wheelSwitch.rotatorPlayer?.displayName ?? "null"}, progressTickRate={wheelSwitch.progressTickRate:F2}, requiresPowerToTurn={wheelSwitch.requiresPowerToTurn}, IsDestroyed={wheelSwitch.IsDestroyed}, activeTimer={_activeWheelTurnTimers.ContainsKey(wheelSwitch.net.ID)}.";
+            string report = $"wheelswitch-diag: '{wheelSwitch.ShortPrefabName}' (net.ID={wheelSwitch.net?.ID}) at {wheelSwitch.transform.position}, {distance:F2}m away - rotateProgress={wheelSwitch.rotateProgress:F2} (NOT the completion signal - see ProgressDoor below), rotatorPlayer={GetWheelRotatorPlayer(wheelSwitch)?.displayName ?? "null"}, progressTickRate={GetWheelProgressTickRate(wheelSwitch):F2}, requiresPowerToTurn={wheelSwitch.requiresPowerToTurn}, IsDestroyed={wheelSwitch.IsDestroyed}, activeTimer={_activeWheelTurnTimers.ContainsKey(wheelSwitch.net.ID)}.";
 
             Puts(report);
             player.ChatMessage($"[LivingRust] {report}");
@@ -1157,7 +1159,7 @@ public partial class LivingRust
         foreach (ElevatorLift elevatorLift in elevatorLifts)
         {
             float distance = Vector3.Distance(player.transform.position, elevatorLift.transform.position);
-            Elevator mover = elevatorLift.ownerElevator.Get(false);
+            Elevator mover = GetElevatorLiftMover(elevatorLift);
             string report = $"elevatorlift-diag: '{elevatorLift.ShortPrefabName}' (net.ID={elevatorLift.net?.ID}) at {elevatorLift.transform.position}, {distance:F2}m away - ownerElevator.net.ID={mover?.net?.ID.ToString() ?? "null"}, ownerElevator.Floor={(mover != null ? mover.Floor.ToString() : "n/a")}, ownerElevator.IsBusy={(mover != null ? mover.IsBusy().ToString() : "n/a")}, IsDestroyed={elevatorLift.IsDestroyed}.";
 
             Puts(report);

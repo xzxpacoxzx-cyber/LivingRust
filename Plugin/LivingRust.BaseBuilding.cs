@@ -1,3 +1,4 @@
+using LivingRust.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -616,13 +617,13 @@ public partial class LivingRust
     /// </summary>
     private bool IsInsideMonumentNoBuildZone(Vector3 position, out string description)
     {
-        if (TerrainMeta.Path?.Monuments == null)
+        if (MonumentAccess.GetAllMonuments().Count == 0)
         {
             description = null;
             return false;
         }
 
-        foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
         {
             if (monument == null)
             {

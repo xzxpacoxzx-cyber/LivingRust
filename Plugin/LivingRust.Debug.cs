@@ -1,3 +1,4 @@
+using LivingRust.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -3563,7 +3564,7 @@ public partial class LivingRust
         MonumentInfo monument = null;
         float bestDistanceSqr = float.MaxValue;
 
-        foreach (MonumentInfo candidate in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
             string displayName = candidate.displayPhrase.IsValid() ? candidate.displayPhrase.english : null;
 
@@ -3649,7 +3650,7 @@ public partial class LivingRust
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            foreach (MonumentInfo candidate in TerrainMeta.Path.Monuments)
+            foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
             {
                 if (!CardPuzzleRouteFolders.Keys.Any(key => candidate.name.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0))
                 {
@@ -3673,7 +3674,7 @@ public partial class LivingRust
         }
         else
         {
-            foreach (MonumentInfo candidate in TerrainMeta.Path.Monuments)
+            foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
             {
                 if (candidate.name.IndexOf(name, StringComparison.OrdinalIgnoreCase) < 0)
                 {

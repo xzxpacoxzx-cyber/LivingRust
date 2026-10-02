@@ -463,7 +463,7 @@ namespace LivingRust.Navigation
         {
             foreach ((string monumentSubstring, Vector3 localOffset, float radius) in KnownTerrainIntrusionPockets)
             {
-                foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+                foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
                 {
                     if (monument.name.IndexOf(monumentSubstring, StringComparison.OrdinalIgnoreCase) < 0)
                     {
@@ -498,7 +498,7 @@ namespace LivingRust.Navigation
             MonumentInfo closest = null;
             float closestDistanceSqr = float.MaxValue;
 
-            foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+            foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
             {
                 string displayName = monument.displayPhrase.IsValid() ? monument.displayPhrase.english : null;
 
@@ -544,7 +544,7 @@ namespace LivingRust.Navigation
         {
             var matches = new List<(string, Vector3, float)>();
 
-            foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+            foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
             {
                 string displayName = monument.displayPhrase.IsValid() ? monument.displayPhrase.english : null;
 
@@ -573,7 +573,7 @@ namespace LivingRust.Navigation
         {
             var names = new List<string>();
 
-            foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+            foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
             {
                 names.Add(monument.displayPhrase.IsValid() ? monument.displayPhrase.english : monument.name);
             }
@@ -1254,7 +1254,7 @@ namespace LivingRust.Navigation
         /// exactly matches targetName. A landmark-based fallback for
         /// structures with no dedicated lookup of their own - unlike
         /// ladders (TriggerLadder) or registered monuments
-        /// (TerrainMeta.Path.Monuments), some structures (e.g. the
+        /// (MonumentAccess.GetAllMonuments()), some structures (e.g. the
         /// Powerline tower) are just static dressing with no component or
         /// monument registration to search by, so the sub-object's own
         /// name (already known from a debug scan) is the only stable
@@ -1949,11 +1949,11 @@ namespace LivingRust.Navigation
         /// escalation (LivingRust.Looting.cs) once a plain radius scan
         /// comes up empty, rather than a "no loot nearby, give up"
         /// dead end. Real Rust roads are procedurally generated splines
-        /// (TerrainMeta.Path.Roads -&gt; PathList.Path, a PathInterpolator
+        /// (MonumentAccess.GetAllRoads() -&gt; PathList.Path, a PathInterpolator
         /// with a public Points array and a real Length), a completely
         /// different, geometry-based way of answering "is there a road
         /// near me" than any physic-material/terrain-texture reading
-        /// this project doesn't have at all. TerrainMeta.Path.Roads is
+        /// this project doesn't have at all. MonumentAccess.GetAllRoads() is
         /// marked `internal` in Assembly-CSharp, but is confirmed
         /// accessible from this plugin via a live build test - Carbon
         /// evidently grants that access.
@@ -1971,7 +1971,7 @@ namespace LivingRust.Navigation
             road = null;
             distanceAlongRoad = 0f;
 
-            if (TerrainMeta.Path == null || TerrainMeta.Path.Roads == null)
+            if (MonumentAccess.GetAllRoads().Count == 0)
             {
                 return false;
             }
@@ -1979,7 +1979,7 @@ namespace LivingRust.Navigation
             float closestDistanceSqr = maxDistance * maxDistance;
             bool found = false;
 
-            foreach (PathList pathList in TerrainMeta.Path.Roads)
+            foreach (PathList pathList in MonumentAccess.GetAllRoads())
             {
                 PathInterpolator path = pathList?.Path;
 

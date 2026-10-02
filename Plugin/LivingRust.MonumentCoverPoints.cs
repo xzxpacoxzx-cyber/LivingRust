@@ -1,3 +1,4 @@
+using LivingRust.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -78,9 +79,9 @@ public partial class LivingRust
     /// </summary>
     private void ScanAllMonumentsForCoverPointsOnBoot()
     {
-        if (TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null)
+        if (MonumentAccess.GetAllMonuments().Count == 0)
         {
-            Puts("WARNING: TerrainMeta.Path.Monuments isn't available yet - skipping the boot-time monument cover scan.");
+            Puts("WARNING: MonumentAccess.GetAllMonuments() isn't available yet - skipping the boot-time monument cover scan.");
             return;
         }
 
@@ -88,7 +89,7 @@ public partial class LivingRust
         int scannedCount = 0;
         int skippedAlreadyKnownCount = 0;
 
-        foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
         {
             if (monument == null || !seenTypesThisScan.Add(monument.name))
             {
@@ -231,14 +232,14 @@ public partial class LivingRust
     {
         monument = null;
 
-        if (TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null)
+        if (MonumentAccess.GetAllMonuments().Count == 0)
         {
             return false;
         }
 
         float bestDistanceSqr = float.MaxValue;
 
-        foreach (MonumentInfo candidate in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
             if (candidate == null)
             {

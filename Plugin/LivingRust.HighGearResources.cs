@@ -50,6 +50,10 @@ public partial class LivingRust
 
     private static IEnumerable<ItemAmount> GetNodeYields(ResourceEntity node)
     {
-        return node?.resourceDispenser?.containedItems;
+        // ResourceEntity.resourceDispenser became protected in Rust's October 2026
+        // update; GetComponent<ResourceDispenser>() is the same lookup the field's own
+        // initializer uses internally (confirmed via decompile), so it's a direct,
+        // non-reflection replacement.
+        return node?.GetComponent<ResourceDispenser>()?.containedItems;
     }
 }

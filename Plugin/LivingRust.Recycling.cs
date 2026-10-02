@@ -322,7 +322,7 @@ public partial class LivingRust
             Quaternion rotation = Quaternion.LookRotation(scanDirection);
             liveNpc.transform.rotation = rotation;
             liveNpc.OverrideViewAngles(rotation.eulerAngles);
-            liveNpc.tickViewAngles = rotation.eulerAngles;
+            SetTickViewAngles(liveNpc, rotation.eulerAngles);
 
             // eyes.NetworkUpdate alone only refreshes the server-side rotation value;
             // SendNetworkUpdateImmediate() is needed to actually broadcast it to observers.

@@ -32,10 +32,10 @@ public partial class LivingRust
     /// </summary>
     private static bool IsHuntablePredator(BaseEntity entity)
     {
-        return entity is Bear
-            || entity is Polarbear
-            || entity is Boar
-            || entity is Stag
+        return entity is Rust.Ai.Gen2.Bear
+            || entity is Rust.Ai.Gen2.PolarBear
+            || entity is Rust.Ai.Gen2.Boar
+            || entity is Rust.Ai.Gen2.Stag
             || entity is Rust.Ai.Gen2.Wolf2
             || entity is Rust.Ai.Gen2.Crocodile
             || entity is Rust.Ai.Gen2.Panther
@@ -121,8 +121,8 @@ public partial class LivingRust
     /// </summary>
     private bool IsHardAvoidAnimal(BaseEntity entity, BasePlayer npc)
     {
-        if (entity is Bear || entity is Rust.Ai.Gen2.Crocodile || entity is Boar || entity is Rust.Ai.Gen2.Wolf2
-            || entity is Rust.Ai.Gen2.Panther || entity is Rust.Ai.Gen2.Tiger || entity is Polarbear)
+        if (entity is Rust.Ai.Gen2.Bear || entity is Rust.Ai.Gen2.Crocodile || entity is Rust.Ai.Gen2.Boar || entity is Rust.Ai.Gen2.Wolf2
+            || entity is Rust.Ai.Gen2.Panther || entity is Rust.Ai.Gen2.Tiger || entity is Rust.Ai.Gen2.PolarBear)
         {
             return !HasReadyRangedWeapon(npc) && !HasCombatReadyMeleeWeapon(npc);
         }
@@ -147,10 +147,10 @@ public partial class LivingRust
 
         try
         {
-            CollectEntitiesInRange<Bear>(position, HardAvoidAnimalRadius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Bear>(position, HardAvoidAnimalRadius, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Crocodile>(position, HardAvoidAnimalRadius, candidates);
-            CollectEntitiesInRange<Boar>(position, HardAvoidAnimalRadius, candidates);
-            CollectEntitiesInRange<Polarbear>(position, HardAvoidAnimalRadius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Boar>(position, HardAvoidAnimalRadius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.PolarBear>(position, HardAvoidAnimalRadius, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Wolf2>(position, HardAvoidAnimalRadius, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Panther>(position, HardAvoidAnimalRadius, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Tiger>(position, HardAvoidAnimalRadius, candidates);
@@ -640,10 +640,10 @@ public partial class LivingRust
 
         try
         {
-            CollectEntitiesInRange<Bear>(npc.transform.position, AnimalOnSightRange, candidates);
-            CollectEntitiesInRange<Polarbear>(npc.transform.position, AnimalOnSightRange, candidates);
-            CollectEntitiesInRange<Boar>(npc.transform.position, AnimalOnSightRange, candidates);
-            CollectEntitiesInRange<Stag>(npc.transform.position, AnimalOnSightRange, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Bear>(npc.transform.position, AnimalOnSightRange, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.PolarBear>(npc.transform.position, AnimalOnSightRange, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Boar>(npc.transform.position, AnimalOnSightRange, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Stag>(npc.transform.position, AnimalOnSightRange, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Wolf2>(npc.transform.position, AnimalOnSightRange, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Crocodile>(npc.transform.position, AnimalOnSightRange, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Panther>(npc.transform.position, AnimalOnSightRange, candidates);
@@ -895,7 +895,7 @@ public partial class LivingRust
             }
 
             // Re-verify the item is still held, since enough time has passed for it to have been dropped, lost, or interrupted.
-            if (useNpc.inventory.FindItemByUID(healItemUid) == null || useNpc.GetHeldEntity() is not MedicalTool heldTool || heldTool.GetOwnerItem()?.uid != healItemUid)
+            if (useNpc.inventory.FindItemByUID(healItemUid) == null || useNpc.GetHeldEntity() is not MedicalTool heldTool || heldTool.GetItem()?.uid != healItemUid)
             {
                 EquipBestWeaponForDisplay(survivor);
                 return;
@@ -1383,7 +1383,7 @@ public partial class LivingRust
     /// </summary>
     private void OnWeaponFired(BaseProjectile projectile, BasePlayer player, ItemModProjectile mod, ProtoBuf.ProjectileShoot shoot)
     {
-        VerbosePuts($"shot-fired-diag: '{player.displayName}' fired '{projectile.GetOwnerItem()?.info.shortname}' from {player.transform.position}.");
+        VerbosePuts($"shot-fired-diag: '{player.displayName}' fired '{projectile.GetItem()?.info.shortname}' from {player.transform.position}.");
     }
 
     /// <summary>
@@ -1401,7 +1401,7 @@ public partial class LivingRust
 
         // Fast path: if the currently held weapon already has (or can reload into having) ammo, no belt-shuffling is needed.
         if (npc.GetHeldEntity() is BaseProjectile currentWeapon
-            && Array.IndexOf(WeaponPriority, currentWeapon.GetOwnerItem()?.info.shortname) >= 0)
+            && Array.IndexOf(WeaponPriority, currentWeapon.GetItem()?.info.shortname) >= 0)
         {
             if (currentWeapon.primaryMagazine.contents <= 0)
             {
@@ -1446,7 +1446,7 @@ public partial class LivingRust
             if (candidateWeapon.primaryMagazine.contents > 0)
             {
                 // Re-applies UpdateActiveItem for the final winner after candidate-cycling settles, and forces a held-entity refresh so the client's held-item visual stays in sync.
-                npc.UpdateActiveItem(candidateWeapon.GetOwnerItem().uid);
+                npc.UpdateActiveItem(candidateWeapon.GetItem().uid);
                 ForceRefreshHeldEntity(npc);
 
                 weapon = candidateWeapon;
@@ -1567,7 +1567,7 @@ public partial class LivingRust
             }
 
             // Falls through to the flee branch for anything not worth fighting. Stag is excluded since it never attacks and should not trigger a flee reaction.
-            if (IsHuntableThreat(attacker) && attacker is not Stag)
+            if (IsHuntableThreat(attacker) && attacker is not Rust.Ai.Gen2.Stag)
             {
                 StartFleeingFromThreat(survivor, attacker);
             }
@@ -1588,7 +1588,7 @@ public partial class LivingRust
         VerbosePuts($"'{survivor.Character.Alias}' engaging '{GetAttackerDisplayName(attacker)}' in combat.");
 
         // Movement during combat is handled by StartFollowing, called once here and left to run on its own cadence. Facing while stopped is left to this file's own AimAtPlayer via skipIdleFacing, so the two don't fight over rotation.
-        string weaponShortname = equippedWeapon.GetOwnerItem()?.info.shortname ?? string.Empty;
+        string weaponShortname = equippedWeapon.GetItem()?.info.shortname ?? string.Empty;
         WeaponFireProfile fireProfile = GetCombatFireProfile(weaponShortname);
         float engagementRange = fireProfile.EngagementRange;
         float pursueRange = fireProfile.PursueRange;
@@ -1911,7 +1911,7 @@ public partial class LivingRust
                 // No matching ammo left for this weapon anywhere in inventory; swaps to the next best-scored weapon that still has usable ammo, recomputing every piece of fight state derived from the weapon.
                 if (TryEquipBestArmedWeapon(survivor, out BaseProjectile nextWeapon))
                 {
-                    weaponShortname = nextWeapon.GetOwnerItem()?.info.shortname ?? string.Empty;
+                    weaponShortname = nextWeapon.GetItem()?.info.shortname ?? string.Empty;
                     fireProfile = GetCombatFireProfile(weaponShortname);
                     engagementRange = fireProfile.EngagementRange;
                     pursueRange = fireProfile.PursueRange;
@@ -2189,7 +2189,7 @@ public partial class LivingRust
         {
             int contentsBefore = weapon.primaryMagazine.contents;
             weapon.ServerTryReload(npc.inventory);
-            VerbosePuts($"reload-diag: '{survivor.Character.Alias}' deferred post-combat reload on '{weapon.GetOwnerItem()?.info.shortname}' (waited for safety, attempt {attempt}) - contents {contentsBefore} -> {weapon.primaryMagazine.contents} (capacity {weapon.primaryMagazine.capacity}).");
+            VerbosePuts($"reload-diag: '{survivor.Character.Alias}' deferred post-combat reload on '{weapon.GetItem()?.info.shortname}' (waited for safety, attempt {attempt}) - contents {contentsBefore} -> {weapon.primaryMagazine.contents} (capacity {weapon.primaryMagazine.capacity}).");
         }
     }
 
@@ -2305,7 +2305,7 @@ public partial class LivingRust
         VerbosePuts($"aim-diag: '{npc.displayName}' AimAtPlayer -> facing yaw {aimRotation.eulerAngles.y:F1} deg toward '{GetAttackerDisplayName(target)}'.");
 
         // Sets tickViewAngles directly, since the weapon-aim IK is driven by that field rather than the plain viewAngles set above, and a disconnected bot never populates it via a client RPC.
-        npc.tickViewAngles = aimRotation.eulerAngles;
+        SetTickViewAngles(npc, aimRotation.eulerAngles);
 
         // Pushes an immediate network update, since GetNetworkRotation() reads viewAngles and nothing else broadcasts the updated value to observers.
         npc.SendNetworkUpdateImmediate();

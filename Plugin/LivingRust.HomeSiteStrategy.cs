@@ -1,3 +1,4 @@
+using LivingRust.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -329,18 +330,18 @@ public partial class LivingRust
     {
         site = Vector3.zero;
 
-        if (TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null || TerrainMeta.Path.Monuments.Count == 0)
+        if (MonumentAccess.GetAllMonuments().Count == 0)
         {
             return false;
         }
 
-        List<MonumentInfo> nearby = TerrainMeta.Path.Monuments
+        List<MonumentInfo> nearby = MonumentAccess.GetAllMonuments()
             .Where(m => m != null && (m.transform.position - origin).sqrMagnitude <= BuildSiteRerollMonumentSearchRadius * BuildSiteRerollMonumentSearchRadius)
             .ToList();
 
         MonumentInfo monument = nearby.Count > 0
             ? nearby[UnityEngine.Random.Range(0, nearby.Count)]
-            : TerrainMeta.Path.Monuments
+            : MonumentAccess.GetAllMonuments()
                 .Where(m => m != null)
                 .OrderBy(m => (m.transform.position - origin).sqrMagnitude)
                 .FirstOrDefault();
@@ -830,10 +831,10 @@ public partial class LivingRust
         {
             // Bear/Crocodile are gear-score-gated via IsHardAvoidAnimal below, so an under-geared
             // survivor isn't sent out only to flee instead of fighting on arrival.
-            CollectEntitiesInRange<Bear>(origin, radius, candidates);
-            CollectEntitiesInRange<Polarbear>(origin, radius, candidates);
-            CollectEntitiesInRange<Boar>(origin, radius, candidates);
-            CollectEntitiesInRange<Stag>(origin, radius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Bear>(origin, radius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.PolarBear>(origin, radius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Boar>(origin, radius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Stag>(origin, radius, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Wolf2>(origin, radius, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Crocodile>(origin, radius, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Panther>(origin, radius, candidates);

@@ -2763,7 +2763,7 @@ public partial class LivingRust
                 // Resets blueprint unlocks too, since that native Rust subsystem is keyed by userID and persists independently of Character/Survivor tracking.
                 try
                 {
-                    bot.blueprints?.Reset();
+                    ResetPlayerBlueprints(bot.blueprints);
                 }
                 catch (Exception ex)
                 {

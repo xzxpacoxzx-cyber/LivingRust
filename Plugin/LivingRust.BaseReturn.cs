@@ -1,3 +1,4 @@
+using LivingRust.Core;
 using System;
 using System.Collections.Generic;
 using LivingRust.Models;
@@ -148,9 +149,9 @@ public partial class LivingRust
             return true;
         }
 
-        if (TerrainMeta.Path?.Monuments != null)
+        if (MonumentAccess.GetAllMonuments().Count > 0)
         {
-            foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+            foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
             {
                 if (monument == null)
                 {

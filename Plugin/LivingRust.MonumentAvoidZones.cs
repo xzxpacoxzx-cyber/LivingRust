@@ -1,3 +1,4 @@
+using LivingRust.Core;
 using System;
 using System.Collections.Generic;
 using LivingRust.Models;
@@ -108,12 +109,12 @@ public partial class LivingRust
 
     private bool IsNearFullyAvoidedMonument(Vector3 worldPosition)
     {
-        if (TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null)
+        if (MonumentAccess.GetAllMonuments().Count == 0)
         {
             return false;
         }
 
-        foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
         {
             if ((monument.transform.position - worldPosition).sqrMagnitude > FullyAvoidedMonumentRadius * FullyAvoidedMonumentRadius)
             {
@@ -139,7 +140,7 @@ public partial class LivingRust
 
     // Train tunnel network prefabs ("tunnel.single.*"/"tunnel.double.*" segments). Not a
     // MonumentInfo at all - a separate underground structural network with nothing in
-    // TerrainMeta.Path.Monuments to match. Excludes "military_tunnel" (a distinct
+    // MonumentAccess.GetAllMonuments() to match. Excludes "military_tunnel" (a distinct
     // monument handled separately) and "tent_tunnel" (unrelated decoration).
     private static readonly string[] TrainTunnelPrefabSubstrings = { "tunnel.single.", "tunnel.double." };
 
@@ -226,12 +227,12 @@ public partial class LivingRust
 
     private bool IsNearInventoryOrPrepGatedMonument(Vector3 worldPosition)
     {
-        if (TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null)
+        if (MonumentAccess.GetAllMonuments().Count == 0)
         {
             return false;
         }
 
-        foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
         {
             if ((monument.transform.position - worldPosition).sqrMagnitude > FullyAvoidedMonumentRadius * FullyAvoidedMonumentRadius)
             {
@@ -275,12 +276,12 @@ public partial class LivingRust
     // since these are large monuments where a tighter radius would still be dangerous.
     private bool IsNearEarlyGameRestrictedMonument(Vector3 worldPosition)
     {
-        if (TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null)
+        if (MonumentAccess.GetAllMonuments().Count == 0)
         {
             return false;
         }
 
-        foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
         {
             if ((monument.transform.position - worldPosition).sqrMagnitude > FullyAvoidedMonumentRadius * FullyAvoidedMonumentRadius)
             {
@@ -366,7 +367,7 @@ public partial class LivingRust
         monument = null;
         float bestDistanceSqr = maxDistance * maxDistance;
 
-        foreach (MonumentInfo candidate in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
             float distanceSqr = (candidate.transform.position - worldPosition).sqrMagnitude;
 
@@ -395,7 +396,7 @@ public partial class LivingRust
         monument = null;
         float bestDistanceSqr = maxDistance * maxDistance;
 
-        foreach (MonumentInfo candidate in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
             if (candidate.name != requiredMonumentName)
             {

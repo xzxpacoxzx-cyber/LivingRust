@@ -83,17 +83,18 @@ public partial class LivingRust
             return;
         }
 
-        Vector3 dropPosition = plane.dropPosition;
+        Vector3 dropPosition = GetCargoPlaneDropPosition(plane);
 
         if (dropPosition == Vector3.zero)
         {
             return;
         }
 
-        float flightSeconds = plane.secondsToTake;
-        float totalDistance = Vector3.Distance(plane.startPos, plane.endPos);
-        float toDropFraction = totalDistance > 1f ? Vector3.Distance(plane.startPos, dropPosition) / totalDistance : 0.5f;
-        float secondsUntilDrop = Mathf.Max(5f, flightSeconds * toDropFraction - plane.secondsTaken);
+        Vector3 planeStartPos = GetCargoPlaneStartPos(plane);
+        float flightSeconds = GetCargoPlaneSecondsToTake(plane);
+        float totalDistance = Vector3.Distance(planeStartPos, GetCargoPlaneEndPos(plane));
+        float toDropFraction = totalDistance > 1f ? Vector3.Distance(planeStartPos, dropPosition) / totalDistance : 0.5f;
+        float secondsUntilDrop = Mathf.Max(5f, flightSeconds * toDropFraction - GetCargoPlaneSecondsTaken(plane));
 
         AirdropInfo info = new()
         {

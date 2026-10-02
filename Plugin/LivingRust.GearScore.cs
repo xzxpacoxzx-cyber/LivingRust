@@ -1,3 +1,4 @@
+using LivingRust.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -737,9 +738,9 @@ public partial class LivingRust
             candidates.Add((roadPoint, "a nearby road"));
         }
 
-        if (TerrainMeta.Path != null && TerrainMeta.Path.Monuments != null)
+        if (MonumentAccess.GetAllMonuments().Count > 0)
         {
-            foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+            foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
             {
                 if (monument == null || IsMonumentExcludedFromAutonomy(monument) || GetMonumentTier(monument.name) != tier)
                 {

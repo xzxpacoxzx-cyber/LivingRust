@@ -1,3 +1,4 @@
+using LivingRust.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -72,12 +73,12 @@ public partial class LivingRust
     {
         monument = null;
 
-        if (state.CommittedMonumentName == null || TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null)
+        if (state.CommittedMonumentName == null || MonumentAccess.GetAllMonuments().Count == 0)
         {
             return false;
         }
 
-        foreach (MonumentInfo candidate in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
             if (candidate != null && candidate.name == state.CommittedMonumentName)
             {
@@ -188,9 +189,9 @@ public partial class LivingRust
     /// </summary>
     private void ScanAllMonumentsOnBoot()
     {
-        if (TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null)
+        if (MonumentAccess.GetAllMonuments().Count == 0)
         {
-            Puts("WARNING: TerrainMeta.Path.Monuments isn't available yet - skipping the boot-time monument loot scan.");
+            Puts("WARNING: MonumentAccess.GetAllMonuments() isn't available yet - skipping the boot-time monument loot scan.");
             return;
         }
 
@@ -198,7 +199,7 @@ public partial class LivingRust
         int scannedCount = 0;
         int skippedAlreadyKnownCount = 0;
 
-        foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
         {
             if (monument == null || !seenTypesThisScan.Add(monument.name))
             {
@@ -381,7 +382,7 @@ public partial class LivingRust
 
         if (!string.IsNullOrWhiteSpace(nameFilter))
         {
-            monument = TerrainMeta.Path.Monuments
+            monument = MonumentAccess.GetAllMonuments()
                 .Where(candidate => candidate.name.IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) >= 0)
                 .OrderBy(candidate => Vector3.Distance(candidate.transform.position, fallbackOrigin))
                 .FirstOrDefault();
@@ -938,7 +939,7 @@ public partial class LivingRust
             return;
         }
 
-        if (_monumentLootZones.Count == 0 || TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null)
+        if (_monumentLootZones.Count == 0 || MonumentAccess.GetAllMonuments().Count == 0)
         {
             VerbosePuts($"loot-task: '{survivor.Character.Alias}' found nothing left to loot nearby, no road to follow, and no known monument to head for either - rolling for something new instead of giving up.");
             NeverIdleFallback(survivor, state);
@@ -950,7 +951,7 @@ public partial class LivingRust
         Vector3 nearestZoneWorldPosition = Vector3.zero;
         float nearestDistance = float.MaxValue;
 
-        foreach (MonumentInfo candidate in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
             if (candidate == null || IsMonumentExcludedFromAutonomy(candidate)
                 || (!HasCompletedEarlyGameMilestones(survivor) && IsNearEarlyGameRestrictedMonument(candidate.transform.position))

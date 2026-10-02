@@ -83,10 +83,10 @@ public partial class LivingRust
 
         try
         {
-            CollectEntitiesInRange<Bear>(position, radius, candidates);
-            CollectEntitiesInRange<Polarbear>(position, radius, candidates);
-            CollectEntitiesInRange<Boar>(position, radius, candidates);
-            CollectEntitiesInRange<Stag>(position, radius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Bear>(position, radius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.PolarBear>(position, radius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Boar>(position, radius, candidates);
+            CollectEntitiesInRange<Rust.Ai.Gen2.Stag>(position, radius, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Wolf2>(position, radius, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Crocodile>(position, radius, candidates);
             CollectEntitiesInRange<Rust.Ai.Gen2.Panther>(position, radius, candidates);

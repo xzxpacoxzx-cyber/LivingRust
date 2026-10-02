@@ -1,3 +1,4 @@
+using LivingRust.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -8839,7 +8840,7 @@ public partial class LivingRust
         traceFilePath = null;
         monument = null;
 
-        if (TerrainMeta.Path?.Monuments == null)
+        if (MonumentAccess.GetAllMonuments().Count == 0)
         {
             return false;
         }
@@ -8847,7 +8848,7 @@ public partial class LivingRust
         float bestDistanceSqr = maxDistance * maxDistance;
         MonumentInfo nearestCandidate = null;
 
-        foreach (MonumentInfo candidate in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
             if (candidate == null
                 || !MonumentGhostRouteFolders.Keys.Any(substring => candidate.name.IndexOf(substring, StringComparison.OrdinalIgnoreCase) >= 0))
@@ -9153,14 +9154,14 @@ public partial class LivingRust
     {
         monument = null;
 
-        if (string.IsNullOrEmpty(monumentName) || TerrainMeta.Path?.Monuments == null)
+        if (string.IsNullOrEmpty(monumentName) || MonumentAccess.GetAllMonuments().Count == 0)
         {
             return false;
         }
 
         float bestDistanceSqr = maxDistance * maxDistance;
 
-        foreach (MonumentInfo candidate in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
             if (candidate == null || candidate.name != monumentName)
             {
@@ -9514,12 +9515,12 @@ public partial class LivingRust
 
     private static bool IsNearRecyclerRiskyMonument(Vector3 position)
     {
-        if (TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null)
+        if (MonumentAccess.GetAllMonuments().Count == 0)
         {
             return false;
         }
 
-        foreach (MonumentInfo monument in TerrainMeta.Path.Monuments)
+        foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
         {
             if (monument == null)
             {
