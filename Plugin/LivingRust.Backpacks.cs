@@ -6,14 +6,10 @@ namespace Carbon.Plugins;
 
 public partial class LivingRust
 {
-    // Backpacks (2026-09-21, Lucas's own spec + screenshot): a backpack is NOT
-    // clothing - it goes in its own dedicated slot (the wear container at
-    // ItemContainer.BackpackSlotIndex) and opens extra slots (28 for the
-    // biggest). Found in a crate it can be equipped instantly; only one
-    // dropped by a dead/downed player is a timed (3-5s) world pickup. Bots
-    // now equip the best backpack they own, upgrade small -> large, treat one
-    // as a top-tier pickup, use its extra room, and take the same 3-5s to
-    // pick one up off the ground.
+    // Backpacks are not clothing; they go in their own dedicated slot
+    // (ItemContainer.BackpackSlotIndex) and open extra inventory slots. Bots equip
+    // the best backpack they own, upgrade small to large, treat one as a top-tier
+    // pickup, and use its extra room.
     private static bool IsBackpackItem(Item item)
     {
         return item?.info != null && item.info.GetComponent<ItemModBackpack>() != null;
@@ -64,9 +60,8 @@ public partial class LivingRust
         }
     }
 
-    // Free room in the worn backpack, if any (used as overflow after the main
-    // inventory fills, and so "inventory full" doesn't fire while there's
-    // still backpack space left).
+    // Free room in the worn backpack, used as overflow after the main inventory
+    // fills.
     private static bool HasBackpackRoom(BasePlayer npc)
     {
         Item worn = GetWornBackpack(npc);
@@ -79,14 +74,11 @@ public partial class LivingRust
         return npc.inventory.containerMain.itemList.Count >= npc.inventory.containerMain.capacity && !HasBackpackRoom(npc);
     }
 
-    // What belongs in the backpack rather than the main slots (Lucas's own
-    // spec): bulk raw goods (wood, stone, ores, sulfur, metal fragments,
-    // components, scrap), spare weapons (anything not better than the best
-    // weapon already owned) and spare clothing/armour (anything that isn't an
-    // upgrade over what's worn). Ammo, medical, tools, keycards, the active
-    // kit stay in main/belt. Weapons and armour that WOULD be an upgrade go
-    // to main so EquipBest*/EvaluateAndUpgradeArmor (which only scan
-    // main/belt) can see and equip them.
+    // What belongs in the backpack rather than the main slots: bulk raw goods, spare
+    // weapons that aren't an upgrade, and spare armor that isn't an upgrade. Ammo,
+    // medical, tools, keycards, and the active kit stay in main/belt. Weapons and
+    // armor that would be an upgrade go to main so EquipBest*/EvaluateAndUpgradeArmor
+    // can see and equip them.
     private bool ShouldPreferBackpack(BasePlayer npc, Item item)
     {
         if (IsBackpackItem(item))

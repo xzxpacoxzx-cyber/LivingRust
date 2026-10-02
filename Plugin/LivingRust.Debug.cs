@@ -15,50 +15,23 @@ public partial class LivingRust
 {
     private const string TraceDirectory = "LivingRust/traces";
 
-    // Real curated base-design pool (2026-08-29, Lucas's own explicit ask -
-    // "have it so the bots roll between choosing 1 of the 3 base choices
-    // for tier0"). Deliberately separate from TraceDirectory - that folder
-    // fills up with every raw /lr.debug.tracebuild recording (including
-    // aborted/incomplete ones, confirmed live this session - several got
-    // cut off partway and had to be manually cleaned up), so picking
-    // randomly among ALL files in there would happily hand the bot a
-    // broken half-finished trace. This folder only ever contains designs
-    // deliberately promoted in via /lr.debug.savebasedesign, one
-    // subfolder per tier - matching the tiered blueprint library Lucas
-    // described wanting eventually (3-4 tier1, 2-3 tier2, 2-3 tier3).
+    // Directory of curated base designs, separate from raw trace recordings, organized by tier.
     private const string BaseDesignsDirectory = "LivingRust/base_designs";
 
     private readonly Dictionary<Guid, Timer> _activeTraces = new();
     private readonly Dictionary<Guid, StreamWriter> _traceWriters = new();
 
-    // Keyed by the real scientist2 entity's own network ID, not a Guid -
-    // it's not one of our own Characters, so there's no Survivor/Character
-    // roster entry to key off.
+    // Keyed by the scientist2 entity's network ID since it has no Survivor/Character roster entry.
     private readonly Dictionary<ulong, Timer> _activeNpcTraces = new();
     private readonly Dictionary<ulong, StreamWriter> _npcTraceWriters = new();
 
-    // Traces a real, connected admin player's own movement (2026-08-16,
-    // Lucas's own explicit request) - same registry shape as
-    // _activeNpcTraces/_npcTraceWriters, keyed by userID instead of a
-    // Character Guid since a real player isn't a Survivor at all. Built to
-    // get a real "known good" ground-truth path through a trouble spot
-    // (the Abandoned Supermarket doorway/barricade/office room) directly
-    // from how a genuine player actually moves through it - a real player
-    // never touches TryGetNextStep/IsBodyOverlapping/CalculatePath at all,
-    // so this can't diagnose OUR code, but it's exactly the kind of data
-    // an authored hardcoded-waypoint route (mirroring LivingRust.MonumentRoutes.cs's
-    // existing Powerline tower pattern) would need to be built from.
+    // Traces a connected player's own movement, keyed by userID, to record a ground-truth path for building routes.
     private readonly Dictionary<ulong, Timer> _activePlayerTraces = new();
     private readonly Dictionary<ulong, StreamWriter> _playerTraceWriters = new();
 
     /// <summary>
-    /// Toggles recording the nearest survivor's exact position (plus
-    /// onLadder/sprinting/ducked state) every tick to a CSV file under
-    /// LivingRust/traces - a precise, plottable record of a whole
-    /// walk/follow/climb run (e.g. "Point A below the ramp" to "Point B at
-    /// the top") for pinpointing exactly where something goes right or
-    /// wrong, instead of inferring it from scattered Puts() log lines.
-    /// Call once to start, call again on the same survivor to stop.
+    /// Toggles recording the nearest survivor's position and movement state each tick to a CSV trace file.
+    /// Call again on the same survivor to stop recording.
     /// </summary>
     [ChatCommand("lr.debug.trace")]
     private void CmdDebugTrace(BasePlayer player, string command, string[] args)
@@ -67,43 +40,20 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Toggles bot invincibility - added 2026-08-13 for live spread-
-    /// calibration testing (Lucas's own request: fire many rounds at a
-    /// stationary bot from set distances without it dying/respawning
-    /// mid-test, which would reset position and break the "same bot, same
-    /// spot, known distance" setup those numbers depend on). Restores full
-    /// health and clears wounded state on every hit a survivor takes while
-    /// this is on, rather than fighting with DamageTypeList internals to
-    /// cancel the hit at its source - simpler, and works regardless of
-    /// whichever exact point OnEntityTakeDamage fires relative to the real
-    /// damage application. Off by default; explicitly NOT persisted
-    /// anywhere - a fresh plugin load always starts with real, killable
-    /// survivors, this is a manual per-session testing toggle only.
+    /// Toggles bot invincibility for testing by restoring health and clearing wounded state on every hit.
+    /// Off by default and not persisted between plugin loads.
     /// </summary>
     private bool _botsInvincible = false;
 
     /// <summary>
-    /// Toggles bots fighting real players entirely (both the reactive
-    /// OnEntityTakeDamage path and on-sight detection) - added 2026-08-14
-    /// per explicit request while live-testing animal interaction: with
-    /// only one real player on the server, every bot defaults to shooting
-    /// that player back the instant it's hit or spotted, making it
-    /// impossible to isolate and observe bot-vs-animal behavior in
-    /// peace. Bot-vs-bot and bot-vs-animal combat are both completely
-    /// unaffected - this only ever suppresses a REAL BasePlayer as a
-    /// combat target. Off by default; explicitly NOT persisted anywhere,
-    /// same as _botsInvincible - a fresh plugin load always starts with
-    /// normal player-combat enabled.
+    /// Toggles whether bots will fight real players, covering both reactive damage and on-sight detection.
+    /// Bot-vs-bot and bot-vs-animal combat are unaffected. Off by default and not persisted between plugin loads.
     /// </summary>
     private bool _disablePlayerCombat = false;
 
     /// <summary>
-    /// Lets the real BotVsBotAggressionGracePeriodSeconds window (LivingRust.
-    /// Combat.cs) be bypassed for testing - off by default (same pattern as
-    /// _botsInvincible/_disablePlayerCombat), since the real 15-minute
-    /// window ties to this process's own real uptime and would otherwise
-    /// require either restarting the whole Rust server or waiting out a
-    /// genuine 15 real minutes to ever observe in a dev session.
+    /// Lets the bot-vs-bot aggression grace period (LivingRust.Combat.cs) be bypassed for testing.
+    /// Off by default and not persisted between plugin loads.
     /// </summary>
     private bool _skipBotVsBotGracePeriod = false;
 
@@ -190,20 +140,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Global, temporary test-only toggle (2026-08-23) - Lucas's own
-    /// explicit request while debugging the self-heal animation: the "too
-    /// low on health" combat disengage (CombatFleeHealthThreshold, 25)
-    /// runs every combat tick unconditionally, even mid-heal, and was
-    /// confirmed as the real trigger behind a live-caught race (health
-    /// crashing through 25 mid-animation tore the fight down and orphaned
-    /// an in-flight heal chain, which then collided with a fresh one from
-    /// the next re-engagement). That race has its own real fix now (a
-    /// generation token on the heal chain itself), but disabling the
-    /// disengage entirely is still useful to isolate heal-animation
-    /// testing from combat ending underneath it while iterating. Same
-    /// pattern as _botsInvincible/_disablePlayerCombat - off by default,
-    /// never persisted, a fresh plugin load always starts with normal
-    /// low-health disengage behavior.
+    /// Toggles the low-health combat disengage off, useful for isolating heal-animation testing from combat ending.
+    /// Off by default and not persisted between plugin loads.
     /// </summary>
     private bool _disableLowHealthDisengage = false;
 
@@ -250,15 +188,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Global, temporary test-only toggle (2026-08-15) - Lucas's own
-    /// request while chasing the "invisible door" doorway freeze at
-    /// Abandoned Supermarket: force every survivor to fly straight at its
-    /// destination in 3D, completely bypassing TryGetNextStep/
-    /// IsBodyOverlapping/native NavMeshAgent pathing, to isolate whether a
-    /// stuck bot is a real physical-collision problem or a pathing/logic
-    /// one. Same pattern as _botsInvincible/_disablePlayerCombat - off by
-    /// default, never persisted, a fresh plugin load always starts clean.
-    /// NOT meant to ship as a real gameplay feature.
+    /// Forces every survivor to move straight to its destination, bypassing normal pathing, to help isolate
+    /// collision issues from pathing/logic issues. Debug-only; off by default and not persisted between plugin loads.
     /// </summary>
     private bool _noclipEnabled = false;
 
@@ -295,12 +226,7 @@ public partial class LivingRust
         string state = _noclipEnabled ? "ON (every survivor flies straight through walls/geometry toward its destination)" : "OFF (normal collision-aware movement)";
         string message = $"[LivingRust] Debug noclip is now {state}.";
 
-        // Always to the server console too (2026-08-15), not just chat -
-        // a live test where "/lr.debug.noclip on" was sent (confirmed via
-        // command_history) produced zero visible effect, and there was no
-        // way to tell from the server log alone whether the toggle itself
-        // ever actually ran, since ChatMessage never reaches Carbon.Core.log.
-        // This closes that blind spot for next time.
+        // Also log to the server console, since ChatMessage output does not reach it.
         Puts(message);
 
         if (player != null)
@@ -352,12 +278,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Toggles the routine per-bot console chatter (loot summaries, equip
-    /// confirmations, movement narration) on/off. Off by default is NOT
-    /// the setting - defaults to on so existing debugging habits keep
-    /// working; flip it off when running a large bot population and the
-    /// console is being drowned out. WARNING lines and one-time lifecycle
-    /// events (spawn/despawn/crash) always log either way.
+    /// Toggles routine per-bot console logging (loot summaries, equip confirmations, movement narration).
+    /// On by default; warnings and lifecycle events always log regardless.
     /// </summary>
     [ChatCommand("lr.debug.verbose")]
     private void CmdDebugVerbose(BasePlayer player, string command, string[] args)
@@ -474,17 +396,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Same per-bot CSV format/tick cadence as /lr.debug.trace, but starts
-    /// one trace per currently-spawned survivor at once instead of just
-    /// the nearest one - built for watching a whole /lr.debug.spawnmany
-    /// batch move and loot together (e.g. the bot-phasing-through-each-
-    /// other investigation), where a single-bot trace can't show cross-bot
-    /// interaction at all. All traces from one call share the same
-    /// filename timestamp and start clock, so their elapsed_s columns
-    /// line up for direct cross-bot comparison in the same time window.
-    /// Reuses the same _activeTraces/_traceWriters maps as /lr.debug.trace
-    /// (keyed by character ID) - toggling tracemany again stops every
-    /// currently active survivor trace, whichever command started it.
+    /// Starts a CSV trace for every currently-spawned survivor at once, sharing one timestamp so elapsed_s
+    /// columns line up across files. Running the command again stops all active survivor traces.
     /// </summary>
     private void RunDebugTraceMany(BasePlayer player)
     {
@@ -539,15 +452,7 @@ public partial class LivingRust
 
         foreach (Survivor survivor in spawned)
         {
-            // Isolated per-survivor - two different Characters can share
-            // the same generated Alias (confirmed live: a real file-
-            // sharing-violation crash on "TinyMiner" killed this whole
-            // loop partway through, silently leaving every survivor after
-            // the colliding one untraced). The real fix is the now-unique
-            // filename in StartSurvivorTrace (includes BotId, not just
-            // Alias), but this try/catch stays as a safety net so any
-            // future unexpected IO failure for one survivor can't abort
-            // tracing for the rest of the batch.
+            // Catches per-survivor IO failures so one bad trace can't abort the rest of the batch.
             try
             {
                 StartSurvivorTrace(survivor, batchStamp, startTime);
@@ -563,17 +468,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Shared per-survivor trace setup used by both /lr.debug.trace (one
-    /// bot, its own timestamp/clock) and /lr.debug.tracemany (every
-    /// spawned bot, one shared timestamp/clock so elapsed_s lines up
-    /// across files). No-ops if this survivor is already being traced
-    /// (e.g. tracemany running over one that's individually traced too).
-    /// Filename includes BotId (the real, always-unique userID), not just
-    /// Alias - confirmed live that two different Characters can share the
-    /// same generated Alias, which previously produced an identical
-    /// filename for both and crashed with a file-sharing-violation
-    /// exception the moment the second one's StreamWriter tried to open
-    /// the first one's still-open file.
+    /// Shared per-survivor trace setup used by both /lr.debug.trace and /lr.debug.tracemany. No-ops if the
+    /// survivor is already being traced. Filename includes the unique BotId to avoid collisions between survivors.
     /// </summary>
     private string StartSurvivorTrace(Survivor survivor, string fileStamp, float startTime)
     {
@@ -587,13 +483,7 @@ public partial class LivingRust
 
         StreamWriter writer = new StreamWriter(fileName, append: false);
 
-        // target_* columns added 2026-08-13 - purely diagnostic, lets a
-        // trace directly answer "was this bot still closing initial
-        // distance / chasing a fast-moving real target / or something
-        // else" instead of only ever being able to guess from the bot's
-        // own position+facing alone. Blank whenever _activeCombatTarget has
-        // no entry for this survivor (not currently in combat) rather than
-        // a misleading 0/placeholder value.
+        // target_* columns record combat target position/distance, left blank when not in combat.
         writer.WriteLine("elapsed_s,x,y,z,facing_deg,on_ladder,sprinting,ducked,in_combat,target_x,target_y,target_z,target_distance");
 
         Timer traceTimer = null;
@@ -602,21 +492,8 @@ public partial class LivingRust
         {
             BasePlayer npc = survivor.Player;
 
-            // Survives death/respawn now (2026-08-15, Lucas's own explicit
-            // request - "keep the trace across deaths so we can target any
-            // bugs it produces") - previously this stopped the trace
-            // outright the instant the dying BasePlayer got destroyed,
-            // closing the file for good even though RespawnSurvivor
-            // (LivingRust.Hooks.cs) assigns a brand new BasePlayer to this
-            // exact same survivor a few seconds later. Now it just skips
-            // writing for whichever ticks land in that dead/respawning gap
-            // (a real, honest gap in the CSV - no fabricated "dead" rows)
-            // and keeps the timer alive, so npc naturally becomes valid
-            // again on its own once RespawnSurvivor runs, with zero extra
-            // wiring needed here. Only the explicit stop paths
-            // (/lr.debug.trace off, StopAllTraces) end a trace now - it no
-            // longer ends itself just because the survivor is currently
-            // between lives.
+            // Skips writing during a death/respawn gap instead of stopping the trace, so it resumes automatically
+            // once RespawnSurvivor assigns a new BasePlayer.
             if (npc == null || npc.IsDestroyed)
             {
                 return;
@@ -667,22 +544,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Same idea as /lr.debug.trace, but for the nearest REAL scientist2
-    /// (ScientistNPC2, not one of our own survivors) - user-requested, to
-    /// get a real "known good" baseline of how native RustNavMeshAgent
-    /// movement actually behaves around the same trouble spots (tent
-    /// doorways, awning canopies, sandbags) our own bots have struggled
-    /// with. Won't reveal anything about our OWN TryGetNextStep bug (the
-    /// consensus-probe fix) - that's exclusively our hand-built code, a
-    /// real scientist never runs it - but it will show whether native
-    /// pathing itself cleanly handles these exact spots, which is direct
-    /// evidence for how much we should keep leaning on native movement.
-    /// Logs position/facing plus the scientist's own RustNavMeshAgent
-    /// state (hasPath/remainingDistance/pathPending/isOnOffMeshLink/
-    /// velocity) every tick, not just position - ModelState fields
-    /// (onLadder/sprinting/ducked) don't exist on ScientistNPC2 at all
-    /// (it's not a BasePlayer), so the CSV schema is deliberately
-    /// different from the survivor trace's.
+    /// Traces the nearest native ScientistNPC2 as a baseline for how native NavMeshAgent movement behaves.
+    /// Logs position/facing plus native agent state; the CSV schema differs from the survivor trace since
+    /// ScientistNPC2 is not a BasePlayer.
     /// </summary>
     private void RunDebugTraceNpc(BasePlayer player)
     {
@@ -781,11 +645,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Traces the CALLING admin's own real, connected BasePlayer - see
-    /// _activePlayerTraces's own doc comment for why (real ground-truth
-    /// movement data through a trouble spot, to build an authored
-    /// waypoint route from). Toggle, same as every other trace command
-    /// here - run again to stop.
+    /// Traces the calling admin's own connected player movement for building an authored waypoint route.
+    /// Toggle; run again to stop.
     /// </summary>
     [ChatCommand("lr.debug.traceme")]
     private void CmdDebugTraceMe(BasePlayer player, string command, string[] args)
@@ -857,14 +718,9 @@ public partial class LivingRust
         player.ChatMessage($"[LivingRust] Tracing your own movement at {player.transform.position} - walk through the trouble spot, then run /lr.debug.traceme again to stop. Saved to {fileName}");
     }
 
-    // Real per-player build-trace registry (2026-08-28, Lucas's own
-    // explicit request: "trace my movement + placement of walls, floors
-    // and ceilings + doorframes") - same shape as _activePlayerTraces/
-    // _playerTraceWriters above, but event-driven off the real
-    // OnEntityBuilt hook (confirmed patched into this Carbon build via
-    // Carbon.Hooks.Oxide.dll) rather than a periodic timer tick, since a
-    // construction placement is a discrete moment, not a continuous
-    // stream of positions the way movement is.
+    // Per-player build-trace registry, same shape as _activePlayerTraces/_playerTraceWriters above, but
+    // event-driven off the OnEntityBuilt hook rather than a periodic timer tick, since a construction
+    // placement is a discrete moment rather than a continuous stream of positions.
     private readonly Dictionary<ulong, StreamWriter> _playerBuildTraceWriters = new();
 
     [ChatCommand("lr.debug.tracebuild")]
@@ -904,25 +760,9 @@ public partial class LivingRust
     private readonly float _buildTraceStartTime = Time.realtimeSinceStartup;
 
     /// <summary>
-    /// Real Oxide/Carbon hook (confirmed patched into Carbon.Hooks.Oxide.dll -
-    /// same "grep the DLL for the hook name" confirmation this project
-    /// already used for OnDispenserGathered/OnEntityDeath) - fires for
-    /// EVERY real construction placement server-wide (a foundation, wall,
-    /// ceiling, doorway frame, stairs, ...), the exact same real flow the
-    /// hammer+building-plan combo drives. go is the newly placed
-    /// GameObject; plan.GetOwnerPlayer() (confirmed via decompile - same
-    /// real HeldEntity API Deployer.GetOwnerPlayer already used for the
-    /// sleeping bag work) identifies who placed it, so this only logs for
-    /// whichever real player currently has a trace active rather than
-    /// recording every bot/player's construction server-wide. Grade
-    /// (twig/wood/stone/metal/armored) is logged when the placed entity is
-    /// a real BuildingBlock - doorframes/stairs/foundations all are;
-    /// deployables placed into a building socket (a door into its frame)
-    /// go through Deployer.DoDeploy_Slot instead (already decompiled for
-    /// the sleeping bag placement work) and won't show up here - a
-    /// separate concern from Lucas's own explicit ask, which named
-    /// "walls, floors, ceilings, doorframes" specifically (all real
-    /// Construction/BuildingBlock pieces), not the door itself.
+    /// Oxide/Carbon hook that fires for every construction placement server-wide. Logs only for a player
+    /// with an active build trace. Grade is logged for BuildingBlock entities; door deploys into a building
+    /// socket go through Deployer.DoDeploy_Slot instead and are not covered here.
     /// </summary>
     private void OnEntityBuilt(Planner plan, GameObject go)
     {
@@ -959,18 +799,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real Oxide/Carbon hook (confirmed patched into Carbon.Hooks.Oxide.dll,
-    /// same grep-the-DLL confirmation as OnEntityBuilt above) - fires after
-    /// an EXISTING BuildingBlock (a wall/foundation/floor already placed)
-    /// gets upgraded to a higher real grade (Twigs -> Wood -> Stone ->
-    /// Metal -> Armored). 2026-08-28, Lucas's own live report: this was the
-    /// real, previously-untraced ~5600 stone/~1000 wood drop between the
-    /// cupboard and door rows in the first capture - confirmed his own
-    /// framing exactly ("I also lost 1000 wood and 1000 stone... upgrade
-    /// walls" was the missing piece). Logged as its own "upgrade" event
-    /// type in the same CSV/row shape OnEntityBuilt already writes, so a
-    /// trace reader doesn't need two different files to reconstruct the
-    /// full real sequence.
+    /// Oxide/Carbon hook that fires when an existing BuildingBlock is upgraded to a higher grade.
+    /// Logged as an "upgrade" event in the same CSV row shape as OnEntityBuilt.
     /// </summary>
     private void OnStructureUpgraded(BuildingBlock block, BasePlayer player, BuildingGrade.Enum grade)
     {
@@ -997,23 +827,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real Oxide/Carbon hook, confirmed patched into Carbon.Hooks.Oxide.dll
-    /// off Deployer.DoDeploy_Slot (2026-08-29, Lucas's own live report: a
-    /// code lock placed during a real trace never showed up in the replay
-    /// at all - the CSV simply had no lock.code row). Root cause: a code
-    /// lock deploys through Deployer, a completely separate HeldEntity from
-    /// Planner - OnEntityBuilt above is typed specifically for Planner and
-    /// never fires for it (locks are a "slot" deploy: attaches onto an
-    /// EXISTING entity's Slot.Lock anchor, not a free-standing placement).
-    /// Confirmed via decompile that the [Slot] patch variant passes two
-    /// BaseEntity params in this declared order - the deploy TARGET (the
-    /// door), then the freshly created entity - but this checks by type
-    /// rather than trusting that order, since Carbon's own patch metadata
-    /// shows the [Regular] variant (free-standing deploys, already covered
-    /// by OnEntityBuilt/Planner) passes a completely different second
-    /// parameter type (ItemModDeployable) under the same hook name, and
-    /// getting the order backwards here would silently record the wrong
-    /// entity as the lock.
+    /// Oxide/Carbon hook off Deployer.DoDeploy_Slot, covering slot deploys like code locks that
+    /// OnEntityBuilt/Planner does not catch. Identifies the lock and its target entity by type rather
+    /// than by parameter order, since that order differs between deploy variants.
     /// </summary>
     private void OnItemDeployed(Deployer deployer, BaseEntity entityA, BaseEntity entityB)
     {
@@ -1049,13 +865,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Shared row-writer for both OnEntityBuilt and OnStructureUpgraded -
-    /// same real material-count snapshot (2026-08-28, Lucas's own explicit
-    /// ask: confirm items are "being removed from inventory to place
-    /// foundations / upgrade walls") for both event types, since both
-    /// hooks fire AFTER Construction's own real cost deduction already
-    /// ran - comparing one row's counts against the previous row's is a
-    /// direct, real before/after view of consumption, nothing simulated.
+    /// Shared row-writer for OnEntityBuilt and OnStructureUpgraded. Records a material-count snapshot after
+    /// each event so comparing rows shows material consumption.
     /// </summary>
     private void WriteBuildTraceRow(StreamWriter writer, float elapsed, string eventType, string shortname, Vector3 pos, Vector3 rot, string grade, string parentId, string parentShortname, BasePlayer ownerPlayer)
     {
@@ -1068,29 +879,16 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Direct test trigger for the base-building replay (2026-08-28,
-    /// LivingRust.BaseBuilding.cs) - finds the nearest survivor to the
-    /// caller (same pattern every other /lr.debug.* force command already
-    /// uses) and the caller's own most recently saved /lr.debug.tracebuild
-    /// CSV, then replays it with the survivor's own current position as
-    /// the new origin.
+    /// Test trigger for the base-building replay: finds the nearest survivor and the caller's most recently
+    /// saved tracebuild CSV, then replays it using the survivor's current position as the new origin.
     /// </summary>
     /// <summary>
-    /// No explicit tier arg (2026-08-29, Lucas's own explicit ask: "figure
-    /// out how they decide what tier of base they want to build") now
-    /// means "decide for yourself" rather than always defaulting to
-    /// tier0 - resolved to the AutoBaseDesignTier sentinel here, checked
-    /// in RunDebugReplayBuild, which runs TryChooseAffordableBaseDesign
-    /// (LivingRust.BaseBuilding.cs) instead of rolling within one fixed
-    /// tier. Passing an explicit tier (e.g. "/lr.debug.replaybuild tier2")
-    /// still works exactly as before, for testing one tier specifically.
+    /// Omitting a tier argument lets the bot choose one via TryChooseAffordableBaseDesign instead of
+    /// defaulting to tier0. An explicit tier argument still forces that specific tier.
     /// </summary>
     /// <summary>
-    /// Real isolated ghost-crossing test command (2026-09-01) - triggers
-    /// GhostEnterHomeForDeposit directly on the nearest spawned survivor
-    /// (or by alias) so Lucas can verify the fallback movement in
-    /// isolation, without needing a real task to happen to route through
-    /// it first.
+    /// Test command that triggers GhostEnterHomeForDeposit directly on a survivor, to verify the fallback
+    /// movement in isolation without needing a real task to route through it.
     /// </summary>
     [ChatCommand("lr.debug.ghostenter")]
     private void CmdDebugGhostEnter(BasePlayer player, string command, string[] args)
@@ -1141,14 +939,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// On-demand trigger for the real production "recycle then go home and
-    /// deposit" trip (2026-09-01) - naturally only fires today once a
-    /// survivor finishes a genuine recycling trip (see FinishRecycling,
-    /// LivingRust.Recycling.cs), which is slow to wait for live. Runs
-    /// GhostReturnHomeAndDeposit directly on an already-spawned survivor
-    /// so the deposit/furnace-fill behaviour can be verified without
-    /// waiting for a real full-inventory-then-recycle cycle first. Same
-    /// alias/nearest lookup as /lr.debug.ghostenter.
+    /// On-demand trigger for the "recycle then go home and deposit" trip. Runs GhostReturnHomeAndDeposit
+    /// directly on a spawned survivor to verify deposit/furnace-fill behavior without waiting for a full
+    /// recycle cycle. Uses the same alias/nearest lookup as /lr.debug.ghostenter.
     /// </summary>
     private void RunDebugForceReturnHome(BasePlayer player, string aliasFilter)
     {
@@ -1189,16 +982,8 @@ public partial class LivingRust
     [ChatCommand("lr.debug.replaybuild")]
     private void CmdDebugReplayBuild(BasePlayer player, string command, string[] args)
     {
-        // Real recording-workflow support (2026-08-29, seventh round -
-        // Lucas's own explicit ask: "spawns the base build type from
-        // each tier, then I can trace it (without codelocked doors) to
-        // walk through it"). "nolock" anywhere in the args (order-
-        // independent, so "/lr.debug.replaybuild tier0 base3 nolock"
-        // reads naturally) skips every code-lock row in the replay
-        // entirely, and a second plain arg picks an EXACT design by name
-        // (e.g. "base3") instead of rolling randomly within the tier -
-        // both only matter for this deliberate recording use case; a
-        // real bot's own build always rolls normally with locks intact.
+        // "nolock" anywhere in the args skips code-lock rows in the replay; a second plain arg picks an
+        // exact design by name instead of rolling randomly within the tier.
         bool skipCodeLocks = args.Any(a => a.Equals("nolock", StringComparison.OrdinalIgnoreCase));
         string[] positionalArgs = args.Where(a => !a.Equals("nolock", StringComparison.OrdinalIgnoreCase)).ToArray();
 
@@ -1209,26 +994,17 @@ public partial class LivingRust
             skipCodeLocks);
     }
 
-    // Which tier /lr.debug.replaybuild rolls against when a specific tier
-    // is explicitly requested but that tier's pool doesn't exist/is empty
-    // yet, and the final fallback TryChooseAffordableBaseDesign itself
-    // uses when nothing anywhere is currently affordable.
+    // Fallback tier used when a requested tier's pool is empty, and by TryChooseAffordableBaseDesign
+    // when nothing is currently affordable.
     private const string DefaultBaseDesignTier = "tier0";
 
-    // Sentinel tier value meaning "let the bot decide" rather than a real
-    // folder name - never matches a real BaseDesignsDirectory subfolder.
+    // Sentinel tier value meaning "let the bot decide" - never matches a real directory.
     private const string AutoBaseDesignTier = "auto";
 
     /// <summary>
-    /// Real curated-pool promotion (2026-08-29) - copies the caller's own
-    /// most recent raw /lr.debug.tracebuild recording into
-    /// BaseDesignsDirectory/{tier}/, so it joins the roll pool
-    /// /lr.debug.replaybuild picks from. A deliberate, separate step
-    /// rather than auto-promoting every trace - several recordings this
-    /// session got cut off partway (a road/slope refusal, chat freezing
-    /// aim mid-capture) and needed to be thrown away, so only a design
-    /// Lucas has actually confirmed looks right in-game should ever join
-    /// the pool a bot might build from later.
+    /// Copies the caller's most recent raw tracebuild recording into BaseDesignsDirectory/{tier}/ so it
+    /// joins the pool /lr.debug.replaybuild picks from. A deliberate step rather than auto-promoting every
+    /// trace, so only confirmed-good designs join the pool.
     /// </summary>
     [ChatCommand("lr.debug.savebasedesign")]
     private void CmdDebugSaveBaseDesign(BasePlayer player, string command, string[] args)
@@ -1268,49 +1044,29 @@ public partial class LivingRust
             Directory.CreateDirectory(tierDirectory);
         }
 
-        int nextIndex = Directory.GetFiles(tierDirectory, "base*.csv").Length + 1;
+        // Scans upward for the first free index rather than assuming a dense, gapless filename sequence.
+        int nextIndex = 1;
+
+        while (File.Exists($"{tierDirectory}/base{nextIndex}.csv"))
+        {
+            nextIndex++;
+        }
+
         string destinationPath = $"{tierDirectory}/base{nextIndex}.csv";
 
         File.Copy(latestCsv, destinationPath, overwrite: false);
 
-        player.ChatMessage($"[LivingRust] Saved '{Path.GetFileName(latestCsv)}' as '{tier}/base{nextIndex}.csv' - {nextIndex} design(s) now in the '{tier}' pool.");
+        // Uses the actual file count rather than nextIndex, since nextIndex can land on a gap.
+        int totalInPool = Directory.GetFiles(tierDirectory, "base*.csv").Length;
+
+        player.ChatMessage($"[LivingRust] Saved '{Path.GetFileName(latestCsv)}' as '{tier}/base{nextIndex}.csv' - {totalInPool} design(s) now in the '{tier}' pool.");
         Puts($"basebuild-replay: promoted '{Path.GetFileName(latestCsv)}' to '{destinationPath}'.");
     }
 
     /// <summary>
-    /// Real hardcoded door-route recorder (2026-08-29, seventh round -
-    /// Lucas's own explicit fallback after repeated live door/physics
-    /// failures: "if we can't fix this in due time, we resort to
-    /// hardcoded ghostroutes for entering the bases"). Workflow: stand at
-    /// a real live instance of the design you want to record for, run
-    /// /lr.debug.traceme, walk through the door exactly like a real
-    /// player would (open it, walk through, close it behind you), run
-    /// /lr.debug.traceme again to stop recording, then run this. Converts
-    /// your just-recorded trace into an offset relative to that build's
-    /// own origin, and saves it into that design's own "_doors" folder -
-    /// LoadHomeDoorRoutes (BaseBuilding.cs) picks up every file in there
-    /// automatically the next time ANY survivor finishes building that
-    /// same design. Can be run once per door on a design (front, back,
-    /// etc) - each recording becomes its own file, auto-numbered.
-    ///
-    /// Optional /lr.debug.savedoorroute &lt;tier&gt; &lt;baseN&gt; args
-    /// (2026-08-29, real live bug - Lucas's own report: "I just killed
-    /// the bot cause they were standing in the way... that doesn't make
-    /// sense" after a second recording for base7 silently landed under
-    /// base6 instead). Root cause: the original no-args version only ever
-    /// searched currently-SPAWNED survivors for one with a home, which
-    /// dropped the intended base7 bot from consideration the instant it
-    /// died, silently falling through to whatever OTHER nearby bot
-    /// happened to have a home (a base6 one) instead - no error, just the
-    /// wrong design's own coordinate anchor used for the whole recording.
-    /// Passing the design explicitly searches every real Character this
-    /// engine knows about (CharacterManager.GetAllCharacters(), dead or
-    /// alive - Home persists on the Character regardless of whether its
-    /// BasePlayer currently exists) for whichever one's own Home.
-    /// SourceDesignPath matches, nearest by Home.Position - the bot being
-    /// dead or despawned no longer matters at all. The no-args fallback
-    /// below is kept for a quick one-off test where only one home exists
-    /// nearby, but naming the design explicitly is the reliable way now.
+    /// Converts a recorded /lr.debug.traceme trace into an offset from a build's origin and saves it as a
+    /// door route for that design. Optional tier/baseN args target a specific design; otherwise it uses the
+    /// nearest spawned survivor's home.
     /// </summary>
     [ChatCommand("lr.debug.savedoorroute")]
     private void CmdDebugSaveDoorRoute(BasePlayer player, string command, string[] args)
@@ -1351,19 +1107,8 @@ public partial class LivingRust
 
         string[] lines = File.ReadAllLines(latestCsv);
 
-        // Real live bug fix (2026-08-29, eighth round - Lucas's own
-        // report: two separate door recordings for the SAME design came
-        // out with implausible, inconsistent relative offsets). Root
-        // cause: matching "nearest home" against the CALLING PLAYER'S
-        // current position is simply the wrong reference point - by the
-        // time a player finishes a trace and types this command, they
-        // could be standing anywhere, including right next to a
-        // DIFFERENT bot that happens to have built the exact same design
-        // elsewhere (base7 rolled more than once across a long session is
-        // completely normal). The only position that's actually
-        // meaningful here is where the RECORDING ITSELF started - matched
-        // against that instead, regardless of where the player wandered
-        // off to afterward.
+        // Matches against where the recording itself started, not the calling player's current position,
+        // since the player may have moved elsewhere by the time this command runs.
         Vector3? traceStartPosition = null;
 
         for (int i = 1; i < lines.Length && traceStartPosition == null; i++)
@@ -1393,9 +1138,7 @@ public partial class LivingRust
             string requiredDesignPath = $"{tier}/{baseName}.csv";
             float nearestDistSqr = float.MaxValue;
 
-            // Every real Character this engine knows about, dead or
-            // alive - see this command's own doc comment for why this
-            // replaced a live-survivor-only search.
+            // Searches every character this engine knows about, dead or alive.
             foreach (Character candidate in _engine.CharacterManager.GetAllCharacters())
             {
                 if (candidate.Home == null || !requiredDesignPath.Equals(candidate.Home.SourceDesignPath, StringComparison.OrdinalIgnoreCase))
@@ -1496,13 +1239,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real bill-of-materials inspector (2026-08-29) - reports
-    /// CalculateTraceResourceRequirements's own real total for a saved
-    /// design, so the underlying numbers can be checked directly against
-    /// what the trace actually contains before any decision logic gets
-    /// built on top of them. Usage: /lr.debug.basecost [tier] [baseN] -
-    /// tier defaults to DefaultBaseDesignTier, base index defaults to the
-    /// first design in that tier's pool.
+    /// Reports CalculateTraceResourceRequirements's total material cost for a saved design.
+    /// Usage: /lr.debug.basecost [tier] [baseN]; tier and design default to the first in the pool.
     /// </summary>
     [ChatCommand("lr.debug.basecost")]
     private void CmdDebugBaseCost(BasePlayer player, string command, string[] args)
@@ -1591,14 +1329,8 @@ public partial class LivingRust
             return;
         }
 
-        // Real tier-decision entry point (2026-08-29, Lucas's own explicit
-        // ask: "figure out how they decide what tier of base they want to
-        // build") - TryChooseAffordableBaseDesign (LivingRust.BaseBuilding.cs)
-        // picks the richest tier the survivor's own current inventory can
-        // genuinely afford outright, falling back to a random tier0
-        // design if nothing anywhere is affordable yet (commit and farm
-        // the shortfall, per this project's own already-recorded design
-        // call, rather than endlessly searching for something cheap).
+        // TryChooseAffordableBaseDesign picks the richest tier the survivor's inventory can afford, falling
+        // back to a random tier0 design if nothing is affordable yet.
         string latestCsv = null;
 
         if (tier == AutoBaseDesignTier)
@@ -1613,27 +1345,16 @@ public partial class LivingRust
         }
         else
         {
-            // Real curated-pool roll (2026-08-29, Lucas's own explicit ask -
-            // "have it so the bots roll between choosing 1 of the 3 base
-            // choices for tier0"). Only ever picks from designs deliberately
-            // promoted via /lr.debug.savebasedesign (BaseDesignsDirectory's
-            // own doc comment has the full reasoning on why this is separate
-            // from the raw TraceDirectory dump) - falls back to the old
-            // "newest raw trace for this player" behaviour only if that tier's
-            // pool doesn't exist yet or is empty, so this stays backward
-            // compatible with testing a trace that hasn't been promoted yet.
+            // Picks from designs promoted via /lr.debug.savebasedesign, falling back to the newest raw trace
+            // for this player if that tier's pool doesn't exist or is empty.
             string tierDirectory = $"{BaseDesignsDirectory}/{tier}";
 
             if (Directory.Exists(tierDirectory))
             {
                 string[] tierDesigns = Directory.GetFiles(tierDirectory, "*.csv");
 
-                // Real deterministic pick (2026-08-29, seventh round -
-                // Lucas's own explicit ask for the door-route recording
-                // workflow: needs to build the SAME exact design on
-                // demand, not whatever the dice happens to roll, so a
-                // route can be recorded against it). Matches by filename
-                // without its extension (e.g. "base3"), case-insensitive.
+                // Matches a specific design by filename (without extension), case-insensitive, for
+                // deterministic builds needed by the door-route recording workflow.
                 if (designName != null)
                 {
                     latestCsv = tierDesigns.FirstOrDefault(path => Path.GetFileNameWithoutExtension(path).Equals(designName, StringComparison.OrdinalIgnoreCase));
@@ -1675,29 +1396,9 @@ public partial class LivingRust
         BasePlayer npc = nearestSurvivor.Player;
         string csvFileName = Path.GetFileName(latestCsv);
 
-        // Real live bug (2026-08-29, Lucas's own report: a real trace
-        // recording near a road stopped after only 6 rows - the walls
-        // never finished) - confirmed via decompile:
-        // Construction.TestPlacingCloseToRoad is a REAL placement check
-        // (ConstructionErrors.TooCloseToRoad, "Placing too close to
-        // road"), real Rust genuinely refuses to place construction within
-        // a real topology-based road buffer. Our replay bypasses
-        // CanBuild/TestPlacingCloseToRoad entirely (raw CreateEntity, not
-        // the real Planner.DoBuild RPC), so without this check the bot
-        // would happily "succeed" at building somewhere a real player
-        // never could.
-        //
-        // Folded together with the slope check (a foundation ending up
-        // half-swallowed by the ground, IsTooSlopedToBuild's own doc
-        // comment) and, as of 2026-08-29 second round, Lucas's own
-        // explicit site-selection ask: avoid building inside a real
-        // tree/ore node, avoid a large static obstacle (a rock formation,
-        // a powerline), and avoid a spot hemmed in by nearby LOS-breaking
-        // cover - stepping BuildSiteRelocateDistance further out and
-        // re-running the FULL set again if any single check fails, rather
-        // than just refusing outright the way the road/slope checks used
-        // to on their own (TryFindClearBuildOrigin's own doc comment has
-        // the full breakdown).
+        // Checks for road proximity, slope, tree/ore/obstacle overlap, and nearby LOS-breaking cover, since
+        // the replay bypasses Rust's own CanBuild placement checks. Steps further out and re-checks if any
+        // check fails.
         if (!TryFindClearBuildOrigin(npc.transform.position, out Vector3 clearOrigin, out float expectedGroundHeight, out string siteFailureReason))
         {
             string siteFailureMessage = $"'{npc.displayName}' couldn't find a clear spot to build within {BuildSiteRelocateMaxAttempts} attempts (last reason: {siteFailureReason}) - move it somewhere more open and try again.";
@@ -1706,10 +1407,7 @@ public partial class LivingRust
             return;
         }
 
-        // Same "seize control before forcing this" pattern every other
-        // debug force command already uses (RunDebugGatherResource/
-        // RunDebugCraft's own doc comments) - without this, the survivor's
-        // own autonomous loop can silently redirect it mid-replay.
+        // Cancels active behavior so the survivor's autonomous loop can't redirect it mid-replay.
         CancelActiveMovement(nearestSurvivor);
         CancelActiveAttack(nearestSurvivor.Character.Id);
         CancelActiveRecycling(nearestSurvivor.Character.Id);
@@ -1725,29 +1423,9 @@ public partial class LivingRust
             Puts($"basebuild-replay: {message}");
         };
 
-        // Real live bug (2026-08-29, Lucas's own explicit ask: "if the bot
-        // decides this area isn't good, have it run to the new
-        // destination... no phase through walls at all. Only once it
-        // starts the build itself"). Site relocation used to just change
-        // where the build MATH starts from - the bot never actually
-        // walked there, it just phased straight to the first piece the
-        // instant building began, silently covering however far the site
-        // scan had moved it. A real normal walk makes that leg visible and
-        // legible instead - phasing stays reserved for what it was
-        // actually built for, moving between pieces of a site the bot is
-        // already actively building. Skipped entirely when the original
-        // spot was already clear (relocatedDistance basically zero) - no
-        // relocation happened, so there's nothing to walk to first.
-        //
-        // WalkToBuildSiteWithRecovery, not the shared StartWalkingWithRecovery
-        // (2026-08-29, second round - Lucas's own report: "bots still be
-        // phasing through the floor... ended up in the air" even after the
-        // fix above). The shared ladder's own final tier phases through
-        // everything unconditionally once wiggle/nudge/emergency-teleport
-        // all fail - switching to it only moved WHERE phasing could still
-        // happen from, it never actually removed it. This bounded version
-        // (LivingRust.BaseBuilding.cs) uses the same real recovery tiers
-        // but gives up cleanly instead of ever phasing.
+        // Walks the bot to a relocated build site instead of phasing there, so the movement stays visible.
+        // Skipped when the site was already clear. Uses WalkToBuildSiteWithRecovery, a bounded recovery
+        // variant that gives up cleanly instead of phasing through geometry.
         if (relocatedDistance > 0.5f)
         {
             WalkToBuildSiteWithRecovery(
@@ -1767,15 +1445,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Sends the nearest spawned survivor along a real recorded
-    /// /lr.debug.traceme route (2026-08-16, Lucas's own explicit request -
-    /// "I want the bot to take this EXACT path... to noclip from start to
-    /// finish to avoid jittering, oscillating etc") - phases straight
-    /// through Abandoned Supermarket's keycard room using the real path an
-    /// admin already proved works, looting along the way, then hands
-    /// control back to normal autonomous behaviour. No filename argument
-    /// defaults to the specific trace that recorded doorway -> crate ->
-    /// keycard cleanly.
+    /// Sends the nearest spawned survivor along a recorded /lr.debug.traceme route, phasing through
+    /// obstacles using a known-good path, then hands control back to normal autonomous behavior.
+    /// No filename argument defaults to a specific known-good trace.
     /// </summary>
     [ChatCommand("lr.debug.ghostroute")]
     private void CmdDebugGhostRoute(BasePlayer player, string command, string[] args)
@@ -1804,18 +1476,8 @@ public partial class LivingRust
             return;
         }
 
-        // With no explicit filename, find the CLOSEST monument that
-        // actually has a registered route - not just the closest monument
-        // of any type (2026-08-16, Lucas's own explicit fix: "make
-        // ghostroute specifically use the closest monument and then roll
-        // the dice to whatever path it should take at that monument").
-        // TryGetGhostRouteForNearestMonument already searches specifically
-        // among registered monuments, so standing near an unregistered
-        // monument that's slightly closer than a registered one no longer
-        // falls all the way back to the hardcoded default - it still finds
-        // the nearer REGISTERED one. resolvedMonument is the exact live
-        // instance the roll was made against, reused directly below for
-        // projection instead of searching for it a second time.
+        // With no explicit filename, finds the closest monument that has a registered route.
+        // resolvedMonument is the exact instance the roll was made against, reused below for projection.
         string filePath;
         MonumentInfo resolvedMonument = null;
 
@@ -1847,15 +1509,8 @@ public partial class LivingRust
             return;
         }
 
-        // Re-project onto the real monument instance this route is actually
-        // for (2026-08-16 - see TryLoadTraceWaypoints' own doc comment).
-        // resolvedMonument (from the dice roll above) is preferred when
-        // available - it's the exact instance the file was chosen for, no
-        // need to search again. An explicit traceFileName arg has no
-        // resolvedMonument, so that path falls back to searching for the
-        // nearest instance matching whatever monument the trace was
-        // recorded at, and finally to the raw recorded world coordinates
-        // unchanged if the trace never localized to a monument at all.
+        // Re-projects onto the monument instance this route is for. Prefers resolvedMonument when available;
+        // otherwise searches for the nearest matching monument, falling back to raw recorded coordinates.
         List<GhostRouteWaypoint> waypoints = localWaypoints;
 
         if (resolvedMonument != null)
@@ -1876,14 +1531,8 @@ public partial class LivingRust
 
         survivor.Character.CurrentTask = TaskType.LootForResources;
 
-        // Real walk to the route's own first waypoint before phasing
-        // through it (2026-08-16 - see EscalateSearchToMonumentZone's
-        // identical fix/doc comment: Lucas's own explicit correction, "it
-        // actually has to run to the location and then starts the
-        // hardcoded path"). This manual debug command shares the exact
-        // same StartGhostRoute the real autonomous trigger uses, so it
-        // needs the same approach-walk in front of it to actually test
-        // the same thing admins will see bots do on their own.
+        // Walks to the route's first waypoint before phasing through it, matching the same approach used
+        // by the autonomous trigger via StartGhostRoute.
         Action onGhostRouteComplete = () =>
         {
             LootTaskState state = new()
@@ -1966,94 +1615,31 @@ public partial class LivingRust
         _playerTraceWriters.Clear();
     }
 
-    // Real bots wouldn't all start their loot task in the exact same
-    // frame, and a scale test shouldn't manufacture a "thundering herd"
-    // (every new bot's first movement/loot-search tick landing together)
-    // that wouldn't happen organically - each spawned bot's task start is
-    // staggered by a random delay somewhere in this window instead.
+    // Staggers each spawned bot's task start by a random delay within this window to avoid a
+    // thundering-herd effect where every bot's first tick lands in the same frame.
     private const float SpawnManyStaggerWindowSeconds = 5f;
 
-    // How long to wait before the NEXT bot spawns, once this one's real
-    // beach spawn point turns out to be within SpawnManyContentionRadius
-    // of the previous bot's - Lucas's own refinement (2026-08-10) on the
-    // original flat 2-3s stagger: only slow down when spawns are actually
-    // landing close together (real players connecting near each other
-    // would naturally space out a bit more), not uniformly for every
-    // spawn regardless of location.
-    // Dropped to a flat 0.1s (2026-09-01, Lucas's own explicit ask -
-    // "purely for testing") from the old 2-3s window. Worth knowing this
-    // reverses a deliberate earlier widening: the original flat fast
-    // cadence caused a real burst-spawn freeze bug at 200 bots
-    // (near-lockstep spawns landing in the same 1-2s window), later
-    // believed fixed via randomized NavMeshAgent.avoidancePriority rather
-    // than by spacing spawns out - if that congestion resurfaces at scale
-    // with this faster rate, the avoidance-priority fix (not this delay)
-    // is the thing to revisit.
+    // Delay before the next bot spawns when this one's spawn point lands within
+    // SpawnManyContentionRadius of the previous one. Currently a flat 0.1s for testing.
     private const float SpawnManyContentionDelayMin = 0.1f;
     private const float SpawnManyContentionDelayMax = 0.1f;
 
-    // How far apart two consecutive spawn points need to be to count as
-    // "clear" (Lucas's own range, "3-5 metres" - using the upper bound so
-    // contention triggers a little more readily, erring toward realism
-    // over speed).
+    // Distance between two consecutive spawn points to count as contested.
     private const float SpawnManyContentionRadius = 5f;
 
-    // Stagger used when this bot's spawn point ISN'T contested - was a
-    // flat 0.5f (2026-08-10, dropped from 1.3f purely to speed up testing
-    // iteration), widened to a variable 1-5s range (2026-08-15, Lucas's
-    // own explicit request) to test whether a flat, fast, effectively-
-    // synchronized spawn cadence was itself a factor in the burst-spawn
-    // freeze bug found live this session (a batch of bots landing in the
-    // same 1-2s window at 200 bots, not reproduced at 75) - "hopefully
-    // alleviate larger congestion." Each bot's own delay is independently
-    // rolled, so the whole batch naturally desynchronizes over time
-    // instead of marching in lockstep at a fixed interval.
-    // Narrowed from 1-5f to 1-3f (2026-08-15, Lucas's own follow-up
-    // request) - the crowd-avoidance-deadlock root cause found the same
-    // session (randomized NavMeshAgent.avoidancePriority) doesn't actually
-    // depend on spawn cadence at all, so there's no need to spread spawns
-    // out as wide as 5s; this just keeps a faster test-iteration pace
-    // while still avoiding the old flat 0.5s near-lockstep cadence.
-    // Also dropped to a flat 0.1s (2026-09-01, same "purely for testing"
-    // ask) - see SpawnManyContentionDelayMin's own doc comment for the
-    // congestion-bug history this reverses.
+    // Stagger used when a bot's spawn point is not contested. Currently a flat 0.1s for testing.
     private const float SpawnManyClearDelayMin = 0.1f;
     private const float SpawnManyClearDelayMax = 0.1f;
 
     /// <summary>
-    /// Percent chance (0-100) each /lr.debug.spawnmany survivor spawns at a
-    /// real, validated random inland point instead of a real beach spawn -
-    /// see the inland-spawn roll's own doc comment at its call site for the
-    /// full spec/reasoning.
+    /// Percent chance (0-100) each /lr.debug.spawnmany survivor spawns at a validated random inland point
+    /// instead of a beach spawn.
     /// </summary>
     private const int SpawnManyInlandFraction = 20;
 
     /// <summary>
-    /// Scale-testing tool: spawns N survivors, SpawnManyInlandFraction% of
-    /// them at a real, validated random inland point (TryFindRandomInlandSite,
-    /// LivingRust.HomeSiteStrategy.cs - not underwater, not inside a
-    /// monument's no-build zone) and the rest at real Rust dedicated-spawn
-    /// beach locations (ServerMgr.FindSpawnPoint, via SpawnSurvivor's
-    /// useBeachSpawnPoint - the same procedural system every real player
-    /// actually starts from, not a fixed/static list) - see the inland roll's
-    /// own doc comment at its call site (2026-09-01, Lucas's own explicit
-    /// ask: hardcode a fraction inland "to maybe aid in them progressing,"
-    /// skipping the walk-there step the normal home-site roll would
-    /// otherwise need). Every survivor, wherever it lands, goes on a real
-    /// LootForResources task immediately (staggered - see
-    /// SpawnManyStaggerWindowSeconds), rather than being left idle.
-    /// Deliberately does NOT scatter the beach-spawn majority around the
-    /// caller the way an earlier version did - Lucas's explicit correction:
-    /// for bulk scale testing, bots should start exactly where the server's
-    /// own spawn system would actually put a fresh player, to keep the test
-    /// semi-realistic.
-    /// /lr.spawn itself is untouched (still aimed wherever the caller's
-    /// looking) - this only applies to spawnmany. An idle BasePlayer
-    /// count alone says nothing about how the server holds up under real
-    /// load - the actual cost is in movement ticks, loot-search radius
-    /// scans, and the inventory-management passes, so this exists to
-    /// reproduce that load on demand instead of manually running
-    /// /lr.spawn N times and hand-assigning each one.
+    /// Scale-testing tool: spawns N survivors, SpawnManyInlandFraction% at a validated random inland point
+    /// and the rest at real beach spawn locations, each starting a staggered LootForResources task.
     /// </summary>
     [ChatCommand("lr.debug.spawnmany")]
     private void CmdDebugSpawnMany(BasePlayer player, string command, string[] args)
@@ -2096,17 +1682,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Spawns one bot, then decides the delay before the NEXT one based on
-    /// whether THIS bot's real beach spawn point landed within
-    /// SpawnManyContentionRadius of the previous one - contested spawns
-    /// get the slower SpawnManyContentionDelayMin-Max window, clear ones
-    /// get the fast SpawnManyClearDelaySeconds. Structured as a self-
-    /// scheduling chain rather than a flat loop of independent timer.Once
-    /// calls, since each delay genuinely depends on a real spawn result
-    /// (ServerMgr.FindSpawnPoint) that's only known once the previous bot
-    /// has actually spawned - there's no way to precompute the whole
-    /// sequence's delays upfront the way the old uniform 2-3s stagger
-    /// could.
+    /// Spawns one bot, then schedules the next spawn with a delay that depends on whether this bot's
+    /// spawn point landed within SpawnManyContentionRadius of the previous one. Runs as a self-scheduling
+    /// chain since each delay depends on a spawn result only known after the previous bot spawns.
     /// </summary>
     private void SpawnManySequential(int remaining, int total, Vector3? previousSpawnPosition)
     {
@@ -2120,18 +1698,9 @@ public partial class LivingRust
         Character character = _engine.CharacterManager.CreateInitialSurvivor();
         Survivor survivor = _engine.SurvivorManager.Create(character);
 
-        // Real "hardcode-spawn a fraction inland" ask (2026-09-01, Lucas's
-        // own explicit spec: "20% of the bots... instantly spawn somewhere
-        // not on 'real' spawn locations, genuinely just hardcode spawn them
-        // in random inland locations (not inside monuments)... to maybe aid
-        // in them progressing"). Reuses TryFindRandomInlandSite directly
-        // (LivingRust.HomeSiteStrategy.cs) - the same real "not underwater,
-        // not inside a monument's no-build zone" validated roll the normal
-        // home-site strategy already uses for an inland pick, just applied
-        // at spawn time instead of as a post-spawn walk target. Falls back
-        // to the normal beach spawn if the roll fails to find a valid site
-        // at all (matches TryFindRandomInlandSite's own existing caller,
-        // which does the same rather than leaving a survivor unplaced).
+        // Reuses TryFindRandomInlandSite (the same validated roll the normal home-site strategy uses) to
+        // spawn a fraction of bots inland instead of walking there afterward. Falls back to a beach spawn
+        // if no valid inland site is found.
         Vector3 inlandSite = Vector3.zero;
         bool spawnInland = UnityEngine.Random.Range(0, 100) < SpawnManyInlandFraction && TryFindRandomInlandSite(out inlandSite);
 
@@ -2142,9 +1711,7 @@ public partial class LivingRust
         if (npc == null)
         {
             Puts($"ERROR: spawnmany - failed to spawn survivor '{character.Alias}' ({indexForLog}/{total}).");
-            // No valid position to compare against - same variable delay
-            // as an ordinary clear spawn, rather than stalling the whole
-            // batch on one failure.
+            // Uses the ordinary clear-spawn delay rather than stalling the batch on one failure.
             timer.Once(UnityEngine.Random.Range(SpawnManyClearDelayMin, SpawnManyClearDelayMax), () => SpawnManySequential(remaining - 1, total, previousSpawnPosition));
             return;
         }
@@ -2173,10 +1740,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Manual full clean-slate wipe - see DespawnAllBots's own doc comment
-    /// for exactly what gets erased (every Character record, not just the
-    /// live BasePlayer) and what deliberately doesn't change (BotId
-    /// numbering never resets back down).
+    /// Manual full clean-slate wipe of every Character record; see DespawnAllBots for what is erased.
+    /// BotId numbering never resets.
     /// </summary>
     [ChatCommand("lr.debug.despawnall")]
     private void CmdDebugDespawnAll(BasePlayer player, string command, string[] args)
@@ -2278,16 +1843,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Teleports the caller directly to whichever bot is currently stuck
-    /// in recovery (EscalateStuckRecovery, LivingRust.Looting.cs) - the
-    /// live counterpart to eyeballing 200 bots on the map looking for one
-    /// that's visibly bugged out. No arg jumps to the worst offender
-    /// (longest continuously stuck); an optional 1-based index (from the
-    /// list this prints) jumps to a specific one instead when several are
-    /// stuck at once. _stuckSince only tracks survivors currently mid-
-    /// recovery - once a bot wiggles free, reaches its destination, or
-    /// dies, it drops out of this list on its own (see MarkStuck/
-    /// ClearStuck's own doc comment).
+    /// Teleports the caller to a bot currently stuck in recovery (EscalateStuckRecovery, LivingRust.Looting.cs).
+    /// No arg jumps to the longest-stuck bot; an optional 1-based index picks a specific one from the printed list.
     /// </summary>
     [ChatCommand("lr.tp.stuck")]
     private void CmdTpStuck(BasePlayer player, string command, string[] args)
@@ -2376,16 +1933,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real "jump to a specific bot by name" tool (2026-09-07, Lucas's own
-    /// explicit ask - a sibling to /lr.tp.stuck for when the bot in
-    /// question isn't currently flagged stuck at all, e.g. following one
-    /// he's watching in chat/logs). Case-insensitive substring match
-    /// against Character.Alias, same "don't require the caller to get
-    /// capitalization/the full generated name exactly right" reasoning
-    /// most name-driven debug tools in this project already use. If more
-    /// than one survivor matches, teleports to the first and lists the
-    /// rest so the caller can narrow it down, rather than silently picking
-    /// one with no way to know others existed.
+    /// Teleports to a bot by case-insensitive substring match against Character.Alias, for when the bot
+    /// isn't currently flagged stuck. If multiple survivors match, teleports to the first and lists the rest.
     /// </summary>
     [ChatCommand("lr.tp.bot")]
     private void CmdTpBot(BasePlayer player, string command, string[] args)
@@ -2447,32 +1996,138 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real recipe lookup (2026-08-28) - blueprint ingredient amounts are
-    /// baked prefab data, not present anywhere in the decompiled source,
-    /// so the only reliable way to get exact numbers for the crafting
-    /// system is to ask the live game itself (same "confirm via real data"
-    /// approach every other system in this project already follows).
-    /// Prints the real ItemBlueprint.GetIngredients() for the given
-    /// shortname straight from ItemManager.
+    /// Prints ItemBlueprint.GetIngredients() for the given shortname, since blueprint amounts are baked
+    /// prefab data and must be queried from the live game.
     /// </summary>
     /// <summary>
-    /// Real leftover-twig scan (2026-09-01, Lucas's own explicit ask: "have
-    /// the bots verify somehow if there are any twig walls / foundations
-    /// or ceilings still left un-upgraded... I think I missed a few during
-    /// the tracebuilds" - a real, confirmed live failure mode this same
-    /// session: "couldn't find the piece this upgrade row belongs to -
-    /// skipping it" happens whenever a recorded upgrade row's target piece
-    /// was destroyed/missing at replay time (Lucas's own explanation: "I
-    /// accidentally destroyed a wall that was twig" during one nolock
-    /// recording), silently leaving that one piece at Twig grade forever.
-    /// Scans every real BuildingBlock this survivor owns (OwnerID match,
-    /// same real ownership check /lr.debug.wipeall already uses) within a
-    /// generous radius of its home cupboard, reporting any still at
-    /// BuildingGrade.Enum.Twigs by real position and piece type so they
-    /// can be found and fixed by hand - doesn't touch/upgrade anything
-    /// itself, purely diagnostic.
+    /// Scans every BuildingBlock a survivor owns near its home for pieces still at Twig grade, reporting
+    /// position and type. Diagnostic only; does not upgrade anything itself.
     /// </summary>
     private const float CheckUpgradesSearchRadius = 40f;
+
+    /// <summary>
+    /// Reports every live survivor's Character.Home state: counts with/without a base, a tier breakdown,
+    /// and (with the "list" arg) each survivor's alias/tier/position.
+    /// </summary>
+    /// <summary>
+    /// Reports who is actually connected right now, distinguishing real human connections from bots
+    /// (bots are always IsNpc:True and IsConnected:False). Admin-gated since a full player roster is
+    /// server-operator information.
+    /// </summary>
+    [ChatCommand("lr.show.players")]
+    private void CmdShowPlayers(BasePlayer player, string command, string[] args)
+    {
+        if (!player.IsAdmin)
+        {
+            player.ChatMessage("[LivingRust] You do not have permission to use this command.");
+            return;
+        }
+
+        RunShowPlayers(player);
+    }
+
+    [ConsoleCommand("lr.show.players")]
+    private void CmdShowPlayersConsole(ConsoleSystem.Arg arg)
+    {
+        BasePlayer player = arg.Player();
+
+        // A null player means the server console (or RCON) called this, which is always trusted.
+        if (player != null && !player.IsAdmin)
+        {
+            player.ChatMessage("[LivingRust] You do not have permission to use this command.");
+            return;
+        }
+
+        RunShowPlayers(player);
+    }
+
+    private void RunShowPlayers(BasePlayer requestingPlayer)
+    {
+        List<BasePlayer> realPlayers = BasePlayer.activePlayerList
+            .Where(p => p != null && !p.IsNpc && p.IsConnected)
+            .OrderBy(p => p.displayName)
+            .ToList();
+
+        void Report(string message)
+        {
+            Puts(message);
+            requestingPlayer?.ChatMessage(message);
+        }
+
+        Report($"[LivingRust] {realPlayers.Count} real player(s) currently connected:");
+
+        foreach (BasePlayer p in realPlayers)
+        {
+            Report($"[LivingRust]   '{p.displayName}' (SteamID {p.UserIDString}) at {p.transform.position}.");
+        }
+
+        if (realPlayers.Count == 0)
+        {
+            Report("[LivingRust]   (none - every current BasePlayer is this project's own AI, or nobody is connected at all)");
+        }
+    }
+
+    [ChatCommand("lr.debug.bases")]
+    private void CmdDebugBases(BasePlayer player, string command, string[] args)
+    {
+        RunDebugBases(player, args);
+    }
+
+    [ConsoleCommand("lr.debug.bases")]
+    private void CmdDebugBasesConsole(ConsoleSystem.Arg arg)
+    {
+        BasePlayer player = arg.Player();
+
+        if (player != null)
+        {
+            RunDebugBases(player, arg.HasArgs() ? arg.Args.Select(a => a.ToString()).ToArray() : Array.Empty<string>());
+        }
+    }
+
+    private void RunDebugBases(BasePlayer player, string[] args)
+    {
+        if (_engine == null)
+        {
+            player.ChatMessage("[LivingRust] Engine is not running.");
+            return;
+        }
+
+        bool listIndividual = args.Any(a => a.Equals("list", StringComparison.OrdinalIgnoreCase));
+
+        List<Survivor> all = _engine.SurvivorManager.GetAll().ToList();
+        List<Survivor> withBase = all.Where(s => s.Character.Home != null).ToList();
+        List<Survivor> withoutBase = all.Except(withBase).ToList();
+
+        player.ChatMessage($"[LivingRust] {all.Count} survivor(s) total - {withBase.Count} with a base, {withoutBase.Count} without.");
+
+        if (withBase.Count > 0)
+        {
+            IEnumerable<IGrouping<int, Survivor>> byTier = withBase.GroupBy(s => s.Character.Home.TierRank).OrderBy(g => g.Key);
+
+            foreach (IGrouping<int, Survivor> group in byTier)
+            {
+                player.ChatMessage($"[LivingRust]   tier{group.Key}: {group.Count()}");
+            }
+        }
+
+        if (!listIndividual)
+        {
+            player.ChatMessage("[LivingRust] Add 'list' to see each survivor individually.");
+            return;
+        }
+
+        foreach (Survivor survivor in withBase)
+        {
+            HomeBase home = survivor.Character.Home;
+            player.ChatMessage($"[LivingRust]   '{survivor.Character.Alias}' - tier{home.TierRank} at {home.Position} ({Path.GetFileNameWithoutExtension(home.SourceDesignPath)}).");
+        }
+
+        foreach (Survivor survivor in withoutBase)
+        {
+            string status = survivor.Character.PursuingBaseGatherGoal ? "gathering for one" : "no base yet";
+            player.ChatMessage($"[LivingRust]   '{survivor.Character.Alias}' - {status}.");
+        }
+    }
 
     [ChatCommand("lr.debug.checkupgrades")]
     private void CmdDebugCheckUpgrades(BasePlayer player, string command, string[] args)
@@ -2499,18 +2154,8 @@ public partial class LivingRust
             return;
         }
 
-        // Real "fix" mode (2026-09-01, Lucas's own follow-up: "is there a
-        // way to have it upgraded without redoing the whole tracebuild?").
-        // "fix" anywhere in the args (order-independent, same pattern
-        // /lr.debug.replaybuild's own "nolock" flag already uses) upgrades
-        // every found Twig piece directly via the exact real
-        // BuildingBlock.ChangeGrade+SetHealthToMax pair AdvanceBuildReplay's
-        // own PlaceUpgradeReplayRow already uses for a normal upgrade row -
-        // just aimed at a piece the ORIGINAL build already should have
-        // upgraded (a real live bug: "couldn't find the piece this upgrade
-        // row belongs to - skipping it"), not a fresh design choice, so no
-        // resource cost is deducted here - the survivor already "paid" for
-        // this upgrade in spirit the first time, this just finishes it.
+        // "fix" mode upgrades every found Twig piece directly via BuildingBlock.ChangeGrade+SetHealthToMax,
+        // with no resource cost deducted since the survivor already paid for the original upgrade.
         bool fix = args.Any(a => a.Equals("fix", StringComparison.OrdinalIgnoreCase));
         string aliasFilter = args.Where(a => !a.Equals("fix", StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
 
@@ -2582,10 +2227,7 @@ public partial class LivingRust
                 continue;
             }
 
-            // Target grade is whatever grade the rest of THIS survivor's
-            // own base is mostly built from - the real majority, not a
-            // hardcoded assumption, since different tiers/designs upgrade
-            // to different top grades.
+            // Target grade is whichever grade the rest of this survivor's base is mostly built from.
             BuildingGrade.Enum targetGrade = gradeCounts.Count > 0
                 ? gradeCounts.OrderByDescending(kv => kv.Value).First().Key
                 : BuildingGrade.Enum.Wood;
@@ -2659,17 +2301,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real bulk recipe dump (2026-09-01, Lucas's own explicit ask: "find
-    /// and resolve all the recipes for basically every craftable item in
-    /// the game... this way we don't need to recipefind every item... way
-    /// too mandrolic"). Same real ItemBlueprint API RunDebugRecipe already
-    /// uses for one item at a time, just iterated across the whole real
-    /// ItemManager.itemList - the actual live game data, not a hand-typed
-    /// table that could drift out of date or simply be wrong for some
-    /// obscure item. Written as CSV (one row per craftable item) to
-    /// LivingRust/crafting_recipes.csv, right alongside base_designs/
-    /// traces - a permanent, easy-to-read reference for both future dev
-    /// work and any future in-code "can I craft this" decision logic.
+    /// Dumps recipes for every craftable item in ItemManager.itemList (same ItemBlueprint API as
+    /// RunDebugRecipe) as CSV to LivingRust/crafting_recipes.csv, as a reference for future dev work.
     /// </summary>
     [ChatCommand("lr.debug.dumprecipes")]
     private void CmdDebugDumpRecipes(BasePlayer player, string command, string[] args)
@@ -2746,22 +2379,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Consolidates every movement/geometry diagnostic into one command -
-    /// user-requested, after separately running /lr.debug.look,
-    /// /lr.debug.nearby, and /lr.debug.navmeshcheck one at a time to
-    /// investigate the same spot got tedious. Runs, in order: a raycast
-    /// look (what's directly ahead - "all" dumps every hit along the ray,
-    /// not just the nearest solid one), every unique collider within 5m,
-    /// navmesh coverage sampling via a nearby survivor's real agent, and a
-    /// full replay of TryGetNextStep's own 5-point ground probe one metre
-    /// ahead of wherever the player is facing (the actual root-cause tool
-    /// built for a live report of widespread false "step too high" blocks
-    /// across many different monument dressing props - reports each of
-    /// the 5 probe points individually, not just TryGetNextStep's single
-    /// winning result, since the working theory is one bad outlier point
-    /// silently overriding 4 otherwise-correct ground readings). Replaces
-    /// the three standalone commands entirely - use this instead of them
-    /// going forward.
+    /// Consolidates every movement/geometry diagnostic into one command. Runs, in order: a raycast look,
+    /// every unique collider within 5m, navmesh coverage sampling, and a full replay of TryGetNextStep's
+    /// 5-point ground probe. Replaces the three standalone diagnostic commands.
     /// </summary>
     private void RunDebugScan(BasePlayer player, bool reportAll)
     {
@@ -2776,15 +2396,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// The ground-probe piece of /lr.debug.scan - replays
-    /// NavigationManager.TryGetNextStep's own 5-point ground-surface probe
-    /// one metre ahead of wherever the player is facing, reporting every
-    /// individual raycast (hit or not, collider name, height, surface
-    /// angle, whether it's in NonSteppableColliderNames) instead of only
-    /// the single winning result TryGetNextStep itself would return.
-    /// Diagnostic only - probes from the player's own position/facing, not
-    /// a bot's, since the raw ground-surface geometry involved doesn't
-    /// depend on which BasePlayer is doing the probing.
+    /// The ground-probe piece of /lr.debug.scan: replays NavigationManager.TryGetNextStep's 5-point
+    /// ground-surface probe one meter ahead of the player, reporting every individual raycast rather than
+    /// just the single winning result.
     /// </summary>
     private void RunDebugStepProbe(BasePlayer player)
     {
@@ -2828,15 +2442,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Reports every unique collider within a radius of the player,
-    /// regardless of look direction - sidesteps the whole aim/angle
-    /// problem the raycast-based debug.look has, at the cost of not
-    /// telling you exactly which specific object you were looking at.
+    /// Reports every unique collider within a radius of the player, regardless of look direction.
     /// </summary>
-    // No longer directly bound to a command - folded into /lr.debug.scan
-    // (see above), called from there alongside look/navmeshcheck/the
-    // ground-probe diagnostic so a single command captures everything at
-    // once instead of running each separately.
+    // No longer directly bound to a command - folded into /lr.debug.scan.
     private void RunDebugNearby(BasePlayer player)
     {
         const float radius = 5f;
@@ -2866,10 +2474,8 @@ public partial class LivingRust
 
         foreach (Collider col in unique)
         {
-            // bounds.ClosestPoint (an AABB) rather than transform.position -
-            // for a huge collider like the whole terrain mesh or a large
-            // trigger zone, transform.position can be its arbitrary local
-            // pivot far from the player, making "distance" meaningless.
+            // Uses bounds.ClosestPoint rather than transform.position, since a large collider's transform
+            // can be far from the player, making a raw distance meaningless.
             Vector3 nearPoint = col.bounds.ClosestPoint(player.transform.position);
             float dist = Vector3.Distance(player.transform.position, nearPoint);
             ReportCollider(player, col, nearPoint, $"trigger: {col.isTrigger} | dist {dist:F1}m");
@@ -2894,25 +2500,10 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Reverse-engineers the real, prefab-baked NavMeshAgent/RustNavMeshAgent
-    /// parameters a live scientist actually uses - these are Unity-serialized
-    /// prefab inspector values (radius, height, baseOffset, agentTypeID,
-    /// etc.), not decompilable C# source, so the only way to know them is to
-    /// read them off a real instance at runtime. Prefers the general-purpose
-    /// "scientist2" archetype specifically (the one that actually roams
-    /// in/out of buildings and monuments, not the stationary junkpile/tunnel
-    /// guard variants that only ever stand on flat ground) over any other
-    /// scientist match, and any scientist over any other NPCPlayer - a
-    /// naive "nearest scientist-ish thing" first pass grabbed a
-    /// scientistnpc_junkpile_pistol (junkpile-only, never navigates
-    /// buildings) instead. Doesn't spawn a temporary one itself, relying on
-    /// whatever's already alive on the map (via `spawn scientist2` or a
-    /// natural monument spawn), avoiding any guesswork about the correct
-    /// prefab path or brain-init side effects a fresh spawn might trigger.
-    /// First step toward attaching the same navigation stack to our own
-    /// bots instead of the hand-built NavigationManager/local-stepping
-    /// system - see the "scientist NPC movement" investigation this
-    /// followed from.
+    /// Reads the prefab-baked NavMeshAgent/RustNavMeshAgent parameters a live scientist uses, since these
+    /// are Unity-serialized inspector values not present in decompiled source. Prefers the general-purpose
+    /// "scientist2" archetype over stationary variants, and any scientist over any other NPCPlayer.
+    /// Relies on an already-spawned instance rather than spawning one itself.
     /// </summary>
     private void RunDebugScientistNav(BasePlayer player)
     {
@@ -2986,11 +2577,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Lower is better. "scientist2" specifically (the general-purpose
-    /// roamer that actually pathfinds in/out of buildings and monuments,
-    /// unlike the junkpile/tunnel guard variants that only ever stand on
-    /// open ground) beats any other scientist match, which beats any other
-    /// NPCPlayer at all.
+    /// Lower is better. "scientist2" (the general-purpose roamer) beats any other scientist match, which
+    /// beats any other NPCPlayer.
     /// </summary>
     private int RankScientistPrefab(string shortPrefabName)
     {
@@ -3025,14 +2613,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Manually feeds one "stuck here" report into the monument avoid-zone
-    /// system (LivingRust.MonumentAvoidZones.cs) at the caller's own
-    /// position - the exact same call PoisonAreaNow makes after a real
-    /// full recovery-escalation exhaustion. Lets a specific known-bad
-    /// pocket (e.g. inside desert_military_base_d) be confirmed
-    /// deterministically by standing on it and running this command twice
-    /// (AvoidZoneConfirmThreshold), instead of needing to organically
-    /// reproduce a real stuck loot task at that exact spot.
+    /// Manually feeds one "stuck here" report into the monument avoid-zone system (LivingRust.MonumentAvoidZones.cs)
+    /// at the caller's position, letting a known-bad spot be confirmed deterministically without needing to
+    /// reproduce a real stuck loot task there.
     /// </summary>
     private void RunDebugAvoidZone(BasePlayer player)
     {
@@ -3059,34 +2642,18 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// No longer directly bound to a command - folded into /lr.debug.scan
-    /// (see below).
+    /// No longer directly bound to a command - folded into /lr.debug.scan.
     ///
-    /// Diagnoses why native movement keeps failing to even get a usable
-    /// path toward loot-approach destinations, even after snapping them
-    /// onto the navmesh (StartWalking's own WalkNativeApproachSnapDistance
-    /// fix) - a live test showed that fix made no real difference (71
-    /// instant-fail events, same as before). Checks two distinct
-    /// possibilities: (1) the live value of AI.useUnityNavmesh - our own
-    /// added components assume Unity's classic baked navmesh (the C#
-    /// default), but if this server is actually running the newer
-    /// runtime/recast independent navmesh instead (what real scientist2
-    /// NPCs might really be using), our agents would be looking for
-    /// coverage on the wrong system entirely; (2) whether Unity's baked
-    /// navmesh has ANY coverage at all near the caller's position for our
-    /// specific agentTypeID, at several growing radii - distinguishing
-    /// "just needs a bigger snap distance" from "no coverage anywhere
-    /// nearby, this whole area was never baked for this agent shape."
+    /// Diagnoses why native movement fails to get a usable path toward loot-approach destinations. Checks
+    /// whether AI.useUnityNavmesh matches the navmesh system actually in use, and whether Unity's baked
+    /// navmesh has any coverage near the caller's position for the agent type, at several growing radii.
     /// </summary>
     private void RunDebugNavMeshCheck(BasePlayer player)
     {
         Puts($"debug-navmeshcheck: AI.useUnityNavmesh={ConVar.AI.useUnityNavmesh}, AI.move={ConVar.AI.move}, AI.logIssues={ConVar.AI.logIssues}.");
 
-        // Only bots get our native components attached - checking the
-        // calling player's own GameObject would always come up empty. Uses
-        // the nearest spawned survivor's real (or newly-attached) agent
-        // instead, so this samples with the exact same agentTypeID/
-        // areaMask our production movement actually uses.
+        // Only bots get native components attached, so this uses the nearest spawned survivor's agent
+        // to sample with the same agentTypeID/areaMask production movement uses.
         Survivor survivor = FindNearestSpawnedSurvivor(player.transform.position);
 
         if (survivor == null || survivor.Player == null || survivor.Player.IsDestroyed)
@@ -3111,22 +2678,13 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// No longer directly bound to a command - folded into /lr.debug.scan
-    /// (see below). Remember: Rust freezes your view/aim angle the instant
-    /// chat opens, so /lr.debug.scan run from chat tests whichever
-    /// direction you were facing when you pressed Enter/T, not whatever
-    /// you turned to look at afterward - use the console version (bindable
-    /// to a key, e.g. "bind y lr.debug.scan") for close-range/small
-    /// targets, where that distinction actually matters.
+    /// No longer directly bound to a command - folded into /lr.debug.scan. Note that Rust freezes the
+    /// view/aim angle once chat opens, so running from chat tests the facing direction at that moment;
+    /// use the console version for close-range/small targets where that distinction matters.
     ///
-    /// By default reports only the nearest solid (non-trigger) collider
-    /// along the view ray - trigger volumes like a vehicle's no-build
-    /// zone or a horse's feed trigger get skipped so the real body
-    /// collider isn't buried under them. Pass "all" to instead dump every
-    /// collider along the ray (trigger and solid alike), for cases where
-    /// you need to see the full stack. Falls back to scanning a small
-    /// radius around the aim point if the ray hits nothing at all, to
-    /// distinguish "wrong layer" from "no collider exists here".
+    /// By default reports only the nearest solid (non-trigger) collider along the view ray. Pass "all" to
+    /// dump every collider along the ray. Falls back to scanning a small radius around the aim point if
+    /// the ray hits nothing.
     /// </summary>
     private void RunDebugLook(BasePlayer player, bool reportAll)
     {
@@ -3176,19 +2734,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Reassigns a sleeping bag's ownership to one of our survivors. Rust's
-    /// own in-game "assign to friend" UI only lists real Steam friends,
-    /// which a disconnected bot's fake userID can never appear in, so
-    /// there's no vanilla way to give a bot a bag it can respawn at (see
-    /// RespawnSurvivor's doc comment) - this is that missing piece,
-    /// exposed as a debug command rather than autonomous behaviour since a
-    /// bot can't yet deploy/claim its own bag yet either.
-    ///
-    /// Aims the same way /lr.debug.look does (raycast from view, small-
-    /// radius fallback if it misses) to find the bag; targets the nearest
-    /// spawned survivor by default, or a specific one by alias if given
-    /// (e.g. "/lr.debug.claimbag AngryBoomer") - useful once several bots
-    /// are nearby and "nearest to me" is ambiguous.
+    /// Reassigns a sleeping bag's ownership to one of our survivors, since Rust's own "assign to friend" UI
+    /// cannot target a bot's fake userID. Aims the same way /lr.debug.look does; targets the nearest spawned
+    /// survivor by default, or a specific one by alias.
     /// </summary>
     [ChatCommand("lr.debug.claimbag")]
     private void CmdDebugClaimBag(BasePlayer player, string command, string[] args)
@@ -3225,9 +2773,7 @@ public partial class LivingRust
                 ? "No spawned survivor nearby. Use /lr.spawn first."
                 : $"No spawned survivor named '{aliasFilter}'.";
 
-            // Puts() too, not just ChatMessage - this command previously had
-            // zero server-side trace, making a failed/never-run claim
-            // indistinguishable from a working one after the fact.
+            // Also logs via Puts() so a failed run has a server-side trace.
             player.ChatMessage($"[LivingRust] {message}");
             Puts($"claimbag: {message}");
             return;
@@ -3252,31 +2798,14 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Puts an item directly into a survivor's inventory. Rust's own admin
-    /// give-to-player commands (e.g. inventory.giveto) resolve their target
-    /// through BasePlayer.Find(), which only searches activePlayerList -
-    /// populated exclusively by PlayerInit(Network.Connection), the real
-    /// client-connection handshake our disconnected bots never go through.
-    /// So no console command targeting a bot by name or userID can ever
-    /// find it, regardless of name/ID accuracy or the bot's sleep state -
-    /// same "not a real connected player" gap /lr.debug.claimbag already
-    /// works around for sleeping bags, via our own Survivor/Character
-    /// lookup instead of Rust's.
+    /// Puts an item directly into a survivor's inventory. Rust's own admin give-to-player commands can't
+    /// target a bot since they resolve through BasePlayer.Find(), which only searches connected players.
+    /// Uses the Survivor/Character lookup instead, same as /lr.debug.claimbag.
     /// </summary>
     /// <summary>
-    /// Real research-skip test rig (2026-09-01, Lucas's own explicit ask:
-    /// "spawn a bot with the items required to craft 3 locked items -
-    /// rifle.ak, medical syringe and incendiary 5.56 ammo"). All three are
-    /// unlockedByDefault=False (confirmed via /lr.debug.dumprecipes' own
-    /// real crafting_recipes.csv) - real Rust ItemCrafter.CanCraft() would
-    /// refuse every one of them for a bot that never researched anything,
-    /// which is every bot, always. Ingredients here are the exact real
-    /// ItemBlueprint.GetIngredients() totals for all three (summed where
-    /// they share an ingredient, e.g. metal.fragments in both the syringe
-    /// and the incendiary ammo), spawned directly rather than gathered -
-    /// this rig exists to test the upcoming "skip CanCraft, verify
-    /// workbench+ingredients ourselves" ghost-craft logic in isolation,
-    /// not to simulate a real farming path.
+    /// Test rig that spawns a bot with the ingredients to craft three research-locked items. Since these
+    /// require research a bot never does, ingredients are spawned directly to test ghost-craft logic that
+    /// bypasses CanCraft while still verifying workbench and ingredients.
     /// </summary>
     private static readonly (string Shortname, int Amount)[] CraftTestIngredients =
     {
@@ -3348,14 +2877,8 @@ public partial class LivingRust
             }
         }
 
-        // Real tier3 workbench, deployed right at the survivor's own feet -
-        // guarantees the workbench-tier condition is met for all three
-        // test items (rifle.ak/incendiary ammo need tier3, the syringe
-        // only needs tier2) without this test rig depending on any real
-        // Workbench component's own level field, which nothing else in
-        // this codebase currently reads either (every existing tier check
-        // elsewhere goes by the deployed prefab's own shortname, e.g.
-        // "workbench3.deployed" - same approach used here).
+        // Deploys a tier3 workbench at the survivor's feet, satisfying the workbench-tier requirement for
+        // all three test items.
         BaseEntity testWorkbench = GameManager.server.CreateEntity("assets/prefabs/deployable/tier 3 workbench/workbench3.deployed.prefab", npc.transform.position, npc.transform.rotation) as BaseEntity;
         testWorkbench?.Spawn();
 
@@ -3366,15 +2889,8 @@ public partial class LivingRust
 
         player.ChatMessage($"[LivingRust] Spawned craft-test survivor '{character.Alias}' {where} (ID {character.BotId}).{failureNote} Queuing crafts - watch chat for each one landing.");
 
-        // Real queue (2026-09-01, live report: "it does craft the items,
-        // but instantly. That is not good. What happened to craft timers
-        // and queues" - fair catch, the first version skipped bp.time
-        // entirely). Chained one craft at a time, same as a real crafting
-        // queue only ever processing one slot - NOT all three firing in
-        // parallel. Ingredients are deducted the moment a craft is
-        // accepted (matching real Rust: they leave your inventory when you
-        // QUEUE, not when the item finishes), only the crafted item itself
-        // is delayed by the recipe's own real bp.time.
+        // Chains crafts one at a time rather than firing all three in parallel, matching a real crafting
+        // queue. Ingredients deduct on acceptance; the crafted item is delayed by bp.time.
         Queue<string> craftQueue = new(new[] { "rifle.ak", "syringe.medical", "ammo.rifle.incendiary" });
 
         void ProcessNextCraft()
@@ -3399,18 +2915,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real "skip Rust's own research-gated CanCraft, but keep the real
-    /// craft timer" craft (2026-09-01, live report: instant crafting
-    /// "is not good" - fair, real crafting always takes real time even
-    /// when nothing's blocking it). Validates the real ItemBlueprint
-    /// requirements directly (workbench tier via nearby deployed prefab
-    /// shortname, ingredients via real inventory amounts) rather than
-    /// calling ItemCrafter.CanCraft(), which would refuse every one of
-    /// these since no bot ever goes through Rust's own research flow.
-    /// Ingredients deduct immediately on acceptance (matching real Rust
-    /// queueing behaviour), then the crafted item itself only appears
-    /// after the recipe's own real bp.time via timer.Once - no instant
-    /// pop, no fake queue depth beyond what the caller itself chains.
+    /// Crafts an item while skipping Rust's research-gated CanCraft check, but keeps the real craft timer.
+    /// Validates workbench tier and ingredients directly instead. Ingredients deduct on acceptance; the
+    /// crafted item appears after the recipe's bp.time.
     /// </summary>
     private void GhostCraftQueued(BasePlayer npc, string shortname, Action<bool, string> onComplete)
     {
@@ -3482,14 +2989,8 @@ public partial class LivingRust
                 return;
             }
 
-            // Real fix for a visual glitch (2026-09-01, live report: "it
-            // just instantly reloaded the weapon and swapped it at the
-            // same time which caused the invisible weapon bug again") -
-            // forcing an IMMEDIATE network update at the exact same tick
-            // the bot's own reload/weapon-swap logic reacts to new ammo
-            // landing is what collides. Letting the give itself network
-            // normally (same as any other inventory change) avoids that
-            // same-tick collision.
+            // Lets the item give network normally instead of forcing an immediate update, avoiding a
+            // same-tick collision with reload/weapon-swap logic.
             onComplete(true, null);
         });
     }
@@ -3540,10 +3041,8 @@ public partial class LivingRust
             player.ChatMessage("[LivingRust] Failed to give rifle.ak to the deposit-test survivor.");
         }
 
-        // Same known-good prefab path as the deployable placement code
-        // (KnownDeployablePrefabPaths in LivingRust.BaseBuilding.cs) -
-        // deployed right at the survivor's own feet, same pattern as the
-        // craft-test's own test workbench.
+        // Uses the same known-good prefab path as the deployable placement code (KnownDeployablePrefabPaths
+        // in LivingRust.BaseBuilding.cs), deployed at the survivor's feet.
         BaseEntity box = GameManager.server.CreateEntity("assets/prefabs/deployable/large wood storage/box.wooden.large.prefab", npc.transform.position, npc.transform.rotation) as BaseEntity;
         box?.Spawn();
 
@@ -3566,14 +3065,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Simple starting point for real deposit logic (2026-09-01, Lucas's
-    /// own explicit ask: "start off simple - have a spawn.ak bot deposit
-    /// its items into a large wood box"). Moves every item out of both
-    /// main and belt (not wear - a survivor shouldn't strip its own worn
-    /// clothing/armor to deposit loot) into the given container. Now just
-    /// DepositFilteredItems (LivingRust.Looting.cs, built for the real
-    /// production "go home and deposit" trip) with an always-true filter,
-    /// so this test rig and real production logic share one transfer loop.
+    /// Moves every item out of a survivor's main and belt inventory (not worn gear) into the given container.
+    /// Wraps DepositFilteredItems with an always-true filter, sharing the transfer loop with production logic.
     /// </summary>
     private int DepositAllItems(BasePlayer npc, ItemContainer target)
     {
@@ -3597,10 +3090,7 @@ public partial class LivingRust
         }
     }
 
-    // How far from the player to search for an already-placed box.wooden.
-    // large - Lucas's own ask: "can I place a wood box and the bot walks
-    // over to it," so this looks for one HE placed rather than spawning
-    // its own the way lr.debug.spawndeposittest does.
+    // Search radius for an already-placed box.wooden.large near the player, rather than spawning a new one.
     private const float WalkDepositTestBoxSearchRadius = 50f;
 
     private void RunDebugWalkDepositTest(BasePlayer player)
@@ -3649,23 +3139,16 @@ public partial class LivingRust
             return;
         }
 
-        // Real full kit (2026-09-01, Lucas's own ask: "give the bot a full
-        // metal ak kit (same as spawn.ak)") - ApplyKit is the exact same
-        // armor+weapon+ammo+magazine logic /lr.spawn.ak itself runs, just
-        // applied to this test's own already-created survivor instead of a
-        // fresh spawn, so this can't silently drift from the real kit.
+        // Gives the survivor a full metal AK kit using the same ApplyKit logic /lr.spawn.ak runs, so this
+        // test can't silently drift from the real kit.
         ApplyKit(npc, survivor, "ak");
 
         string where = aimedSpawn ? "where you're looking" : "near you (nothing solid in view)";
         player.ChatMessage($"[LivingRust] Spawned walk-deposit-test survivor '{character.Alias}' {where} (ID {character.BotId}) with a full metal AK kit. Walking {nearestDist:F0}m to the box.");
 
-        // Real stand-off (2026-09-01, Lucas's own ask: "1 metre around the
-        // crate to avoid any phasing through the box itself"). Walking
-        // straight to the box's own transform.position - a solid object -
-        // would end with the survivor overlapping its collider. Approaching
-        // from its own current (spawn) direction, same pattern already used
-        // for the toolcupboard approach in GhostEnterHomeForDeposit, keeps a
-        // real gap without needing to know which side the box faces.
+        // Approaches from a 1m stand-off rather than the box's own transform.position, to avoid overlapping
+        // its collider, using the same approach-direction pattern as the toolcupboard approach in
+        // GhostEnterHomeForDeposit.
         const float BoxStandOffDistance = 1f;
         Vector3 approachDirection = spawnPosition - nearestBox.transform.position;
         approachDirection.y = 0f;
@@ -3698,11 +3181,7 @@ public partial class LivingRust
         });
     }
 
-    // 1000x each (2026-09-01, Lucas's own explicit ask) - real stack sizes
-    // on this server comfortably hold this (the existing recipe dump
-    // already confirmed 1000x wood alone for cupboard.tool, so wood's own
-    // max stack is at least that high; metal.ore/sulfur.ore use the same
-    // server-wide stack multiplier).
+    // 1000x each - within this server's stack size limits for these items.
     private static readonly (string Shortname, int Amount)[] SmeltTestIngredients =
     {
         ("wood", 1000),
@@ -3727,36 +3206,16 @@ public partial class LivingRust
         }
     }
 
-    // Same reasoning as WalkDepositTestBoxSearchRadius (LivingRust.Debug.cs) -
-    // looks for a furnace Lucas already placed rather than spawning its own.
+    // Looks for a furnace already placed nearby, same as WalkDepositTestBoxSearchRadius.
     private const float WalkSmeltTestFurnaceSearchRadius = 50f;
 
-    // Same 1m stand-off as the box walk-deposit test (2026-09-01, Lucas's
-    // own ask: "give it a 1m stand off similar to the chest deposit test") -
-    // avoids phasing/spawning inside the furnace's own collider.
+    // Stand-off distance to avoid spawning/phasing inside the furnace's collider.
     private const float FurnaceStandOffDistance = 1f;
 
     /// <summary>
-    /// First real smelting test (2026-09-01, Lucas's own explicit ask:
-    /// "deposit wood, metal ore and sulfur ore into a furnace... and
-    /// ignite the furnace to initiate the smelting process") - this
-    /// project had NO smelting system at all before this (see
-    /// LivingRust.Crafting.cs's own doc comment on metal.fragments having
-    /// "no active gathering source... no furnace/smelting system exists").
-    /// Confirmed via decompiling BaseOven (the small furnace prefab's real
-    /// component, "Furnace" isn't a distinct class) that StartCooking() is
-    /// the real, direct, player-RPC-free ignition call Rust's own SVSwitch
-    /// RPC uses internally - it just needs FindBurnable() to find real
-    /// fuel (wood) already sitting in the oven's inventory first, which is
-    /// why items are deposited BEFORE StartCooking() runs, not after.
-    /// Reuses DepositAllItems (already generic over any ItemContainer, not
-    /// box-specific despite being built for the box test) rather than a
-    /// second hand-rolled transfer loop. Walks to an already-placed furnace
-    /// instead of spawning its own at its feet (2026-09-01, Lucas's own
-    /// follow-up: "have it be a walk deposit test, so the bot doesn't spawn
-    /// inside the furnace and appear stuck") - same
-    /// find-nearest-then-StartWalkingWithRecovery pattern as
-    /// RunDebugWalkDepositTest.
+    /// Tests smelting by depositing wood, metal ore, and sulfur ore into a furnace and igniting it via
+    /// BaseOven.StartCooking(), which requires fuel to already be present. Walks to an already-placed
+    /// furnace using the same pattern as RunDebugWalkDepositTest, reusing DepositAllItems for the transfer.
     /// </summary>
     private void RunDebugWalkSmeltTest(BasePlayer player)
     {
@@ -3821,9 +3280,7 @@ public partial class LivingRust
         string failureNote = failures.Count > 0 ? $" (failed to give: {string.Join(", ", failures)})" : "";
         player.ChatMessage($"[LivingRust] Spawned smelt-test survivor '{character.Alias}' {where} (ID {character.BotId}) with 1000x wood/metal.ore/sulfur.ore.{failureNote} Walking {nearestDist:F0}m to the furnace.");
 
-        // Same offset-approach pattern as the box walk-deposit test - walks
-        // to a point 1m out from the furnace along its own spawn direction,
-        // never straight to the furnace's own transform.position.
+        // Walks to a point offset from the furnace rather than straight to its transform.position.
         Vector3 approachDirection = spawnPosition - nearestFurnace.transform.position;
         approachDirection.y = 0f;
 
@@ -3884,10 +3341,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Args: &lt;shortname&gt; [amount] [alias...] - amount defaults to 1
-    /// and is only consumed from args[1] if it actually parses as a
-    /// number, so "/lr.debug.giveitem torch AngryBoomer" (no amount, just
-    /// an alias) still works without requiring a redundant "1".
+    /// Args: &lt;shortname&gt; [amount] [alias...]. Amount defaults to 1 and is only consumed from args[1]
+    /// if it parses as a number, so an alias-only call works without a redundant amount.
     /// </summary>
     private void RunDebugGiveItem(BasePlayer player, string[] args)
     {
@@ -3954,10 +3409,7 @@ public partial class LivingRust
             return;
         }
 
-        // Same "no live refresh path" reason SpawnSurvivor/RestoreSpawnedSurvivors
-        // already push an immediate update for - without this an
-        // already-nearby client wouldn't see the new item show up until
-        // something else happened to trigger a network update.
+        // Forces an immediate network update so a nearby client sees the new item right away.
         npc.SendNetworkUpdateImmediate();
 
         string confirm = $"Gave {amount}x '{shortname}' to '{survivor.Character.Alias}' (ID {survivor.Character.BotId}).";
@@ -3983,22 +3435,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Spawns a fresh survivor already carrying everything a card-puzzle
-    /// detour needs (see LivingRust.CardPuzzles.cs) - one fuse and one of
-    /// each keycard tier - so testing TryStartCardPuzzleDetour doesn't
-    /// require looting a real fuse/card off a corpse first every time
-    /// (2026-08-18, Lucas's own explicit request: "will save me having the
-    /// bot looting it along the way"). Same spawn-at-aim-point placement as
-    /// /lr.spawn, just also gives items immediately after.
-    ///
-    /// Also kitted with the same AK loadout /lr.spawn.ak gives (2026-08-21,
-    /// Lucas's own explicit request) - full metal armor, an AK + 2 spare
-    /// mags of ammo.rifle, medical supplies, reloaded and equipped for
-    /// display - same SpawnKits["ak"] entry and the same
-    /// EquipKitArmor/GiveItem sequence SpawnKitAt uses, just applied to
-    /// this already-spawned survivor instead of spawning a second one.
-    /// Keeps this bot armed and armored for a real end-to-end elevator/
-    /// puzzle test without a separate manual kit-up step.
+    /// Spawns a survivor carrying everything a card-puzzle detour needs (one fuse and each keycard tier,
+    /// see LivingRust.CardPuzzles.cs), so testing TryStartCardPuzzleDetour doesn't require looting first.
+    /// Also kitted with the same AK loadout as /lr.spawn.ak for a full end-to-end elevator/puzzle test.
     /// </summary>
     private void RunDebugSpawnCardTest(BasePlayer player)
     {
@@ -4093,19 +3532,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Unlike /lr.walk.monument (a raw StartWalking with no onArrived at
-    /// all - it just walks there and stops), this actually hands the
-    /// survivor off to the real loot-task escalation ladder
-    /// (EscalateSearchToMonumentZone) once it arrives - the exact same
-    /// function TryStartCardPuzzleDetour is checked from
-    /// (LivingRust.CardPuzzles.cs). 2026-08-18, Lucas's own explicit
-    /// problem: /lr.debug.settask rolls a random gear-weighted destination
-    /// that has no idea a specific survivor is carrying a fuse+card for a
-    /// specific monument's puzzle, so testing it meant hoping the dice
-    /// roll happened to send the bot toward harbor_2 at all. This forces
-    /// the destination directly, then lets the real decision logic
-    /// (including the card-puzzle check) run exactly as it would if the
-    /// survivor had wandered there on its own.
+    /// Unlike /lr.walk.monument, which just walks there and stops, this hands the survivor off to the real
+    /// loot-task escalation ladder (EscalateSearchToMonumentZone) on arrival, forcing a specific destination
+    /// so the card-puzzle check runs deterministically instead of relying on a random destination roll.
     /// </summary>
     private void RunDebugGotoMonument(BasePlayer player, string name)
     {
@@ -4193,20 +3622,10 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Teleports the nearest spawned survivor straight to a registered
-    /// card-puzzle route's own first waypoint and runs it immediately - see
-    /// TryTeleportToCardPuzzle's own doc comment (LivingRust.CardPuzzles.cs)
-    /// for why this skips the real approach walk entirely. name, if given,
-    /// substring-matches a specific monument the same way /lr.walk.monument
-    /// does; omitted (2026-08-18, real live bug fix - this used to
-    /// hardcode "harbor_2" as the default, a leftover from when that was
-    /// the only registered puzzle, so it kept firing on Harbor2 regardless
-    /// of where the admin actually was) finds whichever REGISTERED puzzle
-    /// monument (any key in CardPuzzleRouteFolders) is nearest the caller,
-    /// same "closest registered one, not just closest of any type" pattern
-    /// TryGetGhostRouteForNearestMonument already uses for ghost routes.
-    /// Combine with /lr.debug.spawncardtest first if the survivor isn't
-    /// already carrying a fuse + the right keycard(s).
+    /// Teleports the nearest spawned survivor to a registered card-puzzle route's first waypoint and runs
+    /// it immediately, skipping the approach walk. name, if given, substring-matches a specific monument;
+    /// omitted, it finds the nearest registered puzzle monument. Combine with /lr.debug.spawncardtest first
+    /// if the survivor isn't already carrying a fuse and the right keycard(s).
     /// </summary>
     private void RunDebugTestCardPuzzle(BasePlayer player, string name)
     {
@@ -4341,25 +3760,15 @@ public partial class LivingRust
         string layerName = LayerMask.LayerToName(go.layer);
         string entityInfo = (entity != null) ? $"{entity.GetType().Name} ('{entity.ShortPrefabName}')" : "no BaseEntity";
 
-        // userID shown for anything BasePlayer-derived - covers real
-        // players, our own bots, AND Rust's own NPCPlayer-family NPCs
-        // (ScientistNPC, HumanNPC, etc. all derive from BasePlayer and
-        // carry a real userID field, confirmed via reflection) - added to
-        // check whether our BotId range could ever collide with whatever
-        // ID a vanilla scientist NPC gets, after a report of a Bradley-
-        // spawned scientist's loot bag showing a LivingRust bot's name.
+        // userID is shown for anything BasePlayer-derived, covering real players, our own bots, and Rust's
+        // own NPCPlayer-family NPCs, to check whether our BotId range could ever collide with a vanilla NPC's ID.
         if (entity is BasePlayer entityPlayer)
         {
             entityInfo += $" | userID {entityPlayer.userID} | displayName '{entityPlayer.displayName}'";
         }
 
-        // Real dropped-item shortname (2026-08-29) - a DroppedItem's own
-        // ShortPrefabName is a generic "generic_world" wrapper prefab
-        // regardless of what's actually inside it (confirmed live -
-        // Lucas scanned two visually different items that both reported
-        // 'generic_world'), so the ACTUAL real item identity only shows
-        // up via WorldItem.item.info.shortname, the real Item instance
-        // it's carrying.
+        // A DroppedItem's own ShortPrefabName is a generic wrapper prefab regardless of what's inside it,
+        // so the actual item identity comes from WorldItem.item.info.shortname instead.
         if (entity is WorldItem worldItem && worldItem.item != null)
         {
             entityInfo += $" | item.shortname '{worldItem.item.info.shortname}'";
@@ -4382,9 +3791,7 @@ public partial class LivingRust
 
         player.ChatMessage($"[LivingRust] {message}");
 
-        // Puts() is Carbon's own logging call - proven to actually reach the
-        // server console log, unlike our custom Logger.Info's plain
-        // Console.WriteLine, which turned out not to be captured at all.
+        // Puts() is Carbon's own logging call, which reliably reaches the server console log.
         Puts(message);
     }
 
@@ -4447,25 +3854,19 @@ public partial class LivingRust
             float coverDistanceFromBot = Vector3.Distance(nearestBotPlayer.transform.position, coverPoint);
             string message = $"[LivingRust] '{nearestBotPlayer.displayName}' ({botToAdminDistance:F1}m from you) found cover at {coverPoint} ({coverDistanceFromBot:F1}m away, LOS to you blocked from there).";
             player.ChatMessage(message);
-            Puts($"findcover-diag: {message}");
+            VerbosePuts($"findcover-diag: {message}");
         }
         else
         {
             string message = $"[LivingRust] '{nearestBotPlayer.displayName}' ({botToAdminDistance:F1}m from you) found NO cover within search range.";
             player.ChatMessage(message);
-            Puts($"findcover-diag: {message}");
+            VerbosePuts($"findcover-diag: {message}");
         }
     }
 
     /// <summary>
-    /// Direct test trigger for active resource gathering (2026-08-25,
-    /// LivingRust.ResourceGathering.cs) - forces the nearest survivor to
-    /// walk to and gather from the nearest live tree/ore node right now,
-    /// bypassing ContinueLootTask's own fallback-of-last-resort gating
-    /// (TryStartResourceGatheringFallback only fires once every other loot
-    /// source nearby comes up empty) so the core swing/gather mechanic can
-    /// be validated in isolation without needing to first clear an entire
-    /// area of loot.
+    /// Direct test trigger for resource gathering: forces the nearest survivor to walk to and gather from
+    /// the nearest live tree/ore node, bypassing ContinueLootTask's normal fallback-of-last-resort gating.
     /// </summary>
     [ChatCommand("lr.debug.gathertree")]
     private void CmdDebugGatherTree(BasePlayer player, string command, string[] args)
@@ -4526,17 +3927,9 @@ public partial class LivingRust
 
         BasePlayer npc = nearestSurvivor.Player;
 
-        // Seize control before forcing this - same "cancel whatever's
-        // already running" pattern StartCombat itself uses before taking
-        // over (LivingRust.Combat.cs). Without this, a survivor's own
-        // already-in-flight natural task chain (a pending ContinueLootTask
-        // callback, a recycler trip, etc) can fire moments later and
-        // silently redirect the bot elsewhere - confirmed live, 2026-08-25:
-        // "it just overrode the gather ore command to loot bodies about
-        // 30-40 metres away." Both StartWalking-family calls just replace
-        // whichever movement timer is currently registered, so whichever
-        // call happens LAST wins - this debug command needs to be that
-        // last call, not race the bot's own autonomous loop for it.
+        // Cancels whatever's already running, same pattern StartCombat uses before taking over. Without
+        // this, a survivor's own in-flight task chain can fire moments later and silently redirect the bot,
+        // since whichever StartWalking-family call happens last wins.
         CancelActiveMovement(nearestSurvivor);
         CancelActiveAttack(nearestSurvivor.Character.Id);
         CancelActiveRecycling(nearestSurvivor.Character.Id);
@@ -4568,18 +3961,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Direct test trigger for the crafting system (2026-08-28,
-    /// LivingRust.Crafting.cs) - forces the nearest survivor into
-    /// TryStartCraftingFallback right now, bypassing ContinueLootTask's
-    /// own "nothing left to loot nearby" gate the same way
-    /// /lr.debug.gathertree/gatherore already bypass the resource-
-    /// gathering fallback's own gate. One call is enough to kick off the
-    /// WHOLE chain Lucas asked to test (hemp -> cloth -> sleeping bag ->
-    /// place it -> then wood/stone -> 15 stacks of arrows) - every step
-    /// after this one is already self-continuing via each Gather*AndContinue
-    /// wrapper's own onSuccess/onFailed resuming ContinueLootTask, which
-    /// re-enters this exact same crafting fallback on its next "nothing
-    /// left nearby" cycle.
+    /// Direct test trigger for the crafting system: forces the nearest survivor into TryStartCraftingFallback,
+    /// bypassing ContinueLootTask's "nothing left to loot nearby" gate. Each subsequent step self-continues
+    /// via the Gather*AndContinue callbacks re-entering this same fallback.
     /// </summary>
     [ChatCommand("lr.debug.craft")]
     private void CmdDebugCraft(BasePlayer player, string command, string[] args)
@@ -4645,13 +4029,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Phase 2 of the findcover debug flow (2026-08-23, Lucas's own
-    /// explicit request - "that way I can verify it and see if it would
-    /// make sense") - runs the exact same TryFindCoverPoint search, but
-    /// actually sends the bot walking there via the real StartWalking
-    /// movement engine, so the result can be judged visually rather than
-    /// just read off a coordinate in chat. Same "nearest survivor to the
-    /// caller, caller treated as the attacker" setup as /lr.debug.findcover.
+    /// Phase 2 of the findcover debug flow: runs the same TryFindCoverPoint search, but sends the bot
+    /// walking there via StartWalking so the result can be judged visually instead of read as a coordinate.
     /// </summary>
     [ChatCommand("lr.debug.gotocover")]
     private void CmdDebugGotoCover(BasePlayer player, string command, string[] args)
@@ -4708,7 +4087,7 @@ public partial class LivingRust
 
         float coverDistanceFromBot = Vector3.Distance(botPlayer.transform.position, coverPoint);
         player.ChatMessage($"[LivingRust] '{botPlayer.displayName}' found cover {coverDistanceFromBot:F1}m away - walking there now.");
-        Puts($"gotocover-diag: '{nearestSurvivor.Character.Alias}' walking to found cover point {coverPoint} ({coverDistanceFromBot:F1}m away).");
+        VerbosePuts($"gotocover-diag: '{nearestSurvivor.Character.Alias}' walking to found cover point {coverPoint} ({coverDistanceFromBot:F1}m away).");
 
         StartWalking(
             nearestSurvivor,
@@ -4718,12 +4097,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Forces a fresh ScanMonumentForCoverPoints pass on whichever monument
-    /// is nearest the caller, overwriting any cached result for that
-    /// monument TYPE - lets a tuning change (CoverPointMinStructureSize,
-    /// CoverPointStandoffFromStructure, etc) be tested immediately without
-    /// a full server restart, same convenience this project's other tuned-
-    /// constant debug tools already provide.
+    /// Forces a fresh ScanMonumentForCoverPoints pass on the nearest monument, overwriting any cached result
+    /// for that monument type, so a tuning change can be tested without a full server restart.
     /// </summary>
     [ChatCommand("lr.debug.scanmonumentcover")]
     private void CmdDebugScanMonumentCover(BasePlayer player, string command, string[] args)
@@ -4749,7 +4124,7 @@ public partial class LivingRust
         {
             string message = "[LivingRust] No monument within range of you (checked against each monument's own real size).";
             player.ChatMessage(message);
-            Puts($"scanmonumentcover-diag: {message}");
+            VerbosePuts($"scanmonumentcover-diag: {message}");
             return;
         }
 
@@ -4757,12 +4132,8 @@ public partial class LivingRust
         player.ChatMessage($"[LivingRust] Re-scanned '{monument.name}' - found {points.Count} cover point(s). See console/findcover-diag for details.");
     }
 
-    // Real WEAPONS only (2026-09-01, Lucas's own explicit ask: "a random
-    // melee weapon (not a tool)") - a genuine subset of MeleeToolPriority
-    // (LivingRust.Looting.cs), deliberately excluding every gather tool
-    // (pickaxe/hatchet families) and the starting rock. Pitchfork kept in
-    // (a real Rust melee weapon in its own right, not just a farming
-    // tool).
+    // Weapons-only subset of MeleeToolPriority, excluding gather tools (pickaxe/hatchet families) and the
+    // starting rock. Pitchfork is kept in as a real melee weapon rather than just a farming tool.
     private static readonly string[] MeleeWeaponOnlyShortnames =
     {
         "salvaged.sword",
@@ -4794,11 +4165,7 @@ public partial class LivingRust
         RunDebugSpawnMeleeKit(player, args);
     }
 
-    // Console variant (2026-09-01, Lucas's own explicit ask: "make it
-    // bindable") - Rust's own real `bind <key> "lr.debug.spawnmeleekit"`
-    // client command only ever fires a CONSOLE command, not a chat one,
-    // same reason every other debug command in this project already
-    // registers both.
+    // Console variant so this command can be bound to a key, since Rust's `bind` only fires console commands.
     [ConsoleCommand("lr.debug.spawnmeleekit")]
     private void CmdDebugSpawnMeleeKitConsole(ConsoleSystem.Arg arg)
     {
@@ -4811,20 +4178,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real melee-combat test rig (2026-09-01, Lucas's own explicit ask -
-    /// see MeleeWeaponOnlyShortnames' own doc comment for the weapon
-    /// pool). No args: spawns one survivor near where the caller is
-    /// looking, gives it a single random real melee weapon, and forces it
-    /// straight into StartMeleeCombat (LivingRust.MeleeCombat.cs) against
-    /// the CALLING PLAYER directly - bypasses the normal on-sight
-    /// detection roll entirely, since this command's whole point is an
-    /// immediate, deterministic fight for testing, not waiting on a
-    /// probability check. Real damage - the caller's own character can
-    /// genuinely take damage and die from this, same as any other real
-    /// Rust melee hit. "vs" arg: spawns TWO survivors near each other
-    /// instead, each independently rolling its own random weapon, and
-    /// forces them into melee combat against EACH OTHER instead of the
-    /// caller - Lucas's own "even better" framing.
+    /// Melee-combat test rig. With no args, spawns one survivor with a random melee weapon and forces it
+    /// straight into combat against the caller, bypassing the normal on-sight detection roll; damage is
+    /// real. The "vs" arg spawns two survivors instead and forces them into combat against each other.
     /// </summary>
     private void RunDebugSpawnMeleeKit(BasePlayer player, string[] args)
     {
@@ -4854,12 +4210,8 @@ public partial class LivingRust
             return;
         }
 
-        // 15m apart (2026-09-01, Lucas's own explicit ask) - centered on
-        // either side of the aim point rather than one spawn offset from
-        // the other, so they're genuinely 15m apart from EACH OTHER (not
-        // 15m from wherever the caller happened to be looking), and have
-        // to actually close real distance before the fight starts instead
-        // of spawning already in swinging range.
+        // Spawns the two survivors 15m apart, centered on the aim point, so they have to close real
+        // distance before the fight starts instead of spawning already in swinging range.
         const float VersusSpawnSeparation = 15f;
         Vector3 versusCenter = FindSpawnAimPoint(player, out bool aimed);
         Vector3 firstPosition = versusCenter - player.transform.right * (VersusSpawnSeparation / 2f);

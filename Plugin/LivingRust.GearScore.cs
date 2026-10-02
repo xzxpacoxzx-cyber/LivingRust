@@ -7,30 +7,18 @@ using UnityEngine;
 namespace Carbon.Plugins;
 
 /// <summary>
-/// Gear-based monument tiering (2026-08-15) - the decision layer behind
-/// "which monument should this survivor head toward first," built across
-/// several rounds of explicit spec with Lucas: a 0-100 gear score
-/// (weapon tier + armor tier, normalized), three monument tiers each with
-/// their own real, named monuments, and a WEIGHTED RANDOM roll (not a
-/// deterministic "always pick nearest") driving the actual choice - the
-/// same "roll a range, don't hardcode one answer" philosophy already used
-/// for burst-fire counts in LivingRust.Combat.cs. Lucas's own framing:
-/// "randomized visit monument will alleviate contested container issues"
-/// and stops 200 beach spawns all converging on whatever's nearest.
+/// Gear-based monument tiering: the decision layer behind which monument a survivor should head
+/// toward, using a 0-100 gear score (weapon + armor, normalized) across monument tiers with a
+/// weighted random roll rather than always picking the nearest, so bots don't all converge on the
+/// same destination.
 /// </summary>
 public partial class LivingRust
 {
     /// <summary>
-    /// Best-owned-weapon score, 0-85 - Lucas's own explicit numbers,
-    /// refined across two rounds of live discussion (LR300 raised to match
-    /// AK, M16A2 dropped below both, Python raised above HCR, MP5 pulled
-    /// below the full-rifle tier). Deliberately a flat lookup, not derived
-    /// from WeaponPriority's own rank order - that list is about "which
-    /// weapon looks best on the belt," a different, finer-grained ranking
-    /// than "how dangerous is this weapon for monument-difficulty
-    /// purposes," which only needs Lucas's own tier buckets. Anything not
-    /// listed (thrown weapons, melee) scores 0 here - this is specifically
-    /// a RANGED-combat-readiness score.
+    /// Best-owned-weapon score, 0-85. A flat lookup rather than derived from WeaponPriority's own
+    /// rank order, since that list ranks belt preference, not monument-difficulty readiness.
+    /// Anything not listed (thrown weapons, melee) scores 0, since this is a ranged-combat
+    /// readiness score.
     /// </summary>
     private static readonly Dictionary<string, int> WeaponGearScore = new()
     {
@@ -67,26 +55,13 @@ public partial class LivingRust
     };
 
     /// <summary>
-    /// Best owned weapon's score (0 if unarmed or the best owned weapon
-    /// isn't in WeaponGearScore at all - krieg.shotgun/shotgun.waterpipe/
-    /// pistol.semiauto.a.m15/t1_smg/crossbowbowless/speargun/blowpipe/
-    /// pistol.eoka weren't given explicit numbers by Lucas, so they fall
-    /// back to 0 rather than a guessed value - worth naming explicitly if
-    /// any of those turn out to matter in practice). shotgun.spas12 = 40,
-    /// added 2026-08-15 after being missed across the earlier revision
-    /// rounds - a real /lr.spawn.spas12 kit was silently scoring as if
-    /// unarmed until this.
-    /// Reuses WeaponPriority's own ordering (already-established "best
-    /// weapon this survivor owns" ranking) purely to PICK which single
-    /// weapon to score, not for the score itself.
+    /// Best owned weapon's score, 0 if unarmed or the weapon isn't in WeaponGearScore. Reuses
+    /// WeaponPriority's ordering purely to pick which weapon to score, not for the score itself.
     /// </summary>
     private static int GetWeaponGearScore(BasePlayer npc)
     {
-        // Belt only, not main inventory (2026-08-15, Lucas's own explicit
-        // correction) - a spare AK sitting unbelted in the main inventory
-        // isn't actually "carried" the way a real player's readily-
-        // accessible loadout is; only what's equipped/on the toolbelt
-        // should count.
+        // Belt only, not main inventory - a spare weapon sitting unbelted isn't actually carried
+        // the way a readily-accessible loadout is.
         Item best = FindBestByPriority(npc.inventory.containerBelt.itemList, WeaponPriority, exclude: null);
 
         if (best == null)
@@ -98,23 +73,10 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Worn-armor score, 0-100 - average of the BEST TWO worn pieces'
-    /// GetArmorTier×20 values (missing pieces below 2 count as 0, so one
-    /// great item and nothing else still gets penalized for real
-    /// incompleteness). Changed from "sum over all worn, divide by an
-    /// assumed 3-piece kit" (2026-08-15, live report: "the armour is
-    /// dropping the overall scores") - the real root cause: MetalPlate
-    /// tier has NO real legwear item at all (only metal.facemask/
-    /// metal.plate.torso exist), so a maxed-out metal-plate bot could
-    /// only ever fill 2 of the /3 formula's assumed 3 slots, capping it
-    /// around 53 regardless of how well-geared it actually was. Averaging
-    /// over the best 2 instead means a tier that only offers 2 real
-    /// pieces (MetalPlate) isn't structurally penalized for a 3rd slot
-    /// that doesn't exist, while a tier that DOES offer 3 (Roadsign:
-    /// jacket/gloves/kilt) still only gets credit for its best 2 either
-    /// way - matches Lucas's own worked examples: full metal plate (2
-    /// pieces) + AK/LR300/MP5 landing ~80-90 overall, Thompson + partial
-    /// roadsign (gloves+kilt, 2 pieces) landing ~high 60s.
+    /// Worn-armor score, 0-100: average of the best two worn pieces' GetArmorTier×20 values
+    /// (missing pieces below 2 count as 0). Averages over the best 2 rather than dividing by an
+    /// assumed 3-piece kit, so an armor tier that only offers 2 real pieces isn't structurally
+    /// penalized for a 3rd slot that doesn't exist.
     /// </summary>
     private static int GetArmorGearScore(BasePlayer npc)
     {
@@ -140,31 +102,23 @@ public partial class LivingRust
         "ammo.pistol", "ammo.pistol.fire", "ammo.pistol.hv",
     };
 
-    // Bows/crossbows score in WeaponGearScore but real combat only supports
-    // BaseProjectile firearms right now (StartCombat's own
-    // GetHeldEntity() is BaseProjectile check) - melee/bow combat is still
-    // unimplemented (Lucas's own explicit framing, 2026-08-15). Owning one
-    // of these doesn't mean the bot can actually fight back yet, so
-    // HasReadyRangedWeapon below excludes them.
+    // Bows/crossbows score in WeaponGearScore but combat only supports BaseProjectile firearms, so
+    // owning one of these doesn't mean the bot can actually fight back; HasReadyRangedWeapon
+    // excludes them.
     private static readonly string[] NonCombatCapableRangedWeaponShortnames =
     {
         "bow.compound", "bow.hunting", "crossbow", "minicrossbow",
     };
 
     /// <summary>
-    /// Whether npc owns a real firearm (belt, same WeaponPriority ordering
-    /// GetWeaponGearScore already uses to pick "the" weapon) AND has at
-    /// least one round of matching ammo anywhere in its inventory. Backs
-    /// the scientist-loot-avoidance check (LivingRust.Looting.cs) - Lucas's
-    /// own explicit spec (2026-08-15): only skip looting near a visible
+    /// Whether npc owns a firearm and has at least one round of matching ammo anywhere in its
+    /// inventory. Backs the scientist-loot-avoidance check, which only skips looting near a
     /// hostile scientist while genuinely unable to fight back.
     /// </summary>
     private bool HasReadyRangedWeapon(BasePlayer npc)
     {
-        // Bows count once they have arrows (2026-09-21) - the comment above
-        // predates working bow combat (bots fire bow.hunting live now), and
-        // an archer with arrows shouldn't avoid scientist areas as if
-        // unarmed.
+        // Bows count once they have arrows, since an archer with arrows shouldn't avoid scientist
+        // areas as if unarmed.
         return HasReadyFirearm(npc) || (HasBowFamilyWeapon(npc) && HasAnyArrows(npc));
     }
 
@@ -197,18 +151,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real melee weapons only - Lucas's own explicit examples "cleaver,
-    /// mace, sword, paddle, etc" (2026-08-15), kept deliberately separate
-    /// from pickaxes/hatchets (their own +2 bonus below) even though both
-    /// live in the same pre-existing MeleeToolPriority list. Built by
-    /// excluding PickaxeFamily/HatchetFamily/rock from that list rather
-    /// than a fresh hand-typed one, so it can't silently drift out of sync
-    /// with the real, already-validated melee item roster. A computed
-    /// property, not a static-initialized field - MeleeToolPriority/
-    /// PickaxeFamily/HatchetFamily live in a DIFFERENT partial-class file
-    /// (LivingRust.Looting.cs), and C# doesn't guarantee static field
-    /// initializer order across files of the same partial class, so a
-    /// field initializer here could run before those are populated.
+    /// Melee weapons only, kept separate from pickaxes/hatchets (their own bonus below) by
+    /// excluding those from MeleeToolPriority. A computed property rather than a static field,
+    /// since C# doesn't guarantee static initializer order across files of the same partial class.
     /// </summary>
     private static string[] MeleeWeaponBonusShortnames => MeleeToolPriority
         .Except(PickaxeFamily)
@@ -217,20 +162,9 @@ public partial class LivingRust
         .ToArray();
 
     /// <summary>
-    /// Ammo/meds/tools sustain bonus (2026-08-15, Lucas's own explicit
-    /// numbers) - added directly on top of the weapon+armor average, not
-    /// blended into it, since this represents a genuinely separate signal
-    /// ("can this bot actually sustain a fight/trip," not "how good is its
-    /// current loadout"). Counts across the WHOLE inventory (main + belt),
-    /// unlike GetWeaponGearScore's belt-only scope - reserves in the main
-    /// inventory are exactly the point here, not something to exclude the
-    /// way an unbelted spare weapon is.
-    /// syringe.medical: +2 each. bandage: +0.5 each. largemedkit: +1 each.
-    /// Ammo (5.56/pistol, any real variant): +2 per 64 rounds
-    /// (fractional - 32 rounds is +1, not rounded away). Pickaxe/hatchet
-    /// (any family variant, salvaged included): flat +2 if at least one is
-    /// owned, not scaled by count. Real melee weapon: flat +2 if at least
-    /// one is owned, same non-scaling reasoning.
+    /// Ammo/meds/tools sustain bonus, added on top of the weapon+armor average rather than blended
+    /// into it, since it's a separate "can this bot sustain a fight/trip" signal. Counts across
+    /// the whole inventory, unlike GetWeaponGearScore's belt-only scope.
     /// </summary>
     private static float GetSustainGearScore(BasePlayer npc)
     {
@@ -257,14 +191,8 @@ public partial class LivingRust
             score += 2f;
         }
 
-        // Keycards (2026-08-15, Lucas's own explicit numbers) - flat per
-        // colour owned, same non-scaling-by-quantity reasoning as the
-        // pickaxe/hatchet/melee bonuses above (a second green card doesn't
-        // mean anything a first one didn't already). Real shortnames
-        // confirmed via Bundles\items\*.json. Owning multiple colours
-        // stacks (a red card implies genuine progress, but doesn't
-        // preclude also holding a green/blue one), so this can add up to
-        // +30 total.
+        // Keycards: flat bonus per colour owned, not scaled by quantity. Owning multiple colours
+        // stacks, so this can add up to +30 total.
         if (allItems.Any(item => item.info.shortname == "keycard_green"))
         {
             score += 5f;
@@ -284,22 +212,57 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Combined 0-100 gear score - Lucas's own explicit example shape,
-    /// 2026-08-15: "50 is medium tier floor... scales medium up until 75,
-    /// high tier begins at 76." Weapon and armor components (both already
-    /// independently 0-100) are simple-averaged, then the sustain bonus
-    /// (ammo/meds/tools, GetSustainGearScore) is added on top and the
-    /// whole thing clamped back to 0-100 - the sustain bonus is
-    /// deliberately uncapped on its own (a bot with huge stockpiles can
-    /// genuinely push the total up meaningfully), but the final score
-    /// still needs to stay inside the gear-score bands' own 0-100 range or
-    /// GetTierWeights' band-matching would silently stop matching High
-    /// entirely above 100.
+    /// Combined 0-100 gear score: weapon and armor components are simple-averaged, then the
+    /// sustain bonus is added on top and the whole thing clamped back to 0-100 so it stays inside
+    /// the gear-score bands' range.
     /// </summary>
     private static int GetGearScore(BasePlayer npc)
     {
         float baseScore = (GetWeaponGearScore(npc) + GetArmorGearScore(npc)) / 2f;
         float sustainBonus = GetSustainGearScore(npc);
+
+        return Mathf.Clamp(Mathf.RoundToInt(baseScore + sustainBonus), 0, 100);
+    }
+
+    /// <summary>
+    /// "How good is this loot" score for a raw item collection, such as a corpse's containers or a
+    /// bag's inventory, used to weight which corpse/bag a survivor prioritizes by relative value
+    /// rather than just proximity. Scans every item flat, unlike GetGearScore's
+    /// belt/worn/main split.
+    /// </summary>
+    private static int GetContentsGearScore(IEnumerable<Item> items)
+    {
+        List<Item> all = items.Where(item => item != null).ToList();
+
+        int bestWeaponScore = all
+            .Where(item => WeaponGearScore.ContainsKey(item.info.shortname))
+            .Select(item => WeaponGearScore[item.info.shortname])
+            .DefaultIfEmpty(0)
+            .Max();
+
+        List<int> armorPieceScores = all
+            .Select(item => (int)GetArmorTier(item.info.shortname) * 20)
+            .OrderByDescending(score => score)
+            .Take(2)
+            .ToList();
+
+        while (armorPieceScores.Count < 2)
+        {
+            armorPieceScores.Add(0);
+        }
+
+        float baseScore = (bestWeaponScore + (float)armorPieceScores.Average()) / 2f;
+
+        float sustainBonus = all.Where(item => item.info.shortname == "syringe.medical").Sum(item => item.amount) * 2f;
+        sustainBonus += all.Where(item => item.info.shortname == "bandage").Sum(item => item.amount) * 0.5f;
+        sustainBonus += all.Where(item => item.info.shortname == "largemedkit").Sum(item => item.amount) * 1f;
+
+        int ammoCount = all.Where(item => Array.IndexOf(ScoredAmmoShortnames, item.info.shortname) >= 0).Sum(item => item.amount);
+        sustainBonus += ammoCount / 64f * 2f;
+
+        if (all.Any(item => item.info.shortname == "keycard_green")) sustainBonus += 5f;
+        if (all.Any(item => item.info.shortname == "keycard_blue")) sustainBonus += 10f;
+        if (all.Any(item => item.info.shortname == "keycard_red")) sustainBonus += 15f;
 
         return Mathf.Clamp(Mathf.RoundToInt(baseScore + sustainBonus), 0, 100);
     }
@@ -313,37 +276,11 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real monument name substrings per Lucas's own explicit tier
-    /// restructure, 2026-08-19 - tiers are now defined by real, CONFIRMED
-    /// keycard/puzzle requirements rather than name-based guesses:
-    ///   Tier 0 - no keycard/puzzle at all (confirmed live: Oxum's Gas
-    ///     Station, Abandoned Supermarket, Mining Outpost genuinely have no
-    ///     locked room; Junkyard confirmed the same 2026-08-19 - moved here
-    ///     from its old "stays Tier 1 as a deliberate exception" spot now
-    ///     that an explicit no-puzzle tier actually exists; Lighthouse
-    ///     included for whenever its own AutonomyExcludedMonumentSubstrings
-    ///     exclusion lifts).
-    ///   Tier 1 - requires a green keycard (accessLevel 1) + fuse. This is
-    ///     also the fallback default for anything NOT listed in any tier
-    ///     list below (warehouse, radtown_1, water_well_a,
-    ///     jungle_ziggurat_a, power substations, or any monument type not
-    ///     yet scanned/known) - unconfirmed monuments default here rather
-    ///     than to Tier 0, since "no puzzle at all" is the narrower, more
-    ///     specific claim and should only apply to monuments actually
-    ///     confirmed that way.
-    ///   Tier 2 - requires accessLevel 2 (blue), with real per-monument
-    ///     variation Lucas confirmed 2026-08-19: Powerplant needs
-    ///     green+blue, Water Treatment Plant needs ONLY blue+fuse (no
-    ///     green), Arctic Research Base needs ONLY blue (no fuse at all).
-    ///     Airfield/Trainyard classified here on Lucas's own word ahead of
-    ///     their own puzzles being traced/confirmed - correct later if a
-    ///     live scan proves otherwise, same pattern Powerplant's own blue
-    ///     confirmation followed.
-    ///   Tier 3 - unchanged (Nuclear Missile Silo, Launch Site, Oil Rig,
-    ///     Military Tunnel's green+blue+red).
-    /// Matched against MonumentInfo.name (a full prefab path, e.g.
-    /// ".../monument/medium/nuclear_missile_silo.prefab") via substring,
-    /// same approach RequiresDestructionToLoot/IsRoadsign/etc already use.
+    /// Monument name substrings grouped by tier, defined by keycard/puzzle requirements:
+    /// Tier 0 has no keycard/puzzle at all; Tier 1 requires a green keycard and fuse, and is also
+    /// the fallback default for any unlisted monument type; Tier 2 requires a blue keycard (with
+    /// some per-monument variation in whether green/fuse is also needed); Tier 3 requires green,
+    /// blue, and red. Matched against MonumentInfo.name via substring.
     /// </summary>
     private static readonly string[] TierZeroMonumentSubstrings =
     {
@@ -362,7 +299,7 @@ public partial class LivingRust
         "airfield",
         "arctic_research_base",
         "military_base", // abandoned military base (_a/_b/_c/_d biome variants)
-        "underwater_lab", // added 2026-08-15
+        "underwater_lab",
     };
 
     private static readonly string[] HighTierMonumentSubstrings =
@@ -394,27 +331,10 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Monument types autonomous survivors should never scan/select as a
-    /// loot destination, matched the same substring-against-MonumentInfo.
-    /// name way as the tier lists above. Lighthouse sits on its own small
-    /// island (no land route) and Underwater Lab's entrance is submerged -
-    /// both require real ocean/water movement this project doesn't have
-    /// yet, parked for later (2026-08-15, Lucas's own explicit scoping:
-    /// "avoid... for now, we can implement water/ocean movement later").
-    /// apartments_complex added same session, no reason given - Lucas's
-    /// own explicit request, parked pending whatever prompted it. Ranch,
-    /// barn ("barn"), Outpost (real internal name is "compound"), Bandit
-    /// Camp ("bandit"), and Fishing Village small/large (both share
-    /// "fishing_village") added 2026-08-15 - Lucas's own explicit reason:
-    /// these are all safezones, genuinely unlootable, so there's no point a
-    /// survivor ever heading there for loot (this is also what was causing
-    /// the Ranch bot pileup traced the same session - the fix there stays
-    /// in place, but excluding these monuments from autonomy entirely is
-    /// the real, correct fix since bots had no business going there at
-    /// all). Purely an autonomy exclusion - debug/admin lookup commands
-    /// (/lr.monument.where, /lr.debug.scanmonumentloot, etc.) deliberately
-    /// still work against any of these by name, since an admin asking for
-    /// one by name isn't the same as a bot wandering there on its own.
+    /// Monument types autonomous survivors should never scan/select as a loot destination.
+    /// Lighthouse and Underwater Lab require water movement this project doesn't have yet; Ranch,
+    /// barn, Outpost, Bandit Camp, and Fishing Village are safezones with nothing to loot. Purely
+    /// an autonomy exclusion - debug/admin lookup commands still work against any of these by name.
     /// </summary>
     private static readonly string[] AutonomyExcludedMonumentSubstrings =
     {
@@ -427,39 +347,12 @@ public partial class LivingRust
         "bandit",
         "fishing_village",
 
-        // launch_site added 2026-09-01 (live report: 233 of 248 recent
-        // deaths were "Cannon" - Bradley APC, which patrols Launch Site -
-        // and the only real Bradley-flee check in the whole project is
-        // scoped to ghost-route monument scanning specifically, so a bot
-        // just doing normal looting/checklist/base-gathering had ZERO
-        // protection walking in. Lucas's own explicit call: "hard avoid
-        // launch site as a pre-rolled check... they shouldn't be going
-        // into launch site anyways realistically" - simpler and more
-        // direct than teaching every other task type about Bradley
-        // detection too. A real tier3 monument (HighTierMonumentSubstrings
-        // still classifies it that way for whatever else reads tier), just
-        // never chosen as an autonomous destination or wandered into
-        // opportunistically. Deliberately NOT also added to
-        // FullyAvoidedMonumentNameSubstrings (LivingRust.MonumentAvoidZones.cs) -
-        // Lucas's own explicit narrowing: "only avoid it during the initial
-        // roll the dice 'go inland'... if they venture there and die, it's
-        // on them." A bot that later wanders near/into Launch Site
-        // opportunistically (chasing loot, fleeing, etc) takes its chances,
-        // unlike the other entries in this list which ARE also hard-avoided
-        // everywhere.
-        "launch_site",
+        // military_tunnel is a flat exclusion from autonomous rolling regardless of gear, unlike
+        // Launch Site which has a gear-score carve-out instead.
+        "military_tunnel",
 
-        // Added 2026-08-18, Lucas's own explicit call after reviewing the
-        // full scanned monument list for this map - "stables" is another
-        // real safezone (same reasoning as ranch/barn/compound above), and
-        // the rest are terrain/scenery features with no real loot worth a
-        // survivor detouring for: swamp_a/b/c AND ue_jungle_swamp_a (both
-        // caught by the single "swamp" substring), ice_lake_1/4, ue_lake_a,
-        // ue_oasis_a, and water_well_a-e (just a water source, no
-        // containers at all). Cave variants deliberately NOT added here -
-        // Lucas chose to just not pursue them for now (no scaffolding/
-        // registry work happened for them either), not to actively exclude
-        // them from autonomy the way these are.
+        // "stables" is another safezone; the rest are terrain/scenery features with no real loot
+        // worth detouring for (swamp variants, ice lakes, oasis, water wells).
         "stables",
         "swamp",
         "ice_lake",
@@ -467,18 +360,8 @@ public partial class LivingRust
         "oasis",
         "water_well",
 
-        // Added 2026-08-19, Lucas's own explicit call - Oil Rig (small
-        // "oilrig_1" and large "oilrig_2", both caught by "oilrig") is
-        // registered (MonumentGhostRouteFolders, LivingRust.Looting.cs) and
-        // already Tier 3 (HighTierMonumentSubstrings above), but real
-        // prerequisites this project doesn't have yet - boat travel to
-        // reach it at all, fending off RHIB-mounted scientist NPCs once
-        // there - mean it's deliberately parked out of autonomy for now.
-        // Lucas's own framing: "a whole lot of test -> fix -> test -> fix
-        // back and forth" better tackled as its own dedicated pass later,
-        // not half-built alongside everything else. Same debug/admin
-        // lookup exception as every other entry here - only autonomous
-        // rolling is blocked.
+        // Oil Rig is registered and already Tier 3, but needs boat travel and RHIB-mounted
+        // scientist handling this project doesn't have yet, so it's parked out of autonomy.
         "oilrig",
     };
 
@@ -489,23 +372,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real fix (2026-09-01, live report: bots STILL piling up 20-40 deep
-    /// at "Ranch" despite it already being listed in
-    /// AutonomyExcludedMonumentSubstrings) - confirmed via the game's own
-    /// full monument prefab manifest that there is NO "ranch"/"barn"/"farm"
-    /// prefab anywhere in it, so the plain-string overload above (matched
-    /// only against MonumentInfo.name, the internal prefab path) almost
-    /// certainly never had anything to match in the first place - same
-    /// display-name-vs-internal-name gap Bandit Camp ("bandit_town") and
-    /// Outpost ("compound") already needed their real internal names
-    /// reverse-engineered for, except whoever added "ranch" never
-    /// confirmed its real internal name the same way. Rather than guess
-    /// again, this checks the real player-facing display name too
-    /// (MonumentInfo.displayPhrase.english) - the same dual-check
-    /// FindAllMonumentMatches (/lr.monument.where's own real lookup,
-    /// NavigationManager.cs) already uses - so "Ranch" matches correctly
-    /// regardless of whatever its actual internal prefab name turns out to
-    /// be.
+    /// Also checks the player-facing display name (MonumentInfo.displayPhrase.english), not just
+    /// the internal prefab name, since some monuments' internal names don't contain an obvious
+    /// matching substring.
     /// </summary>
     private static bool IsMonumentExcludedFromAutonomy(MonumentInfo monument)
     {
@@ -524,18 +393,10 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Deliberately OVERLAPPING gear-score bands. Restructured 2026-08-19
-    /// (Lucas's own explicit spec, alongside the Tier 0-3 monument
-    /// restructure above) to a 4-tier shape: Tier 0 0-20, Tier 1 10-33,
-    /// Tier 2 25-65, Tier 3 58-100 unchanged. A score sitting in an overlap
-    /// window (0-20 spans into Tier 1, 10-20; 25-33 spans Tier 1/Tier 2;
-    /// 58-65 spans Tier 2/Tier 3) matches multiple bands at once, and
-    /// GetTierWeights below blends every matching band's weight profile
-    /// together via the same continuous falloff curve rather than picking
-    /// just one - Lucas's own original framing (2026-08-15, preserved
-    /// through this restructure): "a bot can variably still roll a higher
-    /// tier, or a tier below it but has a smaller percentage to... adds
-    /// even more randomness."
+    /// Deliberately overlapping gear-score bands across four tiers. A score in an overlap window
+    /// matches multiple bands at once, and GetTierWeights blends every matching band's weight via
+    /// a continuous falloff curve rather than picking just one, so a bot can still roll a
+    /// higher or lower tier at reduced odds.
     /// </summary>
     private const int TierZeroBandMin = 0;
     private const int TierZeroBandMax = 20;
@@ -562,58 +423,23 @@ public partial class LivingRust
     private const float TierFalloffRadius = 25f;
 
     /// <summary>
-    /// Integrates the discrete bands above with the continuous-falloff
-    /// idea discussed earlier (2026-08-15, Lucas's own explicit request:
-    /// "can we integrate both?") - each tier's weight is now a smooth
-    /// triangular falloff from its own band-derived center, floor + (peak
-    /// - floor) * (1 - distance/TierFalloffRadius), clamped so it never
-    /// goes negative past the radius. Replaces the old flat "which bands
-    /// does this score match, average their weights" step-function
-    /// version - same overlap BEHAVIOUR (a score between two tiers'
-    /// centers gets meaningful weight in both) but genuinely continuous
-    /// now instead of a hard 0/1 per band, and every gear score - not just
-    /// ones inside an overlap window - gets its own uniquely graduated
-    /// weight rather than one of only 3 possible flat outcomes. Floors
-    /// keep every tier reachable at ANY gear score (never truly zero,
-    /// matching "still visitable, just lower priority") - Tier2's floor is
-    /// higher than Tier1/Tier3's since Medium is the real middle ground,
-    /// plausible from either direction.
-    ///
-    /// Floors lowered 2026-08-15 (8/15/5 -> 4/4/2) - live report: a
-    /// completely naked gear-score-0 survivor rolled Medium tier (real log
-    /// evidence: '(gear score 0) rolled a Medium tier start - heading to
-    /// radtown_small_3... (1710m)') and headed to powerplant on a separate
-    /// occasion. At the old floor=15, Medium's share of a naked bot's total
-    /// weight was ~19% - not the rare exception "still visitable, just
-    /// lower priority" was meant to describe. The new floors keep every
-    /// tier reachable (never truly zero) but at a genuinely small share
-    /// (~5-7%) for a badly-mismatched score, matching what "still
-    /// possible, but should be uncommon" actually implies.
+    /// Each tier's weight is a smooth triangular falloff from its own band-derived center,
+    /// clamped so it never goes negative past the falloff radius. Floors keep every tier reachable
+    /// at any gear score, but at a small share for a badly-mismatched score.
     /// </summary>
     private static (float TierZero, float Tier1, float Tier2, float Tier3, float Local) GetTierWeights(int gearScore)
     {
-        // TierZero's peak/floor deliberately mirror Tier1's (2026-08-19,
-        // no explicit numbers given for this brand-new tier) - it's the
-        // immediately adjacent, equally low-commitment bracket, so the same
-        // shape that was already tuned for Tier1 is the safest starting
-        // point rather than inventing new untested numbers.
-        // Gear-independent, monument-favouring (2026-09-21, Lucas's own
-        // explicit spec): loot density at monuments is far higher than on
-        // roads, and gear score should only gate the card PUZZLE itself
-        // (see TryStartCardPuzzleDetour) - a bot can still walk a
-        // monument's ghost-route loot path regardless of gear. gearScore is
-        // kept as a parameter for the existing call sites. Tier0/Tier1 are
-        // the road-heavy tiers, so they're the ones cut back.
+        // Gear-independent and monument-favouring: loot density at monuments is far higher than on
+        // roads, and gear score only gates the card puzzle itself, so a bot can still walk a
+        // monument's ghost-route loot path regardless of gear. Tier0/Tier1 are the road-heavy
+        // tiers, so they're weighted lower. gearScore is kept as a parameter for existing call
+        // sites.
         return (TierZero: 10f, Tier1: 30f, Tier2: 40f, Tier3: 40f, Local: 12f);
     }
 
-    // Soft monument occupancy cap (2026-09-21, Lucas's own explicit
-    // request: "monuments should have occupancy"). Bots register when they
-    // commit to a monument destination; a registration lapses after
-    // MonumentOccupancyLifetimeSeconds (a realistic trip length) or when the
-    // bot dies. Each current occupant lowers that monument's pick weight
-    // (never to zero - real players avoid a crowd, but still sometimes
-    // collide, which is where the good bot-vs-bot fights happen).
+    // Soft monument occupancy cap: bots register when they commit to a monument destination, and
+    // a registration lapses after MonumentOccupancyLifetimeSeconds or when the bot dies. Each
+    // current occupant lowers that monument's pick weight, but never to zero.
     private const float MonumentOccupancyLifetimeSeconds = 480f;
     private readonly Dictionary<string, Dictionary<Guid, float>> _monumentOccupants = new();
 
@@ -683,73 +509,29 @@ public partial class LivingRust
         return floor + (peak - floor) * falloff;
     }
 
-    // How wide a net to cast for a Tier 1 "road" candidate - deliberately
-    // much wider than RoadSearchDetectionRadius (60m, that one's a
-    // desperate last-resort check), since this is a genuine deliberate
-    // choice to go explore a road, not a fallback from having nothing else
-    // left. Wide enough that a beach spawn has real candidates without
-    // being an unbounded map-wide search.
+    // How wide a net to cast for a Tier 1 "road" candidate, wider than RoadSearchDetectionRadius
+    // since this is a deliberate choice to explore a road, not a desperate last resort.
     private const float TierOneRoadSearchRadius = 300f;
 
-    /// <summary>
-    /// Beyond this distance, a rolled destination isn't automatically
-    /// accepted - see the coin-flip in TryStartWithGearWeightedDestination.
-    /// Real players decide "do I want to travel halfway across the map for
-    /// this" consciously, not automatically - Lucas's own framing,
-    /// 2026-08-15.
-    /// </summary>
+    // Beyond this distance, a rolled destination isn't automatically accepted - see the coin-flip
+    // in TryStartWithGearWeightedDestination.
     private const float LongDistanceCoinFlipThreshold = 1000f;
 
-    /// <summary>
-    /// Safety cap on how many times the whole decision (tier roll AND
-    /// destination pick) can be re-rolled from scratch on a coin-flip
-    /// "tails" - purely a termination guarantee (a genuinely infinite loop
-    /// is only a statistical near-impossibility, not actually impossible),
-    /// not a real gameplay number Lucas asked for.
-    /// </summary>
+    // Safety cap on how many times the whole decision can be re-rolled from scratch on a
+    // coin-flip "tails", purely a termination guarantee.
     private const int MaxDistanceDecisionRerolls = 20;
 
     /// <summary>
-    /// Rolls the weighted Local/Tier1/Tier2/Tier3 choice (GetTierWeights)
-    /// and, if a tier other than Local wins, walks there BEFORE the normal
-    /// find-container loop starts - a deliberate "here's where I'm
-    /// starting my search today" decision, made once per fresh loot task,
-    /// not an escalation reacting to failure the way
-    /// EscalateSearchToMonumentZone/EscalateSearchToKnownMonument are.
-    ///
-    /// Long-distance coin flip (2026-08-15, Lucas's own explicit spec,
-    /// replacing an earlier hard per-tier distance cap that turned out to
-    /// be the wrong shape): any rolled destination beyond
-    /// LongDistanceCoinFlipThreshold (1000m) isn't accepted automatically -
-    /// flip a 100-sided "coin" (even = heads = commit to the trip, odd =
-    /// tails = throw the ENTIRE decision away and re-roll a fresh tier +
-    /// destination from scratch, not just a new destination within the
-    /// same tier). Lucas's own framing: this replicates a real player
-    /// consciously weighing "do I want to travel halfway across the map
-    /// for this" rather than a hardcoded "go to whatever's within X
-    /// distance" rule - the randomness genuinely has no ceiling, a 3000m
-    /// trip is always possible, it just needs to survive real (repeated)
-    /// chance rather than being silently excluded from candidacy the way
-    /// the old hard cap did.
-    ///
-    /// Falls back to starting locally if the rolled tier has no real
-    /// candidate available at all (e.g. Tier 3 rolled but no high-tier
-    /// monument has been scanned on this map), or if MaxDistanceDecisionRerolls
-    /// is exhausted (an extreme, near-impossible run of consecutive tails).
+    /// Rolls the weighted Local/Tier1/Tier2/Tier3 choice and, if a tier other than Local wins,
+    /// walks there before the normal find-container loop starts. Any rolled destination beyond
+    /// LongDistanceCoinFlipThreshold isn't accepted automatically - a coin flip either commits to
+    /// the trip or re-rolls the entire decision from scratch. Falls back to starting locally if
+    /// the rolled tier has no candidate available, or if MaxDistanceDecisionRerolls is exhausted.
     /// </summary>
     /// <summary>
-    /// Cheap existence check (2026-08-15, real live bug: 'FilthyMarauder'
-    /// spawned a gear score of 87 right next to real corpses at Launch
-    /// Site, rolled a High-tier destination, and walked ~40s across the
-    /// SAME monument to a different zone while the corpses it started next
-    /// to sat untouched) - the gear-weighted roll had zero awareness of
-    /// what's already within reach before committing to a destination.
-    /// Deliberately lightweight, not the real full-filtered search
-    /// ContinueLootTask itself runs (no avoid-zone/hostile-scientist/
-    /// poisoned-zone checks) - this only answers "is it obviously worth
-    /// looting right here instead of walking somewhere else," the actual
-    /// loot decision still goes through the real filtered search once
-    /// ContinueLootTask takes over.
+    /// Cheap existence check so the gear-weighted roll doesn't walk a survivor past loot that's
+    /// already within reach. Deliberately lightweight, not the full filtered search
+    /// ContinueLootTask runs - this only answers whether it's obviously worth starting right here.
     /// </summary>
     private bool HasNearbyLootWorthStartingLocally(BasePlayer npc)
     {
@@ -783,28 +565,15 @@ public partial class LivingRust
                     && !IsNeverLootItem(candidate.item.info.shortname));
     }
 
-    // Keycard-tier destination bias (2026-09-15, Lucas's own explicit ask:
-    // "if a bot... holds a tiered keycard... it then decides based off
-    // keycard tier what monument to favour when rolling its dice"). Flat
-    // add-on to whichever tier's weight GetTierWeights already computed
-    // from gear score - large enough to meaningfully favour actually using
-    // the keycard it's carrying (comparable to that tier's own peak weight,
-    // 50f) without making it deterministic; gear score, the Local option,
-    // and every other tier's own weight are untouched. Stacks naturally if
-    // a survivor holds more than one tier at once (e.g. green+blue for
-    // Airfield) - each owned tier gets its own independent boost.
+    // Keycard-tier destination bias: a flat add-on to whichever tier's weight GetTierWeights
+    // computed from gear score, favouring a monument matching a keycard the survivor already
+    // holds. Stacks if a survivor holds more than one tier at once.
     private const float KeycardTierDestinationWeightBoost = 40f;
 
     /// <summary>
-    /// Green->Tier1/Low, Blue->Tier2/Medium, Red->Tier3/High - matches
-    /// CardPuzzleRouteFolders' own real keycard-tier-to-monument mapping
-    /// (LivingRust.CardPuzzles.cs): every Low-tier puzzle monument
-    /// (Harbor/Satellite Dish/Radtown) needs Green, every Medium-tier one
-    /// (Powerplant/Water Treatment/Arctic Research Base/Trainyard) needs
-    /// Blue, every High-tier one (Launch Site/Nuclear Missile Silo/Airfield)
-    /// needs Red somewhere along it. TierZero deliberately has no
-    /// corresponding keycard tier - it's the "barely committing, nearly
-    /// Local" bracket, no real puzzle content lives there.
+    /// Green favours Tier1, Blue favours Tier2, Red favours Tier3, matching each tier's puzzle
+    /// keycard requirement. TierZero has no corresponding keycard tier, since no puzzle content
+    /// lives there.
     /// </summary>
     private static (float TierZero, float Tier1, float Tier2, float Tier3) ApplyKeycardTierDestinationBias(BasePlayer npc, float tierZero, float tier1, float tier2, float tier3)
     {
@@ -830,7 +599,11 @@ public partial class LivingRust
     {
         int gearScore = GetGearScore(npc);
 
-        if (HasNearbyLootWorthStartingLocally(npc))
+        // This local-loot shortcut is skipped entirely once a base exists, since a based survivor
+        // should be actively rolling for monuments every cycle rather than defaulting to whatever
+        // roadside scrap is underfoot - the original "avoid pointless travel" reasoning for this
+        // shortcut is specifically an early-spawn concern.
+        if (survivor.Character.Home == null && HasNearbyLootWorthStartingLocally(npc))
         {
             VerbosePuts($"loot-task: '{survivor.Character.Alias}' (gear score {gearScore}) already has real loot within {LootSearchRadius:F0}m - starting right here instead of rolling a destination.");
             ContinueLootTask(survivor, new LootTaskState(), forceLocalScan: true);
@@ -904,13 +677,8 @@ public partial class LivingRust
                 onArrived: () => ContinueLootTask(survivor, new LootTaskState()),
                 onFailed: () =>
                 {
-                    // Same durable monument avoid-zone memory
-                    // EscalateSearchToMonumentZone's own onFailed feeds -
-                    // without this, a doomed gear-weighted pick (e.g. a
-                    // loot zone sitting right at an unreachable shoreline)
-                    // would just get rolled again on the bot's very next
-                    // fresh task, looping forever (confirmed live:
-                    // 'SilentHunter' at power_sub_small_2).
+                    // Feeds the same durable monument avoid-zone memory EscalateSearchToMonumentZone
+                    // uses, so a doomed gear-weighted pick doesn't just get rolled again next task.
                     RecordPotentialAvoidZone(destination);
                     VerbosePuts($"loot-task: '{survivor.Character.Alias}' couldn't reach {destinationLabel} - starting its search right here instead.");
                     ContinueLootTask(survivor, new LootTaskState(), forceLocalScan: true);
@@ -923,23 +691,42 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Uniform random pick among every real candidate belonging to tier -
-    /// for TierZero/Tier1 (the two lowest-commitment brackets), a nearby
-    /// road counts as one candidate alongside every known monument of that
-    /// tier (Lucas's own explicit "pooled together as equal-weight
-    /// candidates" framing, not roads ranked separately below monuments) -
-    /// extended from Tier1-only to also cover the new TierZero 2026-08-19,
-    /// since TierZero now fills the exact "nothing much going on, just a
-    /// low-commitment wander" role Tier1/Low originally had alone. Each
-    /// monument contributes exactly one of its own known zones (itself
-    /// randomly picked), not one candidate per zone - a monument that
-    /// happens to have more detected zones shouldn't dominate the random
-    /// pool just for that reason. No distance cap here at all (an earlier
-    /// per-tier radius was tried and removed the same day) - long-distance
-    /// picks are handled entirely by the coin flip in
-    /// TryStartWithGearWeightedDestination instead, not by excluding far
-    /// candidates from ever being considered.
+    /// Uniform random pick among every candidate belonging to tier. For TierZero/Tier1, a nearby
+    /// road counts as one candidate alongside every known monument of that tier, pooled as
+    /// equal-weight candidates. Each monument contributes exactly one randomly picked zone, so a
+    /// monument with more detected zones doesn't dominate the pool. No distance cap here - that's
+    /// handled by the coin flip in TryStartWithGearWeightedDestination.
     /// </summary>
+    /// <summary>
+    /// Per-monument gear floor: Missile Silo, Military Base, and Arctic Research Base are avoided
+    /// by the autonomous destination roll unless the survivor meets the required gear score. A
+    /// gated-out monument can still be reached opportunistically or via a card-puzzle/keycard
+    /// chain; this only removes it from the roll.
+    /// </summary>
+    // Explicit gear floor for Arctic Research Base, given its own specific number rather than
+    // reusing the general Tier2 band minimum.
+    private const int ArcticResearchBaseGearScoreMin = 35;
+
+    private bool IsBelowRequiredGearScoreForMonument(BasePlayer npc, string monumentName)
+    {
+        if (monumentName.IndexOf("nuclear_missile_silo", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return GetGearScore(npc) < HighTierBandMin;
+        }
+
+        if (monumentName.IndexOf("military_base", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return GetGearScore(npc) < MediumTierBandMin;
+        }
+
+        if (monumentName.IndexOf("arctic_research_base", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return GetGearScore(npc) < ArcticResearchBaseGearScoreMin;
+        }
+
+        return false;
+    }
+
     private bool TryPickRandomTierDestination(BasePlayer npc, MonumentTier tier, out Vector3 destination, out string label)
     {
         List<(Vector3 Position, string Label)> candidates = new();
@@ -959,15 +746,18 @@ public partial class LivingRust
                     continue;
                 }
 
+                if (IsBelowRequiredGearScoreForMonument(npc, monument.name))
+                {
+                    continue;
+                }
+
                 if (!_monumentLootZones.TryGetValue(monument.name, out List<MonumentLootZone> zones) || zones.Count == 0)
                 {
                     continue;
                 }
 
-                // Skip any zone the avoid-zone system has confirmed
-                // unreachable (see EscalateSearchToMonumentZone's own doc
-                // comment on this same check) - otherwise a fresh roll
-                // could still land right back on a known-doomed zone.
+                // Skips any zone the avoid-zone system has confirmed unreachable, otherwise a
+                // fresh roll could land right back on a known-doomed zone.
                 List<MonumentLootZone> reachableZones = zones
                     .Where(candidate => !IsInMonumentAvoidZone(monument.transform.TransformPoint(candidate.LocalOffset)))
                     .ToList();
@@ -991,9 +781,8 @@ public partial class LivingRust
             return false;
         }
 
-        // Occupancy-weighted pick (see GetMonumentOccupancyCap): a crowded
-        // monument's weight shrinks per occupant but never reaches zero;
-        // a road (no monument name) is never crowded.
+        // Occupancy-weighted pick: a crowded monument's weight shrinks per occupant but never
+        // reaches zero; a road is never crowded.
         int occupancyCap = GetMonumentOccupancyCap(tier);
         float[] weights = new float[candidates.Count];
         float totalWeight = 0f;

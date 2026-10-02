@@ -15,14 +15,8 @@ namespace LivingRust.Models
         public string Alias { get; set; }
 
         /// <summary>
-        /// Permanent Rust userID for this character's BasePlayer, assigned
-        /// once at creation and reused for every spawn/respawn across its
-        /// whole life (including deaths) - not regenerated per spawn. Rust
-        /// ties blueprint unlocks and building privilege authorization to
-        /// userID, so keeping this stable is what makes those persist
-        /// across a bot's deaths the same way they would for a real player
-        /// respawning, rather than resetting every time a fresh BasePlayer
-        /// entity gets created for this character.
+        /// Permanent Rust userID assigned once at creation and reused across every
+        /// spawn, so blueprint unlocks and building privileges persist through deaths.
         /// </summary>
         public ulong BotId { get; set; }
 
@@ -46,112 +40,73 @@ namespace LivingRust.Models
         public Vector3 Position { get; set; }
 
         /// <summary>
-        /// Facing at last save - restored on respawn/reload so a survivor
-        /// comes back looking the same direction it left off, not always
-        /// facing Rust's default identity rotation.
+        /// Facing direction at last save, restored on respawn so the survivor faces
+        /// the same direction it left off.
         /// </summary>
         public Quaternion Rotation { get; set; } = Quaternion.identity;
 
         /// <summary>
-        /// Health at last save - restored when bringing a still-alive
-        /// survivor's BasePlayer back after a real server restart (as
-        /// opposed to a death respawn, which always starts fresh at full
-        /// health via InitializeHealth).
+        /// Health at last save, restored when a still-alive survivor comes back
+        /// after a server restart.
         /// </summary>
         public float Health { get; set; } = 100f;
 
         /// <summary>
-        /// Full snapshot of everything this survivor was carrying/wearing
-        /// at last save (main, belt, and wear containers) - captured just
-        /// before Unload/Stop and restored on the next Start so a still-
-        /// alive survivor comes back with exactly what it had, rather than
-        /// the plugin either losing it or re-granting the starting kit
-        /// (which is only correct after an actual death).
+        /// Snapshot of everything the survivor was carrying or wearing at last save,
+        /// restored so it comes back with the same items.
         /// </summary>
         public List<SavedItem> Inventory { get; set; } = new();
 
         /// <summary>
-        /// Whether the survivor currently exists as a spawned Rust entity.
-        /// Recomputed from the live world every time state is captured
-        /// (see LivingRust.Persistence.cs's CaptureAllLiveState), not
-        /// something callers should set directly - a stale true here (e.g.
-        /// from a death that never got the chance to flip it back) would
-        /// make a future restore try to respawn a survivor that's actually
-        /// mid-death, not genuinely still alive.
+        /// Whether the survivor currently exists as a spawned Rust entity. Recomputed
+        /// from live world state rather than set directly.
         /// </summary>
         public bool Spawned { get; set; }
 
         /// <summary>
-        /// The survivor's current self-directed job, if any - see
-        /// TaskType's own doc comment for how this differs from the
-        /// Needs/GoalType scaffold. Persisted so a restart doesn't silently
-        /// forget what a survivor was in the middle of, though as of this
-        /// field's introduction nothing yet resumes an in-progress task
-        /// after a restart (the walk/loot state itself is runtime-only) -
-        /// a survivor would come back still flagged with its task but sit
-        /// idle until re-triggered.
+        /// The survivor's current self-directed task, if any. Persisted across
+        /// restarts, though an in-progress task is not automatically resumed.
         /// </summary>
         public TaskType CurrentTask { get; set; } = TaskType.None;
 
         /// <summary>
-        /// True forever once this character has completed at least one
-        /// real tier0 or tier1 base build (LivingRust.BaseBuilding.cs's
-        /// own AdvanceBuildReplay completion branch sets this) - the real
-        /// persistent form of the tier2+ prerequisite gate (2026-08-29,
-        /// Lucas's own explicit ask: "if the bot has built a base of any
-        /// tier, it is persisted throughout server restarts"). Never
-        /// cleared by a later, bigger build (see Home below, which DOES
-        /// update to the latest base) - the historical fact of having
-        /// built a lower tier once is what the gate actually asks for,
-        /// not "is my CURRENT home tier0/1."
+        /// Set permanently once this character has completed at least one tier0 or
+        /// tier1 base build, and never cleared by later builds. Used to gate
+        /// tier2+ progression.
         /// </summary>
         public bool HasCompletedLowerTierBaseBuild { get; set; }
 
         /// <summary>
-        /// This character's current real home base, if it's built one -
-        /// null until the first successful replay places a real tool
-        /// cupboard (2026-08-29, Lucas's own explicit ask: "this is where
-        /// the bot will deposit loot and store items etc, as well as
-        /// craft higher tiered items... you can't constantly carry
-        /// everything everywhere"). Overwritten by whatever base was most
-        /// recently completed - a survivor that later builds a bigger
-        /// base treats THAT as home going forward, unlike
-        /// HasCompletedLowerTierBaseBuild above which never resets.
+        /// This character's current home base, if any, used for depositing loot and
+        /// crafting. Updated whenever a new base is completed.
         /// </summary>
         public HomeBase Home { get; set; }
 
         /// <summary>
-        /// True once this character has rolled its home-site strategy for
-        /// the current life (LivingRust.HomeSiteStrategy.cs's own
-        /// RollHomeSiteStrategyIfFreshLife, backed at runtime by the
-        /// in-memory-only _hasRolledHomeSiteStrategy set). Persisted
-        /// (2026-09-15) so a plugin reload doesn't silently wipe that
-        /// in-memory flag and cause an already-committed, still-alive
-        /// survivor to roll a brand new random home-site choice out from
-        /// under itself mid-life - live evidence: '18SharpJackal' rolled
-        /// home-site strategy 3 separate times without ever dying, purely
-        /// because each hot-reload during testing reset the in-memory-only
-        /// flag while its Character record (this one) sailed through
-        /// untouched. RestoreSpawnedSurvivors (LivingRust.Persistence.cs)
-        /// re-seeds the in-memory set from this field on every reload;
-        /// OnPlayerDeath still resets it to false for a fresh life, same as
-        /// before.
+        /// Whether this character has already rolled its home-site strategy for the
+        /// current life. Persisted so a plugin reload doesn't cause a re-roll, and
+        /// reset to false on death.
         /// </summary>
         public bool HasRolledHomeSiteStrategy { get; set; }
 
         /// <summary>
-        /// The base design this character has committed to gathering
-        /// toward, if any (LivingRust.HomeSiteStrategy.cs's own
-        /// TryPursueBaseGatherGoal, backed at runtime by the in-memory-only
-        /// _rolledBaseDesign dictionary) - null Tier means nothing rolled
-        /// yet. Persisted alongside PursuingBaseGatherGoal below (2026-09-15,
-        /// Lucas's own explicit ask: "have it hold that base design it
-        /// rolled for through deaths") for the identical reload-safety
-        /// reason HasRolledHomeSiteStrategy exists - see its own doc
-        /// comment. Real gathered resources still don't survive death
-        /// (normal Rust inventory-on-death) - this only keeps the CHOICE of
-        /// which design to gather toward stable, so neither a death nor a
-        /// reload is also a fresh coin flip on the goal itself.
+        /// Whether this character has already rolled whether to rush a monument
+        /// before base-building, for the current life. Persisted to survive reloads
+        /// and reset to false on death.
+        /// </summary>
+        public bool HasRolledMonumentRush { get; set; }
+
+        /// <summary>
+        /// True while this character is actively rushing a monument before
+        /// base-building. MonumentRushDeadline is a wall-clock safety net for a
+        /// rush that never naturally concludes.
+        /// </summary>
+        public bool PursuingMonumentRushGoal { get; set; }
+        public float MonumentRushDeadline { get; set; }
+
+        /// <summary>
+        /// The base design this character has committed to gathering toward, if any.
+        /// Persisted so the choice of design survives deaths and reloads.
         /// </summary>
         public string RolledBaseTier { get; set; }
 
@@ -160,16 +115,30 @@ namespace LivingRust.Models
         public Dictionary<string, int> RolledBaseCost { get; set; }
 
         /// <summary>
-        /// True while this character is actively pursuing the base-gather
-        /// goal (LivingRust.HomeSiteStrategy.cs's own in-memory-only
-        /// _pursuingBaseGatherGoal set) - persisted alongside
-        /// RolledBaseTier/RolledBaseDesignPath/RolledBaseCost, same
-        /// reasoning; without this a reload could restore the rolled design
-        /// correctly but still leave the survivor never actually checking
-        /// it (ContinueLootTask only consults TryPursueBaseGatherGoal at
-        /// all when this is true).
+        /// True while this character is actively pursuing the base-gather goal.
+        /// Persisted alongside the rolled base design fields for the same reason.
         /// </summary>
         public bool PursuingBaseGatherGoal { get; set; }
+
+        /// <summary>
+        /// Consecutive number of times the tier-upgrade affordability check has
+        /// failed for this character, used as a pity-grant counter. Persists through
+        /// death and restarts, and resets to 0 once an upgrade becomes affordable.
+        /// </summary>
+        public int TierUpgradeStruggleCount { get; set; }
+
+        /// <summary>
+        /// Set permanently once this character has completed at least one trip
+        /// depositing loot at its base. Used with Home to determine whether a
+        /// survivor has passed the early-game restrictions.
+        /// </summary>
+        public bool HasDepositedInitialLoot { get; set; }
+
+        /// <summary>
+        /// Ammo types this character has unlocked by holding a firearm that uses
+        /// them. Never shrinks, so known ammo types keep being restocked.
+        /// </summary>
+        public List<string> KnownAmmoTypes { get; set; } = new();
 
         public Character()
         {
@@ -190,22 +159,8 @@ namespace LivingRust.Models
     }
 
     /// <summary>
-    /// A character's real persisted home base (2026-08-29) - just enough
-    /// to find it again after a restart and know what's there. Stores the
-    /// raw ulong value of the cupboard/workbench's real BaseNetworkable.
-    /// net.ID.Value (confirmed real via decompile - NetworkableId itself
-    /// is just a one-field struct wrapping this same ulong, kept as the
-    /// plain primitive here to avoid any dependency on that engine type
-    /// from the Models project) - a NetworkableId stays stable across a
-    /// server restart for anything that survives Rust's own save/load,
-    /// the same identity a real player's own bookmarked base would keep.
-    /// Live entity references obviously can't be JSON-serialized and
-    /// wouldn't survive the entities themselves being destroyed/respawned
-    /// across a restart anyway - a consumer needs to re-resolve these via
-    /// BaseNetworkable.serverEntities.Find(new NetworkableId(id)) and
-    /// treat a miss (the structure got raided/demolished/never actually
-    /// survived the restart) as "no home after all," not assume they're
-    /// always still valid.
+    /// A character's persisted home base, storing enough information to find it
+    /// again and re-resolve its entities after a server restart.
     /// </summary>
     public class HomeBase
     {
@@ -218,23 +173,9 @@ namespace LivingRust.Models
         public ulong WorkbenchNetId { get; set; }
 
         /// <summary>
-        /// Real computed door-crossing route (2026-08-29, Lucas's own
-        /// explicit ask: "is it possible to have a ghostroute added for
-        /// the different bases within each tier? so it knows how to get
-        /// in and out?"). Computed ONCE, right when the base finishes
-        /// building, straight from the same real trace data the replay
-        /// itself used - not authored by hand the way LivingRust.
-        /// MonumentRoutes.cs's own ghost routes are, since a base design's
-        /// own door position/orientation is already fully known the
-        /// instant it's placed, unlike a monument's layout. DoorPosition
-        /// is the front door's own real position; InsidePoint/
-        /// OutsidePoint sit a short, fixed distance either side of it
-        /// along the real building-centroid-to-door axis (computed from
-        /// every real piece the trace placed), so the direction is always
-        /// genuinely "toward the interior" / "away from the base" instead
-        /// of a guess. Vector3.zero on all three (the default) means no
-        /// door was ever found for this design - callers must check
-        /// DoorPosition != Vector3.zero before trusting this route.
+        /// The computed door-crossing route for this base, calculated once when it
+        /// finishes building. DoorPosition is the door's location; InsidePoint and
+        /// OutsidePoint sit either side of it. A zero value means no door was found.
         /// </summary>
         public Vector3 DoorPosition { get; set; }
 
@@ -243,69 +184,40 @@ namespace LivingRust.Models
         public Vector3 OutsidePoint { get; set; }
 
         /// <summary>
-        /// The real placement anchor this specific instance was built
-        /// from (BaseBuilding.cs's own BuildReplayState.OriginPosition) -
-        /// every piece in that replay landed at OriginPosition + (its own
-        /// recorded offset from the design's first placed piece), a pure
-        /// translation with NO rotation ever applied (confirmed via
-        /// ReplayBuildTrace - Quaternion.Euler(row.Rotation) always uses
-        /// the design's own raw recorded rotation verbatim). That means a
-        /// route authored once against ANY instance of this same design
-        /// re-projects onto every OTHER instance with simple addition -
-        /// see DoorRoutes below.
+        /// The placement anchor this instance was built from, letting a route
+        /// authored against one instance of a design be re-projected onto others.
         /// </summary>
         public Vector3 BuildOriginPosition { get; set; }
 
         /// <summary>
-        /// Which design file this instance was built from (e.g.
-        /// "tier0/base3.csv", relative to BaseBuilding.cs's own
-        /// BaseDesignsDirectory) - lets a door route authored against one
-        /// live instance of this design be found again for every other
-        /// instance of the SAME design.
+        /// The design file this instance was built from, used to match door routes
+        /// to other instances of the same design.
         /// </summary>
         public string SourceDesignPath { get; set; }
 
         /// <summary>
-        /// Real hardcoded door ghost routes (2026-08-29, seventh round -
-        /// Lucas's own explicit fallback after repeated live door/physics
-        /// failures: "if we can't fix this in due time, we resort to
-        /// hardcoded ghostroutes for entering the bases"). Each entry is
-        /// one door's real recorded in/out path (LivingRust.Debug.cs's
-        /// /lr.debug.savedoorroute), re-projected onto THIS instance via
-        /// BuildOriginPosition above - same proven waypoint-phase engine
-        /// (StartGhostRoute) already driving every monument ghost route,
-        /// sidestepping the door-collider/physics uncertainty entirely
-        /// rather than continuing to chase it. Empty until at least one
-        /// route has actually been recorded for this design - callers
-        /// fall back to the computed DoorPosition/InsidePoint/OutsidePoint
-        /// route above when this is empty, same "folder starts empty,
-        /// silent no-op" convention MonumentGhostRouteFolders already
-        /// uses.
+        /// Hardcoded door ghost routes recorded for this base, re-projected onto
+        /// this instance. Empty until a route has been recorded, in which case
+        /// callers fall back to the computed door route above.
         /// </summary>
         public List<HomeDoorRoute> DoorRoutes { get; set; } = new();
     }
 
     /// <summary>
-    /// One authored door route, already re-projected into this specific
-    /// HomeBase instance's own world space - see HomeBase.DoorRoutes'
-    /// own doc comment.
+    /// One authored door route, re-projected into this HomeBase instance's world
+    /// space.
     /// </summary>
     public class HomeDoorRoute
     {
         /// <summary>
-        /// The real recorded path through this door, in order - played
-        /// forward or reversed depending on which end the survivor is
-        /// currently closer to (direction-agnostic by design, since a
-        /// route is just as valid walked either way).
+        /// The recorded path through this door, in order, walkable in either
+        /// direction.
         /// </summary>
         public List<Vector3> Waypoints { get; set; } = new();
 
         /// <summary>
-        /// The real live door nearest this route's own path at the
-        /// moment it was loaded - re-resolved fresh each time it's
-        /// actually used (an upgrade/raid could replace the entity), this
-        /// is only a starting point for that lookup, same pattern
-        /// CrossHomeDoor's own ResolveDoor already established.
+        /// The nearest door to this route's path when loaded, re-resolved each time
+        /// it's used since the entity may have been replaced.
         /// </summary>
         public Vector3 DoorAnchorPosition { get; set; }
     }

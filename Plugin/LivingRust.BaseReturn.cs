@@ -8,13 +8,10 @@ namespace Carbon.Plugins;
 
 public partial class LivingRust
 {
-    // Scheduled return to base (2026-09-21, Lucas's own explicit spec): a
-    // survivor with a base heads home on a flat 20-minute cycle to bank its
-    // loot, so it doesn't spend ages out in the open as a walking pinata.
-    // The trip is skipped (and re-assessed 5 minutes later) whenever the
-    // survivor is inside a monument looting, in a fight, or building. Any
-    // real trip home (full inventory, post-recycling, this one) restarts the
-    // 20 minutes.
+    // Scheduled return to base: a survivor with a base heads home on a flat cycle to
+    // bank its loot, so it doesn't stay out in the open too long. The trip is
+    // skipped and re-assessed later whenever the survivor is looting a monument, in
+    // a fight, or building. Any trip home restarts the cycle.
     private const float BaseReturnCycleSeconds = 1200f;
     private const float BaseReturnDeferSeconds = 300f;
     private const float BaseReturnCheckIntervalSeconds = 15f;
@@ -32,13 +29,11 @@ public partial class LivingRust
         _moveHealTimer = timer.Every(MoveHealCheckIntervalSeconds, RunMoveHealCheck);
     }
 
-    // Heal-while-moving (2026-09-21, Lucas's own explicit spec): bandages and
-    // syringes get used mid-walk, not only at the next task callback. Long
-    // walks (airdrop journeys, base returns, monument approaches) otherwise
-    // go many seconds between ContinueLootTask calls, so a hurt survivor
-    // would keep walking hurt. TryUseMedicalItemIfHurt never cancels movement
-    // and no-ops when healthy/on cooldown/already mid-chain, so polling it is
-    // cheap. Combat has its own tactical heal, skipped here.
+    // Heal-while-moving: bandages and syringes get used mid-walk rather than only
+    // at the next task callback, since long walks would otherwise leave a hurt
+    // survivor walking hurt for many seconds. TryUseMedicalItemIfHurt never cancels
+    // movement and no-ops when healthy/on cooldown, so polling it is cheap. Combat
+    // has its own tactical heal and is skipped here.
     private const float MoveHealCheckIntervalSeconds = 2f;
     private Timer _moveHealTimer;
 
@@ -135,9 +130,8 @@ public partial class LivingRust
         }
     }
 
-    // The three cases the spec names (inside a monument looting, mid-fight,
-    // building) plus the states that are already about home or already
-    // committed to something that shouldn't be yanked away.
+    // Covers looting a monument, mid-fight, and building, plus states already
+    // committed to something that shouldn't be interrupted.
     private bool IsBusyForBaseReturn(Survivor survivor, BasePlayer npc)
     {
         Guid characterId = survivor.Character.Id;
@@ -176,14 +170,10 @@ public partial class LivingRust
         return false;
     }
 
-    // Windfall (2026-09-21, Lucas's own explicit spec): when a survivor's gear
-    // score jumps by more than 75% (a bow user killing someone with a
-    // firearm, say) it is "rich" and carrying something worth protecting -
-    // hard stop, go bank it. With a base it heads home and deposits; without
-    // one it goes to establish a base right now (resources topped up at the
-    // site) and then carries on. Only ever fires out of combat and when the
-    // area looks safe; until then the baseline is left alone so the jump is
-    // still detected on a later tick.
+    // Windfall: when a survivor's gear score jumps sharply, it is carrying
+    // something worth protecting and stops to bank it. With a base it heads home and
+    // deposits; without one it establishes a base right now and carries on. Only
+    // fires out of combat and when the area looks safe.
     private const float GearWindfallFraction = 0.75f;
     private const int GearWindfallMinAbsolute = 10;
     private readonly Dictionary<Guid, int> _gearBaseline = new();
@@ -252,9 +242,9 @@ public partial class LivingRust
             return true;
         }
 
-        // No base: skip whatever checklist is left and go build one now. The
-        // deadline is set in the past so TryPursueBaseGatherGoal treats any
-        // resource shortfall as topped-up-at-the-site instead of gathering.
+        // No base: go build one now. The deadline is set in the past so
+        // TryPursueBaseGatherGoal treats any resource shortfall as already
+        // topped-up rather than gathering.
         _pursuingPrimitiveGoals.Remove(characterId);
         _pursuingBaseGatherGoal.Add(characterId);
         _baseGatherDeadline[characterId] = Time.realtimeSinceStartup - 1f;

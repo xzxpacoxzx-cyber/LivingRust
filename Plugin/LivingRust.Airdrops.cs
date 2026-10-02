@@ -9,16 +9,10 @@ namespace Carbon.Plugins;
 
 public partial class LivingRust
 {
-    // Airdrops as a king-of-the-hill hotspot (2026-09-21, Lucas's own
-    // explicit spec). Survivors get the same heads-up a real player does
-    // when the cargo plane spawns: they learn where it will drop, roughly
-    // when it'll land, some of them (weak gear first) commit, each picks its
-    // OWN randomized rally point in the vicinity (not stacked on the crate),
-    // leaves timed so it arrives about when the drop lands, then holds until
-    // the crate is actually down before moving in. Participants prioritise
-    // PvP on sight against any bot or player the whole time (see
-    // IsAirdropParticipant's uses in LivingRust.Combat.cs) - whoever holds
-    // the ground gets the loot. Capped at AirdropMaxParticipants.
+    // Airdrops act as a king-of-the-hill hotspot: survivors learn a drop's landing
+    // position and time, some commit to it, each picks its own rally point nearby,
+    // and they hold until the crate lands before moving in and looting. Participants
+    // prioritize PvP on sight near the drop. Capped at AirdropMaxParticipants.
     private const int AirdropMaxParticipants = 30;
     private const float AirdropMaxTravelDistance = 1800f;
     private const float AirdropRunSpeedEstimate = 3.5f;
@@ -53,13 +47,8 @@ public partial class LivingRust
         return _airdropParticipants.ContainsKey(characterId);
     }
 
-    // Airdrop priority (2026-09-21, live report: a gear-95 runner reached the
-    // crate, got pulled into a fight, and its ordinary task pipeline - which
-    // resumes on its own once combat ends - sent it hunting a stag instead of
-    // finishing the drop). While a survivor is a participant of a live drop
-    // its normal loot/task chain is held off (the journey loop and hold loop
-    // own its movement), until it's actually at the crate looting
-    // (_airdropLootAllowed) or the participation ends.
+    // While a survivor is participating in a live drop, its normal loot/task chain
+    // is held off until it is actually looting the crate or participation ends.
     private readonly HashSet<Guid> _airdropLootAllowed = new();
 
     private bool ShouldHoldForAirdrop(Guid characterId)
@@ -78,8 +67,7 @@ public partial class LivingRust
 
         if (entity is CargoPlane plane)
         {
-            // Fields (drop position, path) are populated around Spawn - read
-            // them a moment later rather than racing the spawn itself.
+            // Reads plane fields a moment after spawn rather than racing the spawn itself.
             timer.Once(1f, () => OnCargoPlaneAnnounced(plane));
         }
         else if (entity is SupplyDrop drop)
@@ -135,10 +123,8 @@ public partial class LivingRust
             .OrderBy(a => a.ExpectedLandTime)
             .FirstOrDefault();
 
-        // A crate that's already near the ground with no announced plane is
-        // one reloaded from the world save (server start), not a new drop -
-        // ignore it (2026-09-21, live test: ~18 stale crates each logged as
-        // a fresh, instantly-"landed" drop).
+        // A crate already near the ground with no announced plane was reloaded from
+        // the world save at server start, not a new drop, so it is ignored.
         if (match == null && drop.transform.position.y < 300f)
         {
             return;
@@ -146,8 +132,8 @@ public partial class LivingRust
 
         if (match == null)
         {
-            // A drop nobody announced (admin call, another plugin) - still a
-            // real hotspot, just with less warning.
+            // An unannounced drop (admin call, another plugin) - still a real
+            // hotspot, just with less warning.
             match = new AirdropInfo
             {
                 Position = drop.transform.position,
@@ -198,8 +184,7 @@ public partial class LivingRust
                 break;
             }
 
-            // Weak gear = far more interested (an early-game bot gains the
-            // most from a drop), never zero for a geared one either.
+            // Weaker gear means more interest, though geared survivors are never fully disinterested.
             float interest = Mathf.Clamp(0.9f - GetGearScore(survivor.Player) / 100f, 0.35f, 0.9f);
 
             if (UnityEngine.Random.value > interest)
@@ -214,10 +199,8 @@ public partial class LivingRust
         return recruited;
     }
 
-    // Queue behaviour (2026-09-21, Lucas's own explicit ask: "30 bots lining
-    // up to run towards the airdrop - if any die, another joins the queue"):
-    // a runner that dies (or drops out) before the crate lands frees its
-    // slot and the next eligible survivor is recruited in its place.
+    // A runner that dies or drops out before the crate lands frees its slot, and
+    // the next eligible survivor is recruited in its place.
     private void OnAirdropRunnerLost(Guid characterId)
     {
         _airdropParticipants.Remove(characterId);
@@ -277,8 +260,8 @@ public partial class LivingRust
 
         Vector3 rally = info.Position;
 
-        // Land-only rally points (2026-09-21): a drop near the coast has water
-        // within its 25-70m ring - re-pick until the point is dry ground.
+        // Re-picks the rally point until it is on dry ground and clear of any
+        // monument safezone (LivingRust.MonumentAvoidZones.cs).
         for (int attempt = 0; attempt < 12; attempt++)
         {
             float angle = UnityEngine.Random.Range(0f, 360f) * Mathf.Deg2Rad;
@@ -289,7 +272,7 @@ public partial class LivingRust
             rally = info.Position + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * radius;
             rally.y = TerrainMeta.HeightMap != null ? TerrainMeta.HeightMap.GetHeight(rally) : info.Position.y;
 
-            if (WaterLevel.GetWaterLevel(rally, waves: false) <= rally.y + 0.3f)
+            if (WaterLevel.GetWaterLevel(rally, waves: false) <= rally.y + 0.3f && !IsInMonumentAvoidZone(rally))
             {
                 break;
             }
@@ -317,7 +300,7 @@ public partial class LivingRust
 
         if (IsBaseBuildInFlight(survivor.Character.Id) || _activeCombat.ContainsKey(survivor.Character.Id))
         {
-            // Mid-build or mid-fight: not worth abandoning - it sits this one out.
+            // Mid-build or mid-fight: sits this drop out rather than abandoning it.
             info.Participants.Remove(survivor.Character.Id);
             return;
         }
@@ -355,12 +338,9 @@ public partial class LivingRust
 
         StartJourneyWalk();
 
-        // Insistent journey (2026-09-21, live test: every recruited bot got
-        // pulled into a fight within seconds of setting out, and combat
-        // cancels movement - nothing ever restarted the walk, so none reached
-        // the drop). Every few seconds, if the bot isn't fighting or fleeing
-        // and isn't actually closing on its rally point (combat ended, or an
-        // unrelated task grabbed its movement), the walk is re-issued.
+        // Periodically re-issues the walk if the survivor isn't fighting/fleeing and
+        // isn't making progress toward its rally point, since combat or another
+        // task can otherwise silently cancel the movement.
         float lastDistance = Vector3.Distance(npc.transform.position, rally);
         Timer journeyTimer = null;
 
@@ -380,11 +360,9 @@ public partial class LivingRust
                 return;
             }
 
-            // Don't shove a survivor back toward a predator it's steering
-            // around (2026-09-21, live test: one bot logged 421 flee events
-            // against a single crocodile because this loop re-issued the
-            // walk straight at it every few seconds). While a hard-avoid
-            // animal is close, the walk's own detour logic has the wheel.
+            // Skips re-issuing the walk while a hard-avoid animal is nearby, so this
+            // loop doesn't shove the survivor straight back into a predator it's
+            // detouring around.
             if (TryFindNearbyHardAvoidAnimal(current, out _))
             {
                 lastDistance = Vector3.Distance(current.transform.position, rally);
@@ -406,10 +384,8 @@ public partial class LivingRust
     private const float AirdropJourneyCheckSeconds = 6f;
     private const float AirdropJourneyMinProgressMeters = 8f;
 
-    // PvP-on-sight is a HOT-ZONE rule (2026-09-21): it applies only once a
-    // participant is actually near the drop, not for the whole cross-map
-    // run there (where it made every bot pick fights with everyone it
-    // passed).
+    // PvP-on-sight applies only once a participant is near the drop, not for the
+    // whole run there.
     private const float AirdropHotZoneRadius = 150f;
 
     private bool IsInAirdropHotZone(Guid characterId, Vector3 position)
@@ -455,12 +431,8 @@ public partial class LivingRust
                 return;
             }
 
-            // Weapon scan on arrival (2026-09-21, Lucas's own explicit spec): a
-            // survivor with a primitive kit (less than a bow and arrows)
-            // checks the 50m around the drop zone for lootable corpses -
-            // somebody may already have died there holding a better weapon.
-            // One corpse at a time, only while idle and not moving in; a
-            // survivor with a bow+arrows or better arrives as normal.
+            // A survivor with a primitive kit checks nearby lootable corpses for a
+            // better weapon while idle and not moving in.
             if (!movingIn
                 && !HasReadyRangedWeapon(npc)
                 && !_activeMovement.ContainsKey(survivor.Character.Id)
@@ -484,9 +456,7 @@ public partial class LivingRust
                     onFailed: null);
             }
 
-            // A fight (or anything else) can cancel the move-in walk without
-            // ever calling its onFailed - re-arm it once the bot is idle
-            // and still not at the crate.
+            // Re-arms the move-in walk if it got cancelled without calling onFailed.
             if (movingIn
                 && !_activeMovement.ContainsKey(survivor.Character.Id)
                 && !_activeCombat.ContainsKey(survivor.Character.Id)
@@ -504,10 +474,8 @@ public partial class LivingRust
                 movingIn = true;
                 Puts($"airdrop: '{survivor.Character.Alias}' is moving in on the landed crate.");
 
-                // Loot from arm's reach, not from the crate's exact centre
-                // (2026-09-21, live report: RowdySkinner oscillated around the
-                // crate trying to reach its centre point, which the crate's own
-                // collider blocks, instead of looting from 0.5-1m away).
+                // Loots from arm's reach rather than the crate's exact center, which
+                // its own collider blocks.
                 if (info.Drop != null && !info.Drop.IsDestroyed && IsWithinLootRange(npc, info.Drop))
                 {
                     LootAirdropCrate(survivor, info);
@@ -526,9 +494,8 @@ public partial class LivingRust
         });
     }
 
-    // Tracks each drop's landing independently of any bot (2026-09-21) - it
-    // used to be checked only from a participant's hold loop, so a drop
-    // nobody had reached yet never registered as landed.
+    // Tracks each drop's landing independently of any bot, so a drop nobody has
+    // reached yet still registers as landed.
     private void StartAirdropMonitor(AirdropInfo info)
     {
         Timer monitor = null;
@@ -544,14 +511,10 @@ public partial class LivingRust
         });
     }
 
-    // King of the hill (2026-09-21, Lucas's own explicit spec): the crate is
-    // the priority target - the first survivor to reach it claims it and
-    // loots it directly (not via the generic nearest-container search); any
-    // later arrival either backs off and starts something new (a coin flip
-    // when there's already a live looter to contest) or stays, where the
-    // hot-zone on-sight rule has it fight the holder for whatever's left.
-    // Anything looted (weapons included) is equipped through the normal loot
-    // pipeline so the survivor can defend what it just took.
+    // King of the hill: the first survivor to reach the crate claims and loots it
+    // directly. A later arrival either backs off (a coin flip) or stays and fights
+    // the current looter under the hot-zone on-sight rule. Looted gear is equipped
+    // through the normal loot pipeline so the survivor can defend it.
     private void LootAirdropCrate(Survivor survivor, AirdropInfo info)
     {
         Guid characterId = survivor.Character.Id;
@@ -588,11 +551,9 @@ public partial class LivingRust
         LeaveAirdropSoon(survivor, info);
     }
 
-    // Grab, arm, defend, go (2026-09-21, Lucas's own explicit spec: "protect
-    // themselves, but don't dwell and wait around"). The looter equips the
-    // best weapon it now holds and leaves as soon as the crate is empty or
-    // a short grace has passed - but never mid-fight (combat has to end
-    // first), and it keeps the hot-zone on-sight rule until it actually goes.
+    // The looter equips its best weapon and leaves once the crate is empty or a
+    // short grace period passes, but never mid-fight; the hot-zone on-sight rule
+    // stays active until it actually leaves.
     private const float AirdropLeaveAfterLootSeconds = 20f;
 
     private void LeaveAirdropSoon(Survivor survivor, AirdropInfo info)
@@ -653,10 +614,8 @@ public partial class LivingRust
         info.LastDropPosition = current;
         info.Position = current;
 
-        // A crate that comes down on water floats and bobs, so it's never
-        // "still" (2026-09-21, live test: crate confirmed on the ground/water
-        // by Lucas, my log never registered it as landed). Also counts as
-        // landed once it's within a few metres of the surface below it.
+        // A crate on water floats and bobs, so it's never fully still; also counts
+        // as landed once within a few meters of the surface below it.
         float surface = TerrainMeta.HeightMap != null ? TerrainMeta.HeightMap.GetHeight(current) : current.y - 100f;
         float waterSurface = WaterLevel.GetWaterLevel(current, waves: false);
         surface = Mathf.Max(surface, waterSurface);

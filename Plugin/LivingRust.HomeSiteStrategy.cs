@@ -11,59 +11,82 @@ using UnityEngine;
 namespace Carbon.Plugins;
 
 /// <summary>
-/// Real "tie a lot of things together" pipeline (2026-09-01, Lucas's own
-/// explicit spec) - a fresh survivor first rolls Coastal (build wherever it
-/// ends up) or Inland (head to a random valid map coordinate first), then
-/// runs the now-unconditional primitive checklist (LivingRust.Crafting.cs).
-/// If that checklist isn't finished within 15 minutes, priority switches to
-/// gathering toward a randomly-rolled tier0/tier1 base design's real cost
-/// (wood/stones with a +1000 cupboard-upkeep buffer, metal.fragments via
-/// opportunistic component looting + recycling - there's no farmable node
-/// for components, same reasoning TryGatherCraftIngredient's own doc
-/// comment gives), crafting a hammer + building plan along the way, then
-/// actually executing the build via the same real ReplayBuildTrace/
-/// ClearBuildSiteThenReplay pipeline /lr.debug.replaybuild already proves
-/// out, and finally settling in via the already-proven GhostReturnHomeAndDeposit
-/// trip.
+/// Coordinates home-site selection and base-building strategy: a fresh survivor rolls Coastal or
+/// Inland, runs the primitive checklist, then gathers toward and builds a rolled base design
+/// before settling in.
 /// </summary>
 public partial class LivingRust
 {
-    // 15 real minutes (2026-09-01, Lucas's own explicit number).
+    // Time limit for the primitive checklist before priority switches to base-gathering.
     private const float PrimitiveGoalTimeLimitSeconds = 900f;
 
-    // Lowered from 0.5 (2026-09-01, live report: "of 250 bots, I have about
-    // 60-70 sitting on or around the coastline just aimlessly walking
-    // around... I think if we keep closer to a quarter of overall bots on/
-    // around the shoreline that's fine"). 0.75 inland means ~25% stay
-    // Coastal, matching that ask directly.
+    // Chance a fresh survivor rolls to head inland instead of staying coastal.
     private const float HomeSiteInlandRollChance = 0.75f;
 
-    // Real "give up on the coast, go inland" stall detector (2026-09-01,
-    // Lucas's own explicit spec: "if nothing meaningful is being done...
-    // after 2-3 minutes the bot has gathered no resources... have the bot
-    // just give up and head inland randomly"). Checked only for a survivor
-    // that rolled Coastal AND is still pursuing the primitive checklist -
-    // an inland-rolled survivor is already headed somewhere, and a
-    // survivor with a real base has nowhere useful to redirect to.
+    // Chance a fresh survivor rushes a monument first, before its checklist/home-site rolls,
+    // routing it into the existing gear-weighted destination roll early. See
+    // RollMonumentRushIfFreshLife for how the rush concludes.
+    private const float MonumentRushChance = 0.25f;
+
+    // Safety-net deadline for a monument rush that never naturally concludes (e.g. the roll landed
+    // on a road or local search instead of an actual monument), so a survivor isn't stuck rushing
+    // indefinitely.
+    private const float MonumentRushTimeLimitSeconds = 900f;
+
+    private readonly HashSet<Guid> _hasRolledMonumentRush = new();
+    private readonly HashSet<Guid> _pursuingMonumentRushGoal = new();
+    private readonly Dictionary<Guid, float> _monumentRushDeadline = new();
+
+    /// <summary>
+    /// Once-per-life roll deciding whether a survivor should rush a monument before its checklist
+    /// and home-site rolls. Returns true while the rush is still in progress, and clears either on
+    /// a genuine monument completion or once the safety-net deadline expires.
+    /// </summary>
+    private bool RollMonumentRushIfFreshLife(Survivor survivor)
+    {
+        Guid characterId = survivor.Character.Id;
+
+        if (_pursuingMonumentRushGoal.Contains(characterId))
+        {
+            if (UnityEngine.Time.realtimeSinceStartup < _monumentRushDeadline.GetValueOrDefault(characterId))
+            {
+                return true;
+            }
+
+            _pursuingMonumentRushGoal.Remove(characterId);
+            _monumentRushDeadline.Remove(characterId);
+            Puts($"monument-rush: '{survivor.Character.Alias}' hit its {MonumentRushTimeLimitSeconds:F0}s safety-net deadline without finishing a real monument - falling back to its normal checklist/base-building priority.");
+            return false;
+        }
+
+        if (_hasRolledMonumentRush.Contains(characterId))
+        {
+            return false;
+        }
+
+        _hasRolledMonumentRush.Add(characterId);
+
+        if (UnityEngine.Random.value >= MonumentRushChance)
+        {
+            return false;
+        }
+
+        _pursuingMonumentRushGoal.Add(characterId);
+        _monumentRushDeadline[characterId] = UnityEngine.Time.realtimeSinceStartup + MonumentRushTimeLimitSeconds;
+        Puts($"monument-rush: '{survivor.Character.Alias}' rolled to rush a monument before starting its checklist/base-building this life.");
+        return true;
+    }
+
+    // Window with no gathering progress before a coastal survivor gives up and heads inland
+    // instead. Only checked for a survivor that rolled Coastal and is still on the checklist.
     private const float CoastalStallCheckWindowSeconds = 150f;
 
     private readonly Dictionary<Guid, (float Time, int Wood, int Stone, int Cloth)> _coastalProgressSnapshot = new();
 
     /// <summary>
-    /// Real per-cycle stall check - cheap in the common case (an early
-    /// return the moment ANY of the three gating conditions below don't
-    /// apply, or the snapshot window simply hasn't elapsed yet). Compares
-    /// carried wood/stone/cloth against a snapshot taken
-    /// CoastalStallCheckWindowSeconds ago - any genuine increase in any of
-    /// the three counts as real progress (a stone/metal ore find would
-    /// increment "stone" too, so this isn't blind to ore-node gathering
-    /// either) and just refreshes the baseline rather than redirecting.
-    /// Only once a full window passes with NO growth at all does this
-    /// commit the survivor to a fresh random inland site and a real walk
-    /// there, converting it from Coastal to Inland retroactively - reuses
-    /// TryFindRandomInlandSite/_homeSiteTarget, the exact same mechanism
-    /// the original spawn-time roll already uses, so this survivor now
-    /// behaves identically to one that rolled Inland from the start.
+    /// Compares carried wood/stone/cloth against a snapshot from CoastalStallCheckWindowSeconds
+    /// ago. Any growth just refreshes the baseline; a full window with no growth redirects the
+    /// survivor to a fresh random inland site, converting it from Coastal to Inland retroactively.
     /// </summary>
     private bool TryRedirectStalledCoastalBotInland(Survivor survivor, BasePlayer npc)
     {
@@ -91,9 +114,8 @@ public partial class LivingRust
 
         bool madeProgress = currentWood > snapshot.Wood || currentStone > snapshot.Stone || currentCloth > snapshot.Cloth;
 
-        // Refresh the baseline regardless - either real progress (new
-        // starting point for the next window) or a confirmed stall about
-        // to redirect (fresh baseline for wherever it ends up next).
+        // Refreshes the baseline either way: a new starting point after progress, or a fresh
+        // baseline for wherever the survivor ends up next after redirecting.
         _coastalProgressSnapshot[characterId] = (UnityEngine.Time.realtimeSinceStartup, currentWood, currentStone, currentCloth);
 
         if (madeProgress || !TryFindRandomInlandSite(out Vector3 site))
@@ -114,21 +136,13 @@ public partial class LivingRust
         return true;
     }
 
-    // Keeps a random map coordinate roll away from the very edge of the
-    // map (often ocean/border terrain) - same "margin off the edge" idea
-    // TryFindClearBuildOrigin's own relocate loop uses locally, just
-    // applied at map scale here.
+    // Keeps a random map coordinate roll away from the very edge of the map (often ocean/border
+    // terrain).
     private const float MapEdgeMarginFraction = 0.1f;
     private const int InlandSiteSearchMaxAttempts = 20;
 
-    // "2000+ wood in storage" (LivingRust.Looting.cs's own
-    // HomeFurnaceWoodTrigger) is a SEPARATE, later concern (topping up a
-    // furnace once a base already exists) - this is the buffer on TOP of
-    // a design's own real construction cost, specifically so the survivor
-    // arrives at the build site with enough left over to also seed the
-    // new tool cupboard's upkeep once GhostReturnHomeAndDeposit runs
-    // afterward (2026-09-01, Lucas's own explicit framing: "gather until X
-    // quantity achieved +1000 (for tool cupboard deposit)").
+    // Buffer gathered on top of a design's real construction cost, so the survivor arrives with
+    // enough left over to also seed the new tool cupboard's upkeep.
     private const int BaseGatherResourceBuffer = 1000;
 
     // HammerShortname itself already exists (LivingRust.SpawnKits.cs) - reused, not redeclared.
@@ -143,16 +157,9 @@ public partial class LivingRust
 
     private readonly HashSet<Guid> _pursuingBaseGatherGoal = new();
 
-    // In-flight build guard (2026-09-21, live report: bases built as a
-    // jumble of overlapping partial structures; JumpyBuzzard started 'base5'
-    // 31 times without finishing). While a build replay is actually running
-    // the survivor stands mostly still (clearing trees, placing pieces), so
-    // the life-stall watchdog "rescued" it, re-entering the task loop -
-    // and with _pursuingBaseGatherGoal now (correctly) kept until success,
-    // that re-entry started a brand-new replay at a new site on top of the
-    // abandoned one. Only the REPLAY phase is guarded (the walk there stays
-    // rescuable), and it expires so a genuinely hung replay can't block
-    // forever.
+    // Guards against the life-stall watchdog re-entering the task loop mid-replay and starting a
+    // second build on top of an unfinished one. Only the replay phase is guarded (the walk there
+    // stays rescuable), and it expires so a genuinely hung replay can't block forever.
     private readonly Dictionary<Guid, float> _baseBuildStartedAt = new();
     private const float BaseBuildInFlightMaxSeconds = 600f;
 
@@ -163,28 +170,16 @@ public partial class LivingRust
     }
     private readonly Dictionary<Guid, (string Tier, string DesignPath, Dictionary<string, int> Cost)> _rolledBaseDesign = new();
 
-    // Real randomized build-by window (2026-09-19, Lucas's own explicit
-    // spec: "between 15-30 minutes, the bots should have gotten resources
-    // to build a base, built the base... One thing I want to avoid is all
-    // the bots instinctively building a base at 15:01"). 0-900s (0-15 min)
-    // rolled on top of whenever a survivor's own base-gather goal actually
-    // starts (itself already ~15 real minutes into life via the primitive
-    // checklist's own PrimitiveGoalTimeLimitSeconds), landing each
-    // survivor's own "must be ready" moment somewhere in that next 15
-    // minutes rather than every bot converging on the same instant.
+    // Randomized window added on top of when a survivor's base-gather goal starts, so bots don't
+    // all try to build at the same moment.
     private const float BaseGatherDeadlineWindowSeconds = 900f;
 
     private readonly Dictionary<Guid, float> _baseGatherDeadline = new();
 
     /// <summary>
-    /// Same lazy-fallback shape as GetOrSetPrimitiveGoalDeadline's own doc
-    /// comment describes - covers a survivor that was already mid-base-gather
-    /// (rolled a design, entered _pursuingBaseGatherGoal) from BEFORE this
-    /// deadline mechanic existed, so _baseGatherDeadline has no entry for
-    /// it yet. Rolling fresh right now rather than treating "missing" as
-    /// "already due" - a survivor mid-migration deserves the same real 0-15
-    /// minute window everyone else gets, not an instant catch-up the very
-    /// next time this is checked.
+    /// Lazily rolls and caches a random build-by deadline the first time it's needed, so a
+    /// survivor with no entry yet still gets a fair 0-15 minute window instead of an instant
+    /// catch-up.
     /// </summary>
     private float GetOrSetBaseGatherDeadline(Guid characterId)
     {
@@ -199,21 +194,10 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Called from StartLootForResourcesTask alongside RollPrimitiveGoalIfFreshLife
-    /// - same once-per-life gating pattern, same reasoning (not a
-    /// spawn-only hook, internally gated instead). Takes onReady rather
-    /// than being fire-and-forget (2026-09-01, live report: bots "piling
-    /// up in certain areas... all appear to be farming around the same
-    /// area" - the real cause was that an INLAND roll only ever stored
-    /// _homeSiteTarget for LATER use at actual base-build time, nothing
-    /// made the survivor walk there first, so it just gathered wherever it
-    /// happened to already be - almost always near its own beach spawn,
-    /// same as every other survivor's). An inland roll now genuinely walks
-    /// there via StartWalkingWithRecovery BEFORE onReady fires (letting
-    /// the primitive checklist start once it's actually inland, dispersing
-    /// bots away from the coast the way the original spawn-roll was always
-    /// meant to); a coastal roll (or a failed inland walk) calls onReady
-    /// immediately, same as before.
+    /// Once-per-life roll for coastal vs inland home-site strategy. An inland roll walks the
+    /// survivor there via StartWalkingWithRecovery before onReady fires, so bots disperse from the
+    /// coast instead of gathering wherever they already are; a coastal roll calls onReady
+    /// immediately.
     /// </summary>
     private void RollHomeSiteStrategyIfFreshLife(Survivor survivor, Action onReady)
     {
@@ -234,22 +218,9 @@ public partial class LivingRust
         {
             _homeSiteTarget[characterId] = site;
 
-            // Real headstart (2026-09-19, Lucas's own explicit ask: "for
-            // the 20% that spawn inland already, maybe they should just
-            // instantly start building a tier0 or tier1 base design
-            // (gives them a slight headstart)"). Pre-rolls the exact same
-            // design/deadline TryPursueBaseGatherGoal would otherwise only
-            // roll once the checklist actually finishes. Doesn't change
-            // checklist priority at all - an inland survivor still does
-            // its checklist first, same as before, ContinueLootTask still
-            // checks _pursuingPrimitiveGoals ahead of _pursuingBaseGatherGoal
-            // regardless - it just means the design choice and its own
-            // randomized build-by deadline (GetOrSetBaseGatherDeadline)
-            // start ticking from spawn instead of from checklist-completion,
-            // so by the time an inland survivor actually reaches
-            // base-gather its clock already has a real head start. Guarded
-            // the same way TryPursueBaseGatherGoal itself guards a fresh
-            // roll (ContainsKey check) - a no-op if somehow already set.
+            // Pre-rolls a base design and build-by deadline for inland survivors so both start
+            // ticking from spawn instead of from checklist-completion, giving them a head start
+            // once they reach base-gather. Doesn't change checklist priority itself.
             if (!_rolledBaseDesign.ContainsKey(characterId)
                 && TryRollBaseDesignIgnoringAffordability(out string headstartTier, out string headstartDesignPath, out Dictionary<string, int> headstartCost))
             {
@@ -258,11 +229,11 @@ public partial class LivingRust
                 Puts($"home-site: '{survivor.Character.Alias}' also pre-rolled '{headstartTier}/{Path.GetFileNameWithoutExtension(headstartDesignPath)}' for a head start on base-gathering once its checklist is done.");
             }
 
-            Puts($"home-site: '{survivor.Character.Alias}' rolled INLAND - heading to {site} before starting its primitive checklist.");
+            VerbosePuts($"home-site: '{survivor.Character.Alias}' rolled INLAND - heading to {site} before starting its primitive checklist.");
 
             StartWalkingWithRecovery(survivor, site, onArrived: () =>
             {
-                Puts($"home-site: '{survivor.Character.Alias}' arrived at its inland site - starting its checklist here.");
+                VerbosePuts($"home-site: '{survivor.Character.Alias}' arrived at its inland site - starting its checklist here.");
                 onReady?.Invoke();
             },
             onFailed: () =>
@@ -274,7 +245,7 @@ public partial class LivingRust
             return;
         }
 
-        Puts($"home-site: '{survivor.Character.Alias}' rolled COASTAL - will build near wherever it ends up.");
+        VerbosePuts($"home-site: '{survivor.Character.Alias}' rolled COASTAL - will build near wherever it ends up.");
         onReady?.Invoke();
     }
 
@@ -291,15 +262,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Picks a random valid map coordinate, retrying up to
-    /// InlandSiteSearchMaxAttempts times against two real checks: not
-    /// underwater (WaterLevel.GetWaterLevel vs the real terrain heightmap -
-    /// the same swim-detection API LivingRust.Commands.cs already uses) and
-    /// not inside a monument's own no-build buffer (IsInsideMonumentNoBuildZone,
-    /// LivingRust.BaseBuilding.cs). "Inland" here means "a random valid
-    /// point well off the map edge," not a true distance-from-coastline
-    /// guarantee - a real coastline-distance computation would need much
-    /// more work than this roll is worth.
+    /// Picks a random valid map coordinate, avoiding water and monument no-build zones.
+    /// Approximates "inland" as a point well off the map edge rather than a true
+    /// distance-from-coastline check.
     /// </summary>
     private bool TryFindRandomInlandSite(out Vector3 site)
     {
@@ -336,14 +301,146 @@ public partial class LivingRust
         return false;
     }
 
+    // How many times TryStartAutonomousBaseBuild retries the SAME target before giving up and
+    // rerolling an entirely new one. A genuinely bad spot (e.g. wedged against a cliff face)
+    // never becomes buildable no matter how far "terrain tolerance loosens as failures build
+    // up" relaxes the thresholds at that one location, so retrying forever there is pure waste.
+    private const int BuildSiteRerollFailureThreshold = 4;
+
+    // How far outside a monument's no-build buffer the reroll site lands: far enough to not
+    // immediately fail IsInsideMonumentNoBuildZone again, close enough to still read as "near"
+    // the monument rather than a random point on the map.
+    private const float MonumentAdjacentSiteMinDistance = MonumentNoBuildBuffer + 10f;
+    private const float MonumentAdjacentSiteMaxDistance = MonumentNoBuildBuffer + 80f;
+
+    // How far from the survivor's current position a candidate monument counts as "nearby" for
+    // a build-site reroll, so a stuck survivor isn't sent clear across the map for this.
+    private const float BuildSiteRerollMonumentSearchRadius = 1500f;
+
+    private const int MonumentAdjacentSiteMaxAttempts = 20;
+
     /// <summary>
-    /// Rolls a random tier0/tier1 design REGARDLESS of current
-    /// affordability (2026-09-01, Lucas's own explicit spec: "roll for any
-    /// one of the tier0 or tier1 base builds and gather the required
-    /// resources to build it") - the opposite direction from
-    /// TryChooseAffordableBaseDesign (which only ever picks something
-    /// already affordable RIGHT NOW). Same random-pick-within-a-tier logic
-    /// RunDebugReplayBuild's own tier-explicit mode already uses.
+    /// Picks a random valid site just outside a nearby monument's no-build zone, for a survivor
+    /// giving up on its current build target after BuildSiteRerollFailureThreshold failures.
+    /// Prefers a random monument within BuildSiteRerollMonumentSearchRadius of origin; falls
+    /// back to the single nearest monument on the map if none are that close.
+    /// </summary>
+    private bool TryFindRandomSiteNearMonument(Vector3 origin, out Vector3 site)
+    {
+        site = Vector3.zero;
+
+        if (TerrainMeta.Path == null || TerrainMeta.Path.Monuments == null || TerrainMeta.Path.Monuments.Count == 0)
+        {
+            return false;
+        }
+
+        List<MonumentInfo> nearby = TerrainMeta.Path.Monuments
+            .Where(m => m != null && (m.transform.position - origin).sqrMagnitude <= BuildSiteRerollMonumentSearchRadius * BuildSiteRerollMonumentSearchRadius)
+            .ToList();
+
+        MonumentInfo monument = nearby.Count > 0
+            ? nearby[UnityEngine.Random.Range(0, nearby.Count)]
+            : TerrainMeta.Path.Monuments
+                .Where(m => m != null)
+                .OrderBy(m => (m.transform.position - origin).sqrMagnitude)
+                .FirstOrDefault();
+
+        if (monument == null)
+        {
+            return false;
+        }
+
+        for (int attempt = 0; attempt < MonumentAdjacentSiteMaxAttempts; attempt++)
+        {
+            float angle = UnityEngine.Random.Range(0f, 360f);
+            float distance = UnityEngine.Random.Range(MonumentAdjacentSiteMinDistance, MonumentAdjacentSiteMaxDistance);
+            Vector3 offset = Quaternion.Euler(0f, angle, 0f) * Vector3.forward * distance;
+            Vector3 candidate = monument.transform.position + offset;
+
+            candidate.y = TerrainMeta.HeightMap != null ? TerrainMeta.HeightMap.GetHeight(candidate) : 0f;
+
+            float waterHeight = WaterLevel.GetWaterLevel(candidate, waves: false);
+
+            if (waterHeight > candidate.y + 0.5f)
+            {
+                continue;
+            }
+
+            if (IsInsideMonumentNoBuildZone(candidate, out _))
+            {
+                continue;
+            }
+
+            site = candidate;
+            return true;
+        }
+
+        return false;
+    }
+
+    // Per-design roll weighting so bots naturally spread across the whole design pool instead of
+    // clustering on whichever design keeps winning the dice. Keyed by full design path, so tiers
+    // never collide. First selection costs a design 10 percentage points of weight; every
+    // selection after that costs another 20 (so a design picked 3 times in a row sits at
+    // -50%: 10 + 20 + 20). Every design NOT picked on a given roll recovers 5 points back toward
+    // its normal weight, floored at 0 - a design that recovers fully to 0 is treated as fresh
+    // again on its next pick. Weight is never allowed below BaseDesignMinWeightPercent, so a
+    // heavily-penalized design stays pickable, just unlikely.
+    private readonly Dictionary<string, float> _baseDesignRollPenalty = new();
+    private const float BaseDesignFirstRollPenalty = 10f;
+    private const float BaseDesignRepeatRollPenalty = 20f;
+    private const float BaseDesignRecoveryPerNonRoll = 5f;
+    private const float BaseDesignMinWeightPercent = 5f;
+
+    /// <summary>
+    /// Weighted pick among designs - see _baseDesignRollPenalty's own doc comment for the
+    /// weighting rule. Also applies the roll-adjustment (penalize the winner, recover everyone
+    /// else) as a side effect of picking, so callers never need to remember to do it separately.
+    /// </summary>
+    private string PickWeightedBaseDesign(string[] designs)
+    {
+        float[] weights = new float[designs.Length];
+        float totalWeight = 0f;
+
+        for (int i = 0; i < designs.Length; i++)
+        {
+            float penalty = _baseDesignRollPenalty.GetValueOrDefault(designs[i]);
+            weights[i] = Mathf.Max(BaseDesignMinWeightPercent, 100f - penalty);
+            totalWeight += weights[i];
+        }
+
+        float roll = UnityEngine.Random.Range(0f, totalWeight);
+        string chosen = designs[designs.Length - 1];
+
+        for (int i = 0; i < designs.Length; i++)
+        {
+            if ((roll -= weights[i]) <= 0f)
+            {
+                chosen = designs[i];
+                break;
+            }
+        }
+
+        foreach (string design in designs)
+        {
+            float currentPenalty = _baseDesignRollPenalty.GetValueOrDefault(design);
+
+            if (design == chosen)
+            {
+                _baseDesignRollPenalty[design] = currentPenalty + (currentPenalty <= 0f ? BaseDesignFirstRollPenalty : BaseDesignRepeatRollPenalty);
+            }
+            else
+            {
+                _baseDesignRollPenalty[design] = Mathf.Max(0f, currentPenalty - BaseDesignRecoveryPerNonRoll);
+            }
+        }
+
+        return chosen;
+    }
+
+    /// <summary>
+    /// Rolls a random tier0/tier1 design regardless of current affordability, unlike
+    /// TryChooseAffordableBaseDesign which only picks something already affordable.
     /// </summary>
     private bool TryRollBaseDesignIgnoringAffordability(out string tier, out string designPath, out Dictionary<string, int> cost)
     {
@@ -362,35 +459,93 @@ public partial class LivingRust
 
         tier = availableTiers[UnityEngine.Random.Range(0, availableTiers.Count)];
         string[] designs = Directory.GetFiles($"{BaseDesignsDirectory}/{tier}", "*.csv");
-        designPath = designs[UnityEngine.Random.Range(0, designs.Length)];
+        designPath = PickWeightedBaseDesign(designs);
 
-        // Real reduced burden (2026-09-01, Lucas's own explicit ask - see
-        // CalculateTraceResourceRequirements' own doc comment on
-        // freeFirstTwoDoorsAndLocks for the full "bot idling mid-build"
-        // reasoning).
-        cost = CalculateTraceResourceRequirements(designPath, freeFirstTwoDoorsAndLocks: true);
+        // First-base-only path: waives starter essentials so the survivor isn't stuck idling
+        // mid-build.
+        cost = CalculateTraceResourceRequirements(designPath, freeStarterEssentials: true);
         return true;
     }
 
     /// <summary>
-    /// Real "farm for a base" fallback (2026-09-01) - see this file's own
-    /// top doc comment for the full pipeline. Returns whether this cycle
-    /// actually claimed something (a craft, a gather walk, a recycling
-    /// trip, or the build itself starting), same true/false contract every
-    /// other fallback in this project uses.
+    /// Rolls a random tier2 design at full cost, used as the monument-rush completion reward.
+    /// </summary>
+    private bool TryRollTier2BaseDesign(out string designPath, out Dictionary<string, int> cost)
+    {
+        string tierDirectory = $"{BaseDesignsDirectory}/tier2";
+
+        if (!Directory.Exists(tierDirectory))
+        {
+            designPath = null;
+            cost = null;
+            return false;
+        }
+
+        string[] designs = Directory.GetFiles(tierDirectory, "*.csv");
+
+        if (designs.Length == 0)
+        {
+            designPath = null;
+            cost = null;
+            return false;
+        }
+
+        designPath = PickWeightedBaseDesign(designs);
+        cost = CalculateTraceResourceRequirements(designPath);
+        return true;
+    }
+
+    /// <summary>
+    /// Concludes a monument-rush life and always moves the survivor into base-gathering
+    /// (recycling first if useful). A genuine monument completion earns bonus rewards - a tier2
+    /// base design and boosted weapon-reward odds - while a rush that only did natural looting
+    /// still proceeds, just with normal tier0/tier1 odds.
+    /// </summary>
+    private void ConcludeMonumentRush(Survivor survivor, BasePlayer npc, MonumentTier tier, string monumentName, bool wasGenuineSuccess)
+    {
+        Guid characterId = survivor.Character.Id;
+
+        _pursuingPrimitiveGoals.Remove(characterId);
+        _pursuingBaseGatherGoal.Add(characterId);
+
+        if (wasGenuineSuccess)
+        {
+            Puts($"monument-rush: '{survivor.Character.Alias}' successfully finished its rush monument ('{monumentName}') via a real route - rolling straight to a tier2 base and boosting its reward odds to 75%.");
+
+            if (!_rolledBaseDesign.ContainsKey(characterId) && TryRollTier2BaseDesign(out string rushDesignPath, out Dictionary<string, int> rushCost))
+            {
+                _rolledBaseDesign[characterId] = ("tier2", rushDesignPath, rushCost);
+                GetOrSetBaseGatherDeadline(characterId);
+                Puts($"monument-rush: '{survivor.Character.Alias}' rolled 'tier2/{Path.GetFileNameWithoutExtension(rushDesignPath)}' as its rush-completion base design.");
+            }
+
+            GrantMonumentRushCompletionReward(survivor, npc, tier);
+            TryGrantMonumentKeycardReward(survivor, npc, tier, monumentName);
+        }
+        else
+        {
+            Puts($"monument-rush: '{survivor.Character.Alias}' finished up at '{monumentName}' without completing a real route - falling back to a normal tier0/tier1 base and normal reward odds.");
+
+            TryGrantMonumentHandicapReward(survivor, npc, tier, didRealGhostRoute: false, didCardPuzzle: false);
+            TryGrantMonumentKeycardReward(survivor, npc, tier, monumentName);
+        }
+
+        if (!TryStartRecyclingTask(survivor))
+        {
+            StartLootForResourcesTask(survivor);
+        }
+    }
+
+    /// <summary>
+    /// Drives the "gather for a base" fallback: crafts tools, hunts animals for materials, and
+    /// gathers resources toward the rolled design. Returns whether this cycle claimed an action.
     /// </summary>
     private bool TryPursueBaseGatherGoal(Survivor survivor, BasePlayer npc, LootTaskState state)
     {
         Guid characterId = survivor.Character.Id;
 
-        // Defense in depth (2026-09-01) - every real entry point into this
-        // goal (checklist finished, checklist skipped, checklist timed out)
-        // already guards on Character.Home == null before adding to
-        // _pursuingBaseGatherGoal, but a survivor could still build a base
-        // through some other path (e.g. GhostReturnHomeAndDeposit only
-        // clears _rolledBaseDesign/_homeSiteTarget on ITS OWN build
-        // completion) while already queued here - stop cleanly rather than
-        // rolling/gathering toward a second base.
+        // Extra guard in case a base was built through another path while this goal was still
+        // queued; stops cleanly instead of rolling/gathering toward a second base.
         if (survivor.Character.Home != null)
         {
             _pursuingBaseGatherGoal.Remove(characterId);
@@ -402,7 +557,7 @@ public partial class LivingRust
         {
             if (!TryRollBaseDesignIgnoringAffordability(out string tier, out string designPath, out Dictionary<string, int> cost))
             {
-                Puts($"base-gather: '{survivor.Character.Alias}' has no tier0/tier1 base design available to roll - staying idle on this goal.");
+                VerbosePuts($"base-gather: '{survivor.Character.Alias}' has no tier0/tier1 base design available to roll - staying idle on this goal.");
                 return false;
             }
 
@@ -411,29 +566,13 @@ public partial class LivingRust
             string costBreakdown = string.Join(", ", cost.OrderByDescending(kvp => kvp.Value).Select(kvp => $"{kvp.Value}x {kvp.Key}"));
             Puts($"base-gather: '{survivor.Character.Alias}' rolled '{rolled.Tier}/{Path.GetFileNameWithoutExtension(rolled.DesignPath)}' to gather toward (real cost: {costBreakdown}).");
 
-            // Real randomized build-by deadline (2026-09-19, Lucas's own
-            // explicit spec: "have the bots randomly roll to build the
-            // base after that 15 minute primitive timer... between 15-30
-            // minutes, the bots should have gotten resources to build a
-            // base, built the base"). Rolled once, right here, the first
-            // time this survivor ever reaches base-gather (which itself
-            // only starts around the real 15-minute checklist mark) -
-            // staggers each survivor's own "must be ready by" moment
-            // somewhere in that next 0-15 minutes rather than every bot
-            // converging on the exact same instant. See the resource-check
-            // loop below (GetOrSetBaseGatherDeadline) for what actually
-            // happens once it's reached.
+            // Rolled once, the first time this survivor reaches base-gather, staggering each
+            // survivor's build-by deadline rather than converging on the same instant.
             GetOrSetBaseGatherDeadline(characterId);
         }
 
-        // Hammer + building plan (2026-09-01, Lucas's own explicit list -
-        // "sheet metal door, tool cupboard, code locks, building plan,
-        // hammer etc" - the deployables/locks are already covered by the
-        // design's own CalculateTraceResourceRequirements cost below,
-        // hammer/planner are the two real TOOLS needed to actually execute
-        // the build, not part of that cost). Both are real, simple tier0
-        // wood-only recipes (confirmed via the recipe dump) - reuses
-        // TryPursueOneOffToolGoal directly, same as stone tools.
+        // Hammer and building plan are the tools needed to execute the build, separate from the
+        // design's own material cost.
         if (TryPursueOneOffToolGoal(survivor, npc, state, HammerShortname, "hammer"))
         {
             return true;
@@ -444,14 +583,8 @@ public partial class LivingRust
             return true;
         }
 
-        // Real "hunt with the bow before building" ask (2026-09-01, Lucas's
-        // own explicit spec: "once they get bows and before they try to
-        // build their base... use the bows to fight any nearby animals to
-        // farm with their hatchet or knife... help in getting the required
-        // items/materials for the base to be built - specifically
-        // furnaces" - animal fat is the real ingredient low grade fuel
-        // needs, which a furnace needs to actually smelt ore once built).
-        // See TryPursueAnimalHunt's own doc comment for the full pipeline.
+        // Hunts animals with a bow before building, since animal fat is needed for the furnace's
+        // fuel. See TryPursueAnimalHunt for the full pipeline.
         if (TryPursueAnimalHunt(survivor, npc, state))
         {
             return true;
@@ -477,21 +610,9 @@ public partial class LivingRust
                 continue;
             }
 
-            // Deadline pass-through (2026-09-19, Lucas's own explicit spec -
-            // see BaseGatherDeadlineWindowSeconds' own doc comment). Once
-            // this survivor's own randomly-rolled build-by moment has
-            // passed, a real shortfall no longer blocks heading to the
-            // build site - it just doesn't grant anything YET. Real
-            // security fix, same day, Lucas's own follow-up: granting the
-            // top-up HERE (mid-decision, before any travel) used to mean a
-            // survivor could walk around for real minutes carrying
-            // thousands of free stone/wood it hadn't earned - "basically a
-            // loot bag waiting for a player to kill them." The actual
-            // grant now only happens once TryStartAutonomousBaseBuild
-            // confirms the survivor is physically AT the validated build
-            // origin (GrantAnyStillMissingBaseResources, right before
-            // ClearBuildSiteThenReplay starts) - this loop's only job now
-            // is deciding whether that trip is worth starting at all.
+            // Once the build-by deadline passes, a resource shortfall no longer blocks heading to
+            // the site; the actual top-up grant only happens once the survivor is physically at
+            // the build origin, so it isn't carrying free resources around beforehand.
             if (itemId != 0 && UnityEngine.Time.realtimeSinceStartup >= GetOrSetBaseGatherDeadline(characterId))
             {
                 continue;
@@ -499,18 +620,8 @@ public partial class LivingRust
 
             allResourcesReady = false;
 
-            // Real fragments-via-recycling path (2026-09-01, Lucas's own
-            // explicit spec: "I require metal fragments? Gather components
-            // and recycle components until X quantity is achieved") -
-            // there's no farmable node for components (only real container
-            // loot produces them, same reasoning TryGatherCraftIngredient's
-            // own doc comment gives for why metal.fragments has no gather
-            // case there either), so this triggers a real recycler trip
-            // the moment there's fodder worth feeding rather than a
-            // dedicated walk - normal opportunistic looting (still running
-            // underneath this goal, same "loot collectibles on the way"
-            // pattern the primitive checklist already relies on) is what
-            // actually accumulates components in the first place.
+            // No farmable node exists for metal fragments, so this starts a recycling trip instead
+            // of a gather walk once there's something worth recycling.
             if (requirement.Key == "metal.fragments")
             {
                 if (TryStartRecyclingTask(survivor))
@@ -532,70 +643,27 @@ public partial class LivingRust
             return false;
         }
 
-        // Real fix (2026-09-19, live report: 'RecklessScrapper615' found
-        // dead with a broken hatchet, an inventory full of stone and wood,
-        // and no base anywhere, despite having clearly already rolled a
-        // design and set off to build one over half an hour earlier). This
-        // used to remove _pursuingBaseGatherGoal right here - the instant
-        // the survivor merely DECIDED to attempt the build, not once the
-        // build actually succeeded. TryStartAutonomousBaseBuild's own walk
-        // is asynchronous (WalkToBuildSiteWithRecovery) and its own
-        // onFailed comment already promised "will retry next cycle," but
-        // with the flag already gone there was no longer any "next cycle"
-        // left to retry on - a stuck walk (confirmed live: forest geometry
-        // repeatedly blocking every waypoint), a clean pathing failure, or
-        // an external interruption (the life-stall watchdog's own force-
-        // relocate rescue, which bypasses this function's callbacks
-        // entirely) all permanently dropped the survivor out of base-
-        // gather tracking with Character.Home still null - it just quietly
-        // fell back to being an ordinary looter with a base's worth of
-        // materials in its pockets and nowhere to put them. The flag now
-        // stays set until AdvanceBuildReplay's own OnReplayComplete
-        // confirms a genuine placement (LivingRust.BaseBuilding.cs, mirrors
-        // the exact same placed > 0 condition that function already uses
-        // to decide whether to set Character.Home at all) - a synchronous
-        // TryFindClearBuildOrigin failure, a failed walk, or a watchdog
-        // rescue (see RescueGenuinelyStalledSurvivor's own doc comment,
-        // LivingRust.Commands.cs) now all naturally retry through this same
-        // function on whatever future cycle reaches it, exactly as the
-        // "will retry next cycle" comments already assumed.
+        // The base-gather flag only clears once a build genuinely places something, rather than
+        // the moment the survivor decides to attempt it - otherwise a stuck walk or interrupted
+        // build could permanently drop a survivor out of tracking with no base and no way to retry.
         return TryStartAutonomousBaseBuild(survivor, npc, rolled.DesignPath, characterId);
     }
 
     // ============================================================
-    // Real pre-base animal hunting (2026-09-01, Lucas's own explicit spec -
-    // see TryPursueAnimalHunt's own doc comment for the full pipeline).
-    // First-pass numbers/mechanics, same "ship something reasonable, tune
-    // from live evidence" approach as every other constant in this project.
+    // Pre-base animal hunting.
     // ============================================================
 
     private const float AnimalHuntSearchRadius = 150f;
 
-    // How long a real hunt (chasing/fighting, not the initial approach
-    // walk) gets before giving up entirely - same bounded-aggression shape
-    // MeleeChaseGiveUpSeconds already uses, just longer since bow combat
-    // against a fleeing animal realistically takes longer than a melee
-    // exchange (missed arrows, the animal running between shots).
+    // How long a hunt (chasing/fighting, not the initial approach walk) gets before giving up,
+    // longer than a melee chase since bow combat against a fleeing animal takes longer.
     private const float AnimalHuntGiveUpSeconds = 45f;
 
-    // Capped the same way every other gather quota in this project is
-    // (WoodQuota/OreQuotaStone/etc) - hunting contributes real materials
-    // toward the base without dominating the whole gather phase forever.
+    // Caps how much hunting contributes per life, so it doesn't dominate the gather phase.
     private const int AnimalHuntQuota = 5;
 
-    // Real overall time budget (2026-09-01, Lucas's own explicit follow-up:
-    // "keep this within the 15 minute window... if they can't find any
-    // animals or find the required resources to build a base just have the
-    // bot resort to whatever the next portion was"). Measured from the
-    // FIRST hunt attempt this life (_animalHuntPhaseStartTime, set once,
-    // never refreshed), not a rolling window - once 15 real minutes have
-    // passed since hunting started, no NEW hunt gets started regardless of
-    // AnimalHuntQuota, and the caller (TryPursueBaseGatherGoal) falls
-    // through to its own next priority (hammer/planner/resource gathering)
-    // exactly like any other cycle where this returns false. A hunt already
-    // in progress when the window closes still runs to its own natural
-    // conclusion (AnimalHuntGiveUpSeconds/kill/corpse-harvest) rather than
-    // being cut off mid-fight.
+    // Overall time budget for hunting, measured from the first hunt attempt this life. Once it
+    // expires no new hunt starts, though one already in progress finishes naturally.
     private const float AnimalHuntPhaseWindowSeconds = 900f;
 
     private const float AnimalHuntCorpseSearchRadius = 8f;
@@ -621,24 +689,8 @@ public partial class LivingRust
     private readonly HashSet<Guid> _activeAnimalHunt = new();
 
     /// <summary>
-    /// Real bow-hunting pass, tried once per base-gather cycle right after
-    /// the hammer/planner checks and before the resource-requirement loop -
-    /// see this file's own TryPursueBaseGatherGoal call site. Only fires
-    /// while the survivor owns a real bow/crossbow (BowFamily, LivingRust.
-    /// Looting.cs) and hasn't already hit AnimalHuntQuota kills this life.
-    /// Finds the nearest real huntable animal (the same 8 types
-    /// IsHuntablePredator/TryStartAnimalOnSightCombat already recognize,
-    /// LivingRust.Combat.cs) within AnimalHuntSearchRadius - deliberately
-    /// much wider than the 10m reactive on-sight range, since this is a
-    /// genuine deliberate search, not a passive reaction - walks toward it,
-    /// engages via the exact same StartCombat ranged pipeline already
-    /// proven for animal on-sight combat, then polls for the kill and
-    /// harvests the corpse with a real hatchet/knife swing
-    /// (StartHarvestingCorpse below - the same real attack-based
-    /// ResourceDispenser pipeline this project's own tree/ore gathering
-    /// already uses, SwingGatherTool/StartGatheringResourceNode in
-    /// LivingRust.ResourceGathering.cs, just retargeted at a corpse's own
-    /// dispenser instead of a tree/rock's).
+    /// Bow-hunts the nearest huntable animal within AnimalHuntSearchRadius once per base-gather
+    /// cycle, up to AnimalHuntQuota kills this life, then harvests the corpse for materials.
     /// </summary>
     private bool TryPursueAnimalHunt(Survivor survivor, BasePlayer npc, LootTaskState state)
     {
@@ -646,11 +698,8 @@ public partial class LivingRust
 
         if (_activeAnimalHunt.Contains(characterId))
         {
-            // Already mid-hunt (walking to it, fighting it, or harvesting
-            // the corpse) - the poll/callback chain below owns resuming
-            // normal base-gather work once it's done, so this cycle just
-            // claims itself and waits rather than starting a second hunt
-            // on top of the first.
+            // Already mid-hunt; this cycle just waits for the poll/callback chain below to resume
+            // normal work rather than starting a second hunt on top of the first.
             return true;
         }
 
@@ -671,9 +720,7 @@ public partial class LivingRust
         }
         else if (Time.realtimeSinceStartup - phaseStart >= AnimalHuntPhaseWindowSeconds)
         {
-            // See AnimalHuntPhaseWindowSeconds's own doc comment - no NEW
-            // hunt starts once the 15-minute budget is spent, regardless of
-            // kill count; falls through to the caller's own next priority.
+            // No new hunt starts once the budget is spent, regardless of kill count.
             return false;
         }
 
@@ -706,21 +753,10 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real "kill animals and farm them for cloth" fallback (2026-09-07,
-    /// Lucas's own explicit spec: when a survivor needs cloth for a
-    /// bandage and no real hemp collectible is nearby, "kill animals and
-    /// farm them for cloth OR go farm some hemp fibers" - the hemp half is
-    /// TryGatherViaCollectible, already wired; this is the animal half).
-    /// Reuses the exact same hunt-then-harvest pipeline TryPursueAnimalHunt
-    /// uses for the post-checklist base-gather phase, but deliberately
-    /// WITHOUT that function's bow-ownership gate, kill quota, or 15-minute
-    /// phase window - those all exist to keep hunting from dominating the
-    /// dedicated base-gather goal specifically, none of which applies here:
-    /// this only ever fires as a last-resort ingredient search for cloth,
-    /// already gated by TryGatherCraftIngredient's own IngredientSearchCooldownSeconds
-    /// so it can't spin repeatedly either. A survivor with only a rock can
-    /// still melee-hunt here - StartCombat itself already picks whatever
-    /// real weapon (ranged or melee) the survivor actually has.
+    /// Last-resort cloth source: hunts and harvests an animal when no hemp is nearby. Reuses
+    /// TryPursueAnimalHunt's pipeline but skips its bow-ownership gate, kill quota, and phase
+    /// window, since this only fires as an ingredient search that's already cooldown-gated
+    /// elsewhere.
     /// </summary>
     private bool TryPursueAnimalHuntForCloth(Survivor survivor, BasePlayer npc, LootTaskState state)
     {
@@ -731,13 +767,8 @@ public partial class LivingRust
             return true;
         }
 
-        // Ranged only (2026-09-21, Lucas's own explicit spec: "a bot should
-        // attempt to kill an animal with a ranged weapon, not a melee
-        // weapon" - melee-hunting a stag for cloth just fails, and a
-        // hostile animal fights back). A survivor without a bow/firearm and
-        // ammo falls through to hemp/other cloth sources instead; the
-        // survival-kit upkeep (TryPursueSurvivalKitUpkeep) is what gets it
-        // the bow in the first place.
+        // Requires a ranged weapon, since melee-hunting for cloth tends to fail and provokes the
+        // animal. A survivor without one falls through to hemp/other cloth sources instead.
         if (!HasReadyRangedWeapon(npc))
         {
             return false;
@@ -771,9 +802,7 @@ public partial class LivingRust
         return true;
     }
 
-    // How far from the animal a ranged hunt starts shooting (2026-09-21) -
-    // walking up onto the animal's own position (the old behaviour) put
-    // every hunt at melee range, exactly where a boar or wolf hurts most.
+    // Distance a ranged hunt stands off from the animal instead of closing to melee range.
     private const float HuntStandoffDistance = 22f;
 
     private static Vector3 GetHuntStandoffPoint(BasePlayer npc, BaseCombatEntity animal)
@@ -799,14 +828,8 @@ public partial class LivingRust
 
         try
         {
-            // Bear/Crocodile gear-score-gated (2026-09-15) - see
-            // IsHardAvoidAnimal's own doc comment (LivingRust.Combat.cs).
-            // Still collected here same as every other candidate; the
-            // IsHardAvoidAnimal filter below is what actually keeps an
-            // under-geared survivor from being sent all the way out to one
-            // only to flee instead of fighting on arrival - once geared
-            // past the relevant threshold, either becomes a completely
-            // normal hunt target.
+            // Bear/Crocodile are gear-score-gated via IsHardAvoidAnimal below, so an under-geared
+            // survivor isn't sent out only to flee instead of fighting on arrival.
             CollectEntitiesInRange<Bear>(origin, radius, candidates);
             CollectEntitiesInRange<Polarbear>(origin, radius, candidates);
             CollectEntitiesInRange<Boar>(origin, radius, candidates);
@@ -850,15 +873,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Starts real combat against the hunted animal (StartCombat - the same
-    /// pipeline animal on-sight combat already uses, complete with its own
-    /// pursuit/reload/disengage logic), then polls once a second for the
-    /// outcome rather than needing a completion callback threaded through
-    /// StartCombat itself. AnimalHuntGiveUpSeconds bounds how long this
-    /// waits before abandoning a hunt that isn't converging (animal fled,
-    /// bot can't catch up, etc) - same "give it a real chance, but not
-    /// forever" shape as every other bounded-aggression/give-up timer in
-    /// this project.
+    /// Starts combat against the hunted animal via the shared StartCombat pipeline, then polls
+    /// once a second for the outcome. Gives up after AnimalHuntGiveUpSeconds if the hunt isn't
+    /// converging.
     /// </summary>
     private void StartAnimalHuntEngagement(Survivor survivor, BaseCombatEntity animal, LootTaskState state)
     {
@@ -873,9 +890,7 @@ public partial class LivingRust
 
         if (animal == null || animal.IsDestroyed || !animal.IsAlive())
         {
-            // Already dead (finished off by something/someone else, or
-            // simply despawned) - nothing real to harvest, same clean
-            // give-up shape as any other failed gather attempt.
+            // Already dead - nothing left to harvest.
             _activeAnimalHunt.Remove(characterId);
             return;
         }
@@ -913,9 +928,7 @@ public partial class LivingRust
                 return;
             }
 
-            // Animal is dead - StartCombat's own real damage pipeline
-            // already finished it off and ran EndCombat by this point, no
-            // separate "did the fight resolve" check needed here.
+            // Animal is dead - StartCombat's damage pipeline already ran EndCombat.
             pollTimer.Destroy();
 
             if (!TryFindNearestCorpse(lastKnownPosition, AnimalHuntCorpseSearchRadius, out BaseCorpse corpse))
@@ -973,19 +986,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real swing loop against a fresh animal corpse - same overall shape
-    /// as StartGatheringResourceNode (LivingRust.ResourceGathering.cs), but
-    /// against a BaseCorpse's own ResourceDispenser (GatherType.Flesh)
-    /// instead of a ResourceEntity's - real Rust animal corpses work
-    /// exactly like a tree/ore node mechanically (a real attack-based
-    /// harvest, not an inventory-menu loot), just a different concrete
-    /// entity type, so this is a deliberate near-duplicate rather than
-    /// reusing that function directly (keeps its own well-tested tree/ore
-    /// contract untouched rather than widening its type signature).
-    /// MaxHitsPerResourceNode-capped the same way, since a corpse doesn't
-    /// expose a comparable Health()/IsDestroyed-on-depletion signal to
-    /// gate on the way a tree/ore node's own DoAttackShared naturally
-    /// destroys the node once emptied.
+    /// Swings a gather tool against a fresh animal corpse, mirroring StartGatheringResourceNode's
+    /// tree/ore pipeline but against a corpse's own resource dispenser instead.
     /// </summary>
     private void StartHarvestingCorpse(Survivor survivor, BaseCorpse corpse, Action onDone)
     {
@@ -1070,15 +1072,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real build trigger (2026-09-01) - mirrors RunDebugReplayBuild's own
-    /// real call chain exactly (TryFindClearBuildOrigin -> walk there if
-    /// relocated -> ClearBuildSiteThenReplay), just against the survivor's
-    /// own rolled home-site target (or its current position for a Coastal
-    /// roll) instead of an admin's own position. On real completion,
-    /// settles in via GhostReturnHomeAndDeposit - Character.Home gets set
-    /// (and its real door routes auto-loaded/reprojected, LoadHomeDoorRoutes)
-    /// by ReplayBuildTrace itself, so that trip works immediately with no
-    /// extra wiring.
+    /// Finds a clear build origin near the survivor's rolled home-site target (or its current
+    /// position for a Coastal roll), walks there if needed, then builds and settles in via
+    /// GhostReturnHomeAndDeposit.
     /// </summary>
     private bool TryStartAutonomousBaseBuild(Survivor survivor, BasePlayer npc, string designPath, Guid characterId, HomeBase oldHomeToMigrate = null)
     {
@@ -1093,10 +1089,8 @@ public partial class LivingRust
 
         bool foundSite = TryFindClearBuildOrigin(startPosition, out Vector3 clearOrigin, out float expectedGroundHeight, out string failureReason, designPath, avoidSites, characterId);
 
-        // Second chance from wherever the survivor is actually standing
-        // (2026-09-21) - an inland roll's own target spot can be bad
-        // ground all the way out through the relocate spiral while the
-        // survivor's own current surroundings are perfectly fine.
+        // Second chance from wherever the survivor is actually standing, since an inland roll's
+        // target spot can be bad ground even when the survivor's current surroundings are fine.
         if (!foundSite && Vector3.Distance(startPosition, npc.transform.position) > 1f)
         {
             foundSite = TryFindClearBuildOrigin(npc.transform.position, out clearOrigin, out expectedGroundHeight, out failureReason, designPath, avoidSites, characterId);
@@ -1104,8 +1098,18 @@ public partial class LivingRust
 
         if (!foundSite)
         {
-            _buildSiteSearchFailures[characterId] = _buildSiteSearchFailures.GetValueOrDefault(characterId) + 1;
-            Puts($"base-gather: '{survivor.Character.Alias}' couldn't find a clear build spot near its target (reason: {failureReason}) - will retry next cycle (search failure #{_buildSiteSearchFailures[characterId]}, terrain tolerance loosens as failures build up).");
+            int failureCount = _buildSiteSearchFailures[characterId] = _buildSiteSearchFailures.GetValueOrDefault(characterId) + 1;
+
+            if (failureCount >= BuildSiteRerollFailureThreshold
+                && TryFindRandomSiteNearMonument(npc.transform.position, out Vector3 rerolledSite))
+            {
+                _homeSiteTarget[characterId] = rerolledSite;
+                _buildSiteSearchFailures.Remove(characterId);
+                Puts($"base-gather: '{survivor.Character.Alias}' gave up on its current build target after {failureCount} failed searches (reason: {failureReason}) - rerolled a new site near a monument at {rerolledSite}.");
+                return false;
+            }
+
+            Puts($"base-gather: '{survivor.Character.Alias}' couldn't find a clear build spot near its target (reason: {failureReason}) - will retry next cycle (search failure #{failureCount}, terrain tolerance loosens as failures build up).");
             return false;
         }
 
@@ -1125,18 +1129,8 @@ public partial class LivingRust
             _rolledBaseDesign.Remove(characterId);
             _homeSiteTarget.Remove(characterId);
 
-            // The real completion point for _pursuingBaseGatherGoal (2026-
-            // 09-19) - see this function's own caller (TryPursueBaseGatherGoal)
-            // for the full reasoning on why this moved down here instead of
-            // firing the instant the survivor merely decided to attempt a
-            // build. Mirrors AdvanceBuildReplay's own placed > 0 condition
-            // for whether Character.Home actually got set
-            // (LivingRust.BaseBuilding.cs) - a placed == 0 run genuinely
-            // built nothing, Home is still null, and the survivor stays
-            // flagged so the next cycle that reaches TryPursueBaseGatherGoal
-            // rolls a fresh design/site and tries again instead of quietly
-            // reverting to an ordinary looter with no way back to base-
-            // gathering.
+            // A placed == 0 run genuinely built nothing, so Home stays null and the survivor
+            // stays flagged for base-gather to roll a fresh design/site and try again.
             if (placed == 0)
             {
                 Puts($"base-gather: '{survivor.Character.Alias}' placed nothing at all - staying queued to try again.");
@@ -1150,35 +1144,21 @@ public partial class LivingRust
 
             if (oldHomeToMigrate != null)
             {
-                // Real "grab everything from the old base" step (2026-09-01,
-                // Lucas's own explicit caveat on tier upgrades: "the bot
-                // should finish the new base, grab everything from the old
-                // base and transfer it to the new base"). Runs BEFORE the
-                // normal settle-in deposit below, not after - the new base
-                // is genuinely empty right now (freshly built), so there's
-                // nothing to deposit into it until the old base's contents
-                // are actually in hand.
+                // On a tier upgrade, grabs everything from the old base before the normal
+                // settle-in deposit, since the new base is empty until the old contents are in
+                // hand.
                 MigrateOldBaseContents(survivor, oldHomeToMigrate, survivor.Character.Home, () => GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor)));
                 return;
             }
 
-            // Real "settle in" step (2026-09-01, Lucas's own explicit
-            // spec: "deposit any building materials and building
-            // plan/hammer... any excess components etc into the crates").
-            // Reuses the exact same ghostroute-mandatory deposit trip
-            // already proven live on GhostReturnHomeAndDeposit.
+            // Settles in by depositing leftover building materials and tools into the new base.
             GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
         }
 
         float relocatedDistance = (clearOrigin - npc.transform.position).magnitude;
 
-        // Real security fix (2026-09-19, Lucas's own explicit ask) - the
-        // deadline-catch-up grant only happens HERE now, once the survivor
-        // is confirmed physically at the validated build origin, not back
-        // when TryPursueBaseGatherGoal merely decided the trip was worth
-        // starting. See that loop's own doc comment for the full
-        // reasoning ("basically a loot bag waiting for a player to kill
-        // them").
+        // The deadline-catch-up grant only happens here, once the survivor is confirmed
+        // physically at the validated build origin.
         void ProceedToClearAndReplay()
         {
             _baseBuildStartedAt[characterId] = UnityEngine.Time.realtimeSinceStartup;
@@ -1208,18 +1188,10 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// The real deadline-catch-up grant (2026-09-19) - see
-    /// TryPursueBaseGatherGoal's own resource-check loop for why this was
-    /// moved out of that decision point and down here instead. Only ever
-    /// called once TryStartAutonomousBaseBuild has confirmed the survivor
-    /// is physically standing at its validated build origin, right before
-    /// ClearBuildSiteThenReplay actually starts placing pieces - so the
-    /// window where a survivor is carrying an unearned stockpile is as
-    /// close to zero as this design allows, rather than the real minutes
-    /// of walking it used to be exposed for. Re-checks current inventory
-    /// fresh (not whatever TryPursueBaseGatherGoal saw when it decided to
-    /// come here) since real gathering/looting along the way may have
-    /// already closed some of the gap on its own.
+    /// Tops up any resources the survivor is still short on, called only once it's confirmed at
+    /// the build origin so the window of carrying an unearned stockpile stays minimal. Re-checks
+    /// current inventory fresh, since gathering along the way may have already closed some of the
+    /// gap.
     /// </summary>
     private void GrantAnyStillMissingBaseResources(Survivor survivor, Guid characterId)
     {
@@ -1252,16 +1224,8 @@ public partial class LivingRust
 
             int shortfall = target - have;
 
-            // Real stack-size fix (2026-09-19, live report: bots carrying
-            // a single "impossible" 5000-6000 stack of stone/wood).
-            // ItemManager.CreateByItemID creates exactly ONE Item with
-            // amount set to whatever's passed - no automatic splitting at
-            // the real game's own stack limit (ItemDefinition.stackable -
-            // 1000 for stone/wood). This project's own GiveItem helper
-            // (LivingRust.Hooks.cs) has the identical gap; every caller
-            // that can need more than one stack already loops in
-            // stack-sized chunks itself instead (see SpawnKits.cs's own
-            // ammoStackSize pattern).
+            // Splits the grant into stack-sized chunks, since ItemManager.CreateByItemID creates
+            // one Item with no automatic splitting at the game's own stack limit.
             int stackSize = ItemManager.FindItemDefinition(itemId)?.stackable ?? shortfall;
             int remaining = shortfall;
             int actuallyGranted = 0;
@@ -1293,20 +1257,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real "empty the old base into the new one" step (2026-09-01, Lucas's
-    /// own explicit caveat on tier upgrades). Temporarily points
-    /// Character.Home at oldHome so the existing ghost-enter/collect
-    /// machinery (GhostEnterHomeForDeposit, FindOwnedStorageBoxesNear,
-    /// FindOwnedCupboard, FindOwnedFurnacesNear - every one of them reads
-    /// survivor.Character.Home fresh internally rather than taking it as a
-    /// parameter) operates on the OLD base instead of the new one, then
-    /// restores it to newHome before the real deposit trip - cheaper than
-    /// threading an explicit HomeBase parameter through that whole call
-    /// chain for what's a genuinely rare, one-off event (a tier upgrade
-    /// finishing), and safe here specifically because nothing else touches
-    /// this survivor's Home concurrently during a single ghost-controlled
-    /// trip (CancelActiveMovement/CancelActiveAttack/CancelActiveRecycling
-    /// already seized control back in TryStartAutonomousBaseBuild).
+    /// On a tier upgrade, empties the old base into the new one. Temporarily points
+    /// Character.Home at oldHome so the existing ghost-enter/collect machinery operates on the
+    /// old base, then restores it to newHome before the deposit trip.
     /// </summary>
     private void MigrateOldBaseContents(Survivor survivor, HomeBase oldHome, HomeBase newHome, Action onComplete)
     {
@@ -1333,14 +1286,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Reverse of the deposit pipeline - empties every owned box, the
-    /// cupboard, and any owned furnace near the current Home into the
-    /// survivor's own inventory. Reuses TransferAllItems (the same real
-    /// loot-priority-aware transfer LootContainerAndContinue/recycler
-    /// collection already use) rather than a raw unconditional dump, so
-    /// this respects real carrying capacity - a stockpile too large for
-    /// one trip simply leaves the rest behind for now rather than
-    /// overflowing, same as a real player would need multiple trips too.
+    /// Reverse of the deposit pipeline: empties every owned box, the cupboard, and any owned
+    /// furnace near the current Home into the survivor's inventory, respecting carrying capacity.
     /// </summary>
     private int CollectEverythingFromOwnedStorage(Survivor survivor)
     {

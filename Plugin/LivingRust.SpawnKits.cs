@@ -8,38 +8,18 @@ using UnityEngine;
 namespace Carbon.Plugins;
 
 /// <summary>
-/// Preset weapon-kit spawn commands (2026-08-13, Lucas's own explicit
-/// request) - one /lr.spawn.X command per weapon this project has built a
-/// combat WeaponFireProfile for (LivingRust.Combat.cs), each spawning a
-/// survivor already equipped with that weapon, real matching ammo, full
-/// metal armour, and some medical supplies - so a live combat-spread/burst
-/// test doesn't need manually kitting up a fresh bot by hand every time.
-/// Snipers deliberately excluded, matching Lucas's own "exclude snipers
-/// for now" scoping for the live-fire spread testing this exists for.
+/// Preset weapon-kit spawn commands, one /lr.spawn.X command per weapon with a
+/// combat WeaponFireProfile, spawning a survivor equipped with that weapon,
+/// matching ammo, full metal armor, and medical supplies. Snipers are excluded.
 /// </summary>
 public partial class LivingRust
 {
     /// <summary>
-    /// Armor-tier presets for kit spawns (2026-08-15, Lucas's own explicit
-    /// request) - "similar to the current kits but at a medium and a low
-    /// tier gear score." Every tier wears the same base clothing layer
-    /// (hoodie/pants/boots) underneath its own armor - Lucas's own
-    /// follow-up correction: "this is just replicating what a [given] tier
-    /// player looks like," a real geared player wears clothing UNDER
-    /// their armor, not armor with nothing else. High additionally wears a
-    /// roadsign kilt alongside the metal facemask+chestplate (Lucas's own
-    /// explicit request - metal plate has no real legwear item, so the
-    /// kilt fills that gap the same way a real end-game player would).
-    /// Medium is a full 3-piece roadsign set (jacket/gloves/kilt) on top
-    /// of the clothing layer. Low is a full 3-piece wood set (jacket/
-    /// pants/helmet) on top - Lucas named "wood armour, hazmat armour etc"
-    /// as examples; wood was picked as the concrete Low preset since it's
-    /// the more common/basic real starting tier, hazmat left as a possible
-    /// future addition if a distinct radiation-flavoured Low preset turns
-    /// out to matter. EquipKitArmor's existing MoveToContainer-then-
-    /// inventory-fallback already handles any real slot conflict (e.g.
-    /// wood.armor.pants vs the base pants) gracefully - whichever doesn't
-    /// fit just ends up carried instead of worn, nothing breaks.
+    /// Armor-tier presets for kit spawns. Every tier wears a base clothing layer
+    /// (hoodie/pants/boots) under its own armor. High wears a metal facemask,
+    /// chestplate, and roadsign kilt; Medium wears a full roadsign set; Low wears a
+    /// full wood set. EquipKitArmor's container-then-inventory fallback handles any
+    /// slot conflict gracefully.
     /// </summary>
     private enum KitArmorTier
     {
@@ -80,14 +60,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real ammo compatibility per weapon - well-established Rust game
-    /// knowledge (5.56 Rifle Ammo for rifles/LMGs, Pistol Bullets for
-    /// SMGs/pistols/the low-tier weapons, 12 Gauge Buckshot for shotguns),
-    /// not guessed at random. GiveKitItem already logs a WARNING if a
-    /// shortname doesn't resolve to any real item at all, but that can't
-    /// catch "resolves fine, just isn't ammo this specific gun can
-    /// chamber" - flag it live if any spawned kit can't actually reload,
-    /// and this table gets corrected.
+    /// Maps each weapon to its real matching ammo type and display name.
     /// </summary>
     private static readonly Dictionary<string, WeaponKit> SpawnKits = new()
     {
@@ -122,16 +95,8 @@ public partial class LivingRust
     private void CmdSpawnKitAk(BasePlayer player, string command, string[] args) => RunSpawnKit(player, "ak", args);
 
     /// <summary>
-    /// Console/bindable version (2026-08-24, Lucas's own explicit request:
-    /// "a bind similar to how lr.spawn works for a naked, but for the
-    /// geared ak bot") - same "bind y lr.spawn" pattern plain /lr.spawn's
-    /// own console command already uses (CmdSpawnSurvivorConsole,
-    /// LivingRust.Commands.cs), just for this specific kit. Forwards any
-    /// armor-tier arg exactly like every other console command in this
-    /// project already does (arg.HasArgs()/arg.Args.Select pattern -
-    /// CmdDebugNoPlayerCombatConsole etc, LivingRust.Debug.cs) so "bind y
-    /// lr.spawn.ak medium" still works, not just the bare high-tier
-    /// default.
+    /// Console/bindable version, forwarding any armor-tier arg the same way other
+    /// console commands in this project do.
     /// </summary>
     [ConsoleCommand("lr.spawn.ak")]
     private void CmdSpawnKitAkConsole(ConsoleSystem.Arg arg)
@@ -208,17 +173,9 @@ public partial class LivingRust
     private void CmdSpawnKitDoubleBarrel(BasePlayer player, string command, string[] args) => RunSpawnKit(player, "doublebarrel", args);
 
     /// <summary>
-    /// Thin wrapper - spawns exactly one kit at the caller's own aim point
-    /// (see FindSpawnAimPoint), same placement plain /lr.spawn already
-    /// uses. All the real work is in SpawnKitAt below, shared with
-    /// /lr.spawn.allkits (RunSpawnAllKits).
-    /// </summary>
-    /// <summary>
-    /// args[0], if given, picks the armor tier ("medium"/"low", anything
-    /// else including omitted defaults to "high" - the original full
-    /// metal facemask+chestplate behaviour, completely unchanged for every
-    /// existing callsite/habit that doesn't pass a tier). e.g.
-    /// "/lr.spawn.thompson medium" for a roadsign-armored Thompson kit.
+    /// Thin wrapper that spawns exactly one kit at the caller's aim point. All the
+    /// real work is in SpawnKitAt below, shared with RunSpawnAllKits. args[0], if
+    /// given, picks the armor tier ("medium"/"low", otherwise "high").
     /// </summary>
     private void RunSpawnKit(BasePlayer player, string kitKey, string[] args)
     {
@@ -258,17 +215,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real work behind every kit spawn - spawns a survivor at the given
-    /// position/rotation, then layers the kit on top: weapon + 2 full
-    /// stacks of its real matching ammo (queried live via
-    /// ItemManager.FindItemDefinition.stackable, not a hardcoded guess -
-    /// ammo stack sizes vary by type), full metal facemask + chestplate
-    /// actually worn (MoveToContainer into containerWear, not just sitting
-    /// in the main inventory), a few medical syringes/bandages, and a
-    /// topped-off magazine. Returns the new Character on success (null on
-    /// failure) so callers can report/aggregate as needed - RunSpawnKit
-    /// reports one line per spawn, RunSpawnAllKits reports a single summary
-    /// instead of spamming 22 lines.
+    /// Spawns a survivor at the given position/rotation and layers the kit on top:
+    /// weapon, ammo, worn armor, medical supplies, and a topped-off magazine.
+    /// Returns the new Character on success, or null on failure.
     /// </summary>
     private Character SpawnKitAt(BasePlayer player, string kitKey, Vector3 position, Quaternion rotation, KitArmorTier armorTier = KitArmorTier.High)
     {
@@ -296,16 +245,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real kit-application logic, extracted out of SpawnKitAt (2026-09-01,
-    /// Lucas's own ask: "give the bot a full metal ak kit (same as
-    /// spawn.ak)" for an already-spawned test survivor rather than a fresh
-    /// one) - so any caller that already has its own npc/survivor (e.g. the
-    /// walk-deposit test) can apply the exact same real armor+weapon+ammo+
-    /// magazine kitting SpawnKitAt uses, instead of a second hand-rolled
-    /// "give it a rifle.ak" that'd silently drift out of sync with the real
-    /// kit definitions over time. Returns false only for an unknown
-    /// kitKey - every other step (armor, ammo, syringes) already tolerates
-    /// individual item failures the same way SpawnKitAt always did.
+    /// Kit-application logic extracted out of SpawnKitAt, so a caller with an
+    /// already-spawned npc/survivor can apply the same armor/weapon/ammo/magazine
+    /// kitting. Returns false only for an unknown kitKey.
     /// </summary>
     private bool ApplyKit(BasePlayer npc, Survivor survivor, string kitKey, KitArmorTier armorTier = KitArmorTier.High)
     {
@@ -314,13 +256,8 @@ public partial class LivingRust
             return false;
         }
 
-        // Explicit full-health guarantee for kitted test spawns only
-        // (Lucas's own request, 2026-08-13) - SpawnSurvivor already
-        // defaults to 100/100, but this makes it a hard, explicit
-        // guarantee independent of that default and clears wounded too,
-        // specifically for this combat-testing spawn path. Plain /lr.spawn
-        // and /lr.debug.spawnmany (the "generic beach spawns") are
-        // deliberately untouched.
+        // Explicit full-health guarantee for kitted test spawns only, independent of
+        // SpawnSurvivor's own default, and clears wounded state too.
         npc.InitializeHealth(npc.MaxHealth(), npc.MaxHealth());
 
         if (npc.IsWounded())
@@ -328,9 +265,7 @@ public partial class LivingRust
             npc.StopWounded();
         }
 
-        // Base clothing layer, worn under the tier-specific armor below,
-        // every tier - a real geared player wears clothing UNDER their
-        // armor, not armor with nothing else underneath.
+        // Base clothing layer, worn under the tier-specific armor for every tier.
         EquipKitArmor(npc, KitHoodieShortname);
         EquipKitArmor(npc, KitPantsShortname);
         EquipKitArmor(npc, KitBootsShortname);
@@ -367,16 +302,9 @@ public partial class LivingRust
 
         EquipBestWeaponForDisplay(survivor);
 
-        // Top the magazine off for testing (Lucas's own request, 2026-08-13:
-        // spawn already loaded to each weapon's real max, "rifle.ak = 30
-        // rounds... m249 is 100... so on and so forth"). Deliberately NOT a
-        // hardcoded per-weapon capacity table - real magazine sizes vary
-        // per weapon and a wrong guess would be a silent, hard-to-notice
-        // bug. ServerTryReload is the same real, inventory-aware reload
-        // method combat's own mid-fight reload already uses (LivingRust.
-        // Combat.cs) - it finds the matching ammo we just gave and loads
-        // the magazine to its own real capacity automatically, whatever
-        // that actually is for this specific weapon.
+        // Tops the magazine off using ServerTryReload, the same inventory-aware
+        // reload method used for mid-fight reloads, rather than a hardcoded
+        // per-weapon capacity table.
         if (npc.GetHeldEntity() is BaseProjectile spawnedWeapon)
         {
             spawnedWeapon.ServerTryReload(npc.inventory);
@@ -386,20 +314,11 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real gather-tool test spawns (2026-08-25, Lucas's own explicit
-    /// request) - separate from SpawnKitAt's weapon-kit machinery above
-    /// (no ammo/magazine to top off, no combat armor tier - these are pure
-    /// gathering-loadout test spawns, not combat ones). Jackhammer is a
-    /// real POWERED tool (same as chainsaw) - confirmed real Rust
-    /// knowledge, it needs low-grade fuel to actually run, so this gives a
-    /// real stack of that alongside it rather than spawning a jackhammer
-    /// that can't be used at all. The dual kit gives both a pickaxe AND a
-    /// hatchet together - Lucas's own framing for where this is headed:
-    /// "what do I want to do now? I need wood and stone so I'll take a
-    /// pickaxe and a hatchet" (LivingRust.ResourceGathering.cs already
-    /// picks the right one of the two per node type via
-    /// EquipBestGatherToolForType, so owning both at once is exactly what
-    /// lets a bot gather either resource without a return trip).
+    /// Gather-tool test spawns, separate from SpawnKitAt's weapon-kit machinery
+    /// (no ammo/magazine, no combat armor tier). Jackhammer is a powered tool that
+    /// needs low-grade fuel to run, so fuel is included alongside it. The dual kit
+    /// gives both a pickaxe and a hatchet, letting a bot gather either resource
+    /// without a return trip.
     /// </summary>
     private enum GatherToolKit
     {
@@ -485,12 +404,9 @@ public partial class LivingRust
             activeToolShortname = "pickaxe";
         }
 
-        // Set the active item directly rather than going through
-        // EquipBestWeaponForDisplay/EquipBestMeleeTool - neither
-        // WeaponPriority nor a guaranteed MeleeToolPriority ranking is a
-        // sure thing for every one of these shortnames, and this only
-        // needs to show ONE specific known-correct tool immediately, not
-        // re-derive a priority pick.
+        // Sets the active item directly rather than going through
+        // EquipBestWeaponForDisplay/EquipBestMeleeTool, since this only needs to
+        // show one specific known-correct tool immediately.
         Item activeTool = npc.inventory.FindItemByItemName(activeToolShortname);
 
         if (activeTool != null)
@@ -504,22 +420,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real base-building test spawn (2026-08-28, Lucas's own explicit
-    /// request) - a survivor already holding everything needed to start
-    /// testing real placement/construction: a hammer and building plan
-    /// (the two real items Rust itself requires just to place a
-    /// foundation/wall/etc at all - confirmed real Rust knowledge, not
-    /// guessed), a real tool cupboard/code lock/sheet metal door already
-    /// in inventory (same three items LivingRust.Crafting.cs's own base-
-    /// material goals already target - this kit is purely about skipping
-    /// the wait for those to get crafted, not a separate/different item
-    /// set), and a large stock of raw stone/wood for whatever upgrading
-    /// and additional building the base-building system ends up needing
-    /// once it exists. Deliberately its own dedicated command, not folded
-    /// into RunSpawnGatherToolKit's enum above - this is a fixed, single
-    /// loadout (no variants the way Jackhammer/PickaxeAndHatchet are),
-    /// same reasoning RunSpawnAllKits already treats every kit command as
-    /// its own independent entry.
+    /// Base-building test spawn: a survivor holding everything needed to test
+    /// placement/construction, including a hammer, building plan, tool cupboard,
+    /// code lock, sheet metal door, and a large stock of raw stone/wood.
     /// </summary>
     private const string BuildingPlanShortname = "building.planner";
     private const string HammerShortname = "hammer";
@@ -576,10 +479,8 @@ public partial class LivingRust
         GiveItem(npc, CodeLockShortname, 1);
         GiveItem(npc, SheetMetalDoorShortname, 1);
 
-        // Same reasoning RunSpawnGatherToolKit's own doc comment gives -
-        // set directly rather than going through EquipBestWeaponForDisplay/
-        // EquipBestMeleeTool, this only needs to show the ONE specific
-        // known-correct tool immediately.
+        // Set directly rather than going through EquipBestWeaponForDisplay/
+        // EquipBestMeleeTool, same reasoning as RunSpawnGatherToolKit.
         Item activeTool = npc.inventory.FindItemByItemName(HammerShortname);
 
         if (activeTool != null)
@@ -592,19 +493,12 @@ public partial class LivingRust
         player.ChatMessage($"[LivingRust] Spawned '{character.Alias}' {where} with a Base Builder kit. (ID {character.BotId})");
     }
 
-    // Real spacing between each kitted bot in the grid below - originally
-    // 5m (Lucas's own explicit request, 2026-08-14: "spread out roughly 5m
-    // apart from each other"), widened to 15m same day after a live trace
-    // caught a bot permanently stuck on a navmesh gap right where several
-    // tightly-packed spawns overlapped - Lucas's own suspicion that 5m was
-    // simply too tight (bots physically overlapping at spawn) and worth
-    // ruling out before chasing a stuck-recovery fix for combat movement.
+    // Spacing between each kitted bot in the grid below, wide enough to avoid bots
+    // overlapping and getting stuck on navmesh gaps at spawn.
     private const float SpawnAllKitsSpacing = 15f;
 
-    // How many bots per row before wrapping to the next row back - keeps
-    // all 22 kits within a reasonable, roughly square area (5 columns x 5
-    // rows fits 22 with room to spare) instead of one 110m-long line, which
-    // would put half of them out of easy view/walking distance.
+    // How many bots per row before wrapping to the next row, keeping all kits within
+    // a roughly square area instead of one long line.
     private const int SpawnAllKitsColumns = 5;
 
     [ChatCommand("lr.spawn.allkits")]
@@ -622,19 +516,10 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// One of every kit in SpawnKits (Lucas's own explicit request,
-    /// 2026-08-14), laid out in a grid in front of wherever the caller is
-    /// looking - a row runs sideways (the caller's own flattened right
-    /// vector), each row steps back further away (the caller's own
-    /// flattened forward vector), both spaced SpawnAllKitsSpacing apart.
-    /// Centered on the caller's own facing direction rather than starting
-    /// hard against one edge, so the whole grid reads as "spread out in
-    /// front of me," not "spawned off to one side." Each position's height
-    /// comes from the real terrain heightmap (TerrainMeta.HeightMap.GetHeight,
-    /// the same fallback FindSpawnAimPoint itself already uses) rather than
-    /// a precise per-point ground probe - good enough for flat-ish open
-    /// ground, which is where this is meant to be used for a live combat
-    /// test anyway.
+    /// Spawns one of every kit in SpawnKits, laid out in a grid in front of the
+    /// caller, centered on the caller's facing direction and spaced
+    /// SpawnAllKitsSpacing apart. Each position's height comes from the terrain
+    /// heightmap rather than a precise per-point ground probe.
     /// </summary>
     private void RunSpawnAllKits(BasePlayer player)
     {
@@ -679,10 +564,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Equip straight into containerWear (actually worn, not just sitting
-    /// loose in the main inventory) - same MoveToContainer pattern the
-    /// loot-task's own real auto-equip logic already uses (see its own
-    /// doc comment in LivingRust.Looting.cs).
+    /// Equips an item straight into containerWear so it is actually worn, using the
+    /// same MoveToContainer pattern as the loot task's auto-equip logic.
     /// </summary>
     private void EquipKitArmor(BasePlayer npc, string shortname)
     {

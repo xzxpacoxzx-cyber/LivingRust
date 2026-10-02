@@ -15,69 +15,29 @@ namespace Carbon.Plugins;
 public partial class LivingRust
 {
     /// <summary>
-    /// How far from wherever a survivor currently stands (re-centered on
-    /// wherever the last looted container was, each cycle) to keep looking
-    /// for the next container. Deliberately NOT monument-seeking - loot
-    /// containers (barrels, crates, junkpile_a through junkpile_e) spawn
-    /// along roads and paths too, not only inside monuments, so anchoring
-    /// this to "nearest monument" would bake in a wrong assumption about
-    /// where loot actually exists. A plain radius scan around wherever the
-    /// survivor already is works everywhere, monument or not.
+    /// Radius around the survivor's current position used to search for the next loot container.
     /// </summary>
     private const float LootSearchRadius = 50f;
 
     /// <summary>
-    /// Real "how far away could I plausibly have noticed a body" range
-    /// (2026-08-25, Lucas's own explicit correction) - a corpse/dropped
-    /// bag search reusing the full LootSearchRadius (50m) read as
-    /// unrealistic: "the bot is unrealistically searching for corpse bags/
-    /// lootable bodies at pretty absurd distances... it overrode the
-    /// gather ore command to loot bodies about 30-40 metres away." Applies
-    /// to ordinary AMBIENT corpse/bag discovery only - a survivor's own
-    /// genuine kill (see _recentOwnKillPositions/IsRememberedOwnKill's own
-    /// doc comment below) is deliberately exempt from this cap, since
-    /// Lucas's own framing was explicit: "the bot would know where the
-    /// player died if it won the fight," a real distinction between
-    /// stumbling onto a random body versus walking back to one it made
-    /// itself.
+    /// Search radius for ambient corpse/dropped-bag discovery. Kept smaller than LootSearchRadius for realism.
     /// </summary>
     private const float CorpseAmbientAwarenessRadius = BotOnSightDetectionRange;
 
     /// <summary>
-    /// How long a survivor's own kill stays reachable at range before this
-    /// project stops treating it as "known" - a real player wouldn't
-    /// remember/care about a fight from 20 minutes ago forever, and this
-    /// also bounds the dictionary from growing unboundedly for a
-    /// long-running server. Cleared immediately on the survivor's own
-    /// death regardless (OnPlayerDeath, LivingRust.Hooks.cs) - a fresh
-    /// respawn has no memory of a previous life's kills.
+    /// How long a survivor's own kill stays remembered before it is treated as unknown again.
     /// </summary>
     private const float OwnKillMemoryDurationSeconds = 300f;
 
     /// <summary>
-    /// How close a candidate corpse's real position needs to be to a
-    /// remembered kill's death position to count as "that kill" - position-
-    /// based matching (not a direct entity/NetworkableId reference)
-    /// specifically because the real corpse doesn't necessarily spawn at
-    /// the EXACT death position (ragdoll settling, a body corpse's own
-    /// spawn offset) and OnEntityDeath fires before that's necessarily
-    /// resolved - a small real-world tolerance is simpler and more robust
-    /// than trying to chase down the exact corpse reference at hook time.
+    /// Distance tolerance used to match a corpse's position to a remembered kill position.
     /// </summary>
     private const float OwnKillMemoryMatchRadius = 5f;
 
     /// <summary>
-    /// Per-survivor: (real death position of something they personally
-    /// killed, when this memory expires) - written by OnEntityDeath
-    /// (LivingRust.Hooks.cs), read by IsRememberedOwnKill below. Only ever
-    /// holds the MOST RECENT kill per survivor (a fresh kill overwrites
-    /// the previous one) - deliberately simple rather than a full history,
-    /// since "the bot would know where the player died if it won the
-    /// fight" only really needs the last fight, not a lifetime log.
+    /// Per-survivor list of recent kill positions and their expiry times, used by IsRememberedOwnKill.
     /// </summary>
-    // Holds several recent kills per survivor, not just the last (2026-09-21):
-    // a survivor that wins a string of fights used to remember only the
-    // final body and walk past every earlier one.
+    // Caps how many recent kills are remembered per survivor.
     private const int OwnKillMemoryMaxEntries = 8;
     private readonly Dictionary<Guid, List<(Vector3 Position, float ExpiresAt)>> _recentOwnKillPositions = new();
 
@@ -100,9 +60,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// See _recentOwnKillPositions' own doc comment. Self-expiring - a
-    /// stale entry past OwnKillMemoryDurationSeconds is removed the first
-    /// time anything actually checks it, no separate cleanup timer needed.
+    /// Checks whether a corpse position matches a remembered own kill for this survivor. Expired entries are pruned lazily.
     /// </summary>
     private bool IsRememberedOwnKill(Guid characterId, Vector3 corpsePosition)
     {
@@ -125,191 +83,64 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Deliberately much smaller than LootSearchRadius - see
-    /// foundCollectible's own doc comment in ContinueLootTask for why.
-    /// This is now just the outer search ceiling (the widest any single
-    /// collectible type is allowed - see GetCollectibleDivertRadius,
-    /// 2026-08-18) - the real per-type cutoff (berries 3m, mushrooms 5m,
-    /// real resources - hemp/wood/stone/metal ore/sulfur ore - 15m) is
-    /// enforced per-candidate in the search filter, same split
-    /// EnRouteCollectibleDetectionRadius handles for the en-route detour
-    /// search.
+    /// Outer search ceiling for collectible detection; per-type cutoffs are enforced separately in the search filter.
     /// </summary>
     private const float CollectibleSearchRadius = 15f;
 
     /// <summary>
-    /// 2026-08-18, Lucas's own explicit redesign of the strict type-tier
-    /// system below - see ContinueLootTask's own doc comment at the
-    /// selection block for the full reasoning ("he got too focused on go
-    /// to monument rather than loot what's in front of me first").
-    /// Anything within this distance wins outright over the old fixed
-    /// tier order, regardless of type - whichever's genuinely closest.
+    /// Any loot within this distance takes priority over normal type-tier ordering, regardless of type.
     /// </summary>
     private const float NearbyLootPriorityRadius = 30f;
 
     /// <summary>
-    /// How often to poll whether the equipped tool's real swing cooldown
-    /// has cleared - not the swing cadence itself, which now comes
-    /// entirely from the tool's own real AttackEntity.repeatDelay (read at
-    /// runtime via BaseMelee.HasAttackCooldown(), see StartAttackingContainer).
-    /// Deliberately short so a hit lands promptly once the real cooldown
-    /// actually clears, rather than adding its own extra polling delay on
-    /// top of the tool's real one.
+    /// Poll interval used to check whether the equipped tool's attack cooldown has cleared.
     /// </summary>
     private const float AttackHitInterval = 0.1f;
 
     /// <summary>
-    /// Fallback damage per hit, only used if the survivor somehow has no
-    /// melee tool equipped at all (shouldn't normally happen -
-    /// GiveStartingKit always gives a rock). Real damage now comes from
-    /// GetToolDamage's read of the actually-equipped tool's own real
-    /// stats - this constant used to be applied unconditionally
-    /// regardless of tool, and at 40 was simply too high against a real
-    /// barrel's health (35-50, per a live report) - one hit reliably
-    /// one/two-shot it outright, nothing to do with the separate
-    /// double-damage bug ServerUse_Strike's cancelled invoke fixes below.
+    /// Fallback damage per hit when no melee tool is equipped. Normal damage comes from GetToolDamage instead.
     /// </summary>
     private const float AttackDamagePerHit = 6f;
 
     /// <summary>
-    /// How long a direct loot (crates/boxes - see RequiresDestructionToLoot)
-    /// takes before completing, rather than transferring instantly on
-    /// arrival - an instant transfer read as "inhuman" next to the
-    /// barrel/roadsign combat loop, which naturally takes a few seconds
-    /// of real swinging.
+    /// Delay before a direct loot (crates/boxes) completes, instead of transferring instantly on arrival.
     /// </summary>
     private const float DirectLootDelay = 2f;
 
     /// <summary>
-    /// Real max distance a survivor can be from a container and still
-    /// loot/attack it - neither StartAttackingContainer (HasLineOfSight
-    /// only) nor LootContainerDirectly (no check at all) ever verified
-    /// actual proximity before this existed, trusting "arrival" alone. A
-    /// live test caught a survivor looting a container ~10-15m away,
-    /// stuck on the far side of a sandbag wall the whole time - a clear
-    /// line of sight over/through the sandbags was all HasLineOfSight
-    /// needed, and this project's own GetApproachPoint doc comment already
-    /// flagged the exact same class of bug once before ("a bot destroyed
-    /// two barrels through a solid wall"). GetApproachPoint's own standoff
-    /// distance is 0.6m from the container's bounds, so this is generous
-    /// slack for agent radius/rounding, not an invitation to loot from
-    /// across a room.
+    /// Max distance a survivor can be from a container and still loot or attack it.
     /// </summary>
     private const float LootInteractionRange = 3f;
 
     /// <summary>
-    /// Safety cap on hits against a single container - guards against a
-    /// container whose health doesn't actually drop for some reason (a
-    /// protection/invulnerability edge case) leaving a survivor stuck
-    /// swinging forever instead of giving up and moving on.
+    /// Safety cap on hits against a single container, in case its health never drops.
     /// </summary>
     private const int MaxHitsPerContainer = 20;
 
     /// <summary>
-    /// Same safety-cap idea as MaxHitsPerContainer, but door barricades
-    /// (Barricade class - confirmed via decompile, defaults 100 max
-    /// health, no protection scaling seen) are a beefier, structural
-    /// obstacle a real player expects to spend more hits on than a
-    /// wooden barrel.
+    /// Safety cap on hits against a door barricade, higher than MaxHitsPerContainer since barricades are sturdier.
     /// </summary>
     private const int MaxHitsPerBarricade = 40;
 
     /// <summary>
-    /// Search radius EscalateStuckRecovery uses to look for a real nearby
-    /// Barricade - wider than LootInteractionRange (2026-08-16, was equal
-    /// to it originally) since a live test showed a stuck survivor can be
-    /// several metres off from the barricade that's actually the root
-    /// cause by the time this fires, not necessarily standing right
-    /// against it - see TryFindBlockingBarricade's own doc comment.
+    /// Search radius EscalateStuckRecovery uses to look for a nearby Barricade blocking the survivor.
     /// </summary>
     private const float BarricadeAttackDetectionRange = 6f;
 
-    // Widened from Door's own real RPC_Server.MaxDistance (3f, confirmed
-    // via decompile) to match BarricadeAttackDetectionRange's own
-    // precedent (2026-08-29, fourth round - Lucas's own report: a bot
-    // stuck oscillating outside a foundation, near a wall, never actually
-    // near enough to the real door for the original 3f OverlapSphere to
-    // ever find it - closed security doors disable their own NavMeshLink,
-    // so native pathfinding routes AROUND the whole structure looking for
-    // another way in rather than walking up to the door itself, same root
-    // cause BarricadeAttackDetectionRange's own doc comment already
-    // documents for barricades: "a stuck survivor can be several metres
-    // off from the barricade that's actually the root cause." This call
-    // only ever directly sets Door.SetOpen server-side (no RPC involved),
-    // so the real 3f interaction range was never actually a hard
-    // requirement here in the first place.
+    // Detection range used to find a door to open when the survivor is stuck near one.
     private const float DoorOpenDetectionRange = 6f;
 
-    // Small buffer past the door's own exact center (2026-08-29, second
-    // round) - guarantees the survivor ends up clearly clear of the
-    // frame's own collider before handing back to normal collision-
-    // respecting movement, rather than potentially still overlapping it
-    // right at the door's own pivot point.
-    //
-    // Widened from 1.5f (2026-08-29, seventh round - Lucas's own live
-    // report + trace confirmation: a bot crossing its own GROUND FLOOR
-    // door correctly landed at the door's real height both phase legs,
-    // then immediately after SetOpen(false) closed it behind itself,
-    // its very next walk tick showed it sitting on the SECOND STORY
-    // floor slab instead, ~3.1m up - "visually phasing in and out of the
-    // doorway and ontop of the base build"). 1.5f wasn't real clearance
-    // of a door's actual frame/hinge collider (door.transform.position is
-    // the hinge pivot, not necessarily the true geometric center of the
-    // full frame+swing bounds) - the survivor was still overlapping the
-    // door's collider the instant it resolidified, and Unity's physics
-    // resolved that overlap by pushing the capsule out - straight up onto
-    // the floor slab directly overhead on a 2-story design, since that's
-    // the nearest free space in that direction, rather than sideways.
+    // Distance past the door's center the survivor moves to clear the frame's collider before resuming normal movement.
     private const float DoorGhostClearanceDistance = 2.5f;
 
-    // Real safety-net tolerance (2026-08-29, seventh round) - after
-    // closing the door behind a just-completed ground-level crossing, the
-    // survivor's real height is already precisely known (the door's own
-    // real Y, just phased to) - if it differs from that by more than a
-    // normal step's worth, something (the closing door's own physics
-    // push, most likely) moved it somewhere it shouldn't be, and this is
-    // corrected directly rather than trusting whatever SnapToGround's own
-    // generic consensus probe would find nearby (which is exactly what
-    // let a push onto an overhead floor slab go uncorrected in the first
-    // place - a real steppable surface, just the wrong one).
+    // Height correction tolerance applied after closing a door, in case closing it physically displaced the survivor.
     private const float DoorCloseHeightCorrectionTolerance = 0.5f;
 
-    // Real max height a survivor should ever "jump" up to reach a door
-    // (2026-08-29, fifth round - Lucas's own explicit framing: a flat
-    // foundation on sloped terrain always has ITS door end up higher
-    // above the ground on whichever edge lands on the downhill side -
-    // "hard to tell when they will build it which way" since that
-    // depends entirely on the site's own terrain, not a controllable
-    // choice - so a real player just jumps up into the frame instead,
-    // "a real player could still technically make it through the door by
-    // jumping up into the frame." Roughly a real player's own jump-plus-
-    // grab reach in Rust - well past FoundationGroundClearance's own
-    // deliberate 1m bias (BaseBuilding.cs) plus normal extra slope
-    // variance, but nowhere near tall enough to paper over a genuinely
-    // broken multi-metre build-height bug (GroundHeightMismatchTolerance
-    // already exists to catch and abort THOSE separately).
+    // Max height a survivor may "jump" to reach a door on sloped terrain.
     private const float DoorJumpableHeight = 2f;
 
     /// <summary>
-    /// Real short, fully-known crossing (2026-08-29, Lucas's own explicit
-    /// ask - see EscalateStuckRecovery's own doc comment at the one call
-    /// site for the full reasoning and the explicit "never for a door it
-    /// didn't place" security boundary this is scoped behind).
-    ///
-    /// Second round (2026-08-29, Lucas's own live report: "still seems to
-    /// be teleporting around quite a bit" after the first version) - the
-    /// original approach continued in whatever direction the survivor was
-    /// heading TOWARD destination, which could clip alongside the wall
-    /// instead of straight through the actual opening whenever destination
-    /// wasn't well-aligned with the door's own axis, missing the doorway
-    /// and re-triggering the same block repeatedly (visibly reading as
-    /// erratic repeated hops, exactly what got reported). Phasing straight
-    /// to the door's own known transform.position first removes that
-    /// guesswork entirely - that position IS the doorway opening,
-    /// regardless of the survivor's approach angle or where it's ultimately
-    /// headed beyond it. A short second leg then clears it of the door's
-    /// own collider before handing back to normal collision-respecting
-    /// movement for the rest of the real journey to destination.
+    /// Phases the survivor through a door it owns: moves to the door's position first, then clears the frame before resuming normal movement.
     /// </summary>
     private void GhostThroughOwnDoor(Survivor survivor, Door door, Vector3 destination, Action onArrived, Action onFailed, int recoveryTier)
     {
@@ -327,13 +158,7 @@ public partial class LivingRust
         Vector3 clearOfFrame = doorCenter + direction.normalized * DoorGhostClearanceDistance;
         clearOfFrame.y = doorCenter.y;
 
-        // Real live ask (2026-08-29, second round - Lucas's own explicit
-        // request: "the bot will have to open and close the door upon
-        // leaving the base and also when entering... if the doors are
-        // left open it defeats the purpose of having doors with
-        // codelocks") - closed again once clear of the frame, same real
-        // security restored either direction as CrossHomeDoor's own
-        // precomputed route already does.
+        // Closes the door again once the survivor is clear of the frame, restoring security either direction.
         void CloseDoorAndContinue()
         {
             if (!door.IsDestroyed && door.IsOpen())
@@ -342,14 +167,7 @@ public partial class LivingRust
                 door.SendNetworkUpdate();
             }
 
-            // See DoorCloseHeightCorrectionTolerance's own doc comment -
-            // closing the door can physically shove the survivor if it's
-            // still overlapping the door's own collider, most often
-            // straight up onto an overhead floor slab on a multi-story
-            // design. doorCenter.y is the one height already known for
-            // certain to be correct here (the survivor was just phased
-            // to it), so any real drift beyond a normal step gets written
-            // back directly rather than trusting a fresh ground probe.
+            // Corrects the survivor's height if closing the door physically displaced it.
             if (npc != null && !npc.IsDestroyed && Mathf.Abs(npc.transform.position.y - doorCenter.y) > DoorCloseHeightCorrectionTolerance)
             {
                 Vector3 corrected = npc.transform.position;
@@ -373,28 +191,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real "can this survivor legitimately open this door" check
-    /// (2026-08-29, Lucas's own explicit ask: "how the bot gets in and
-    /// out of the base without teleporting"). Matches real Rust's own
-    /// access rule, confirmed via decompile - opening a door has nothing
-    /// to do with OwnerID/building privilege, only whether it's currently
-    /// locked: no lock at all, or a lock that isn't engaged (IsLocked()
-    /// false), means ANY player could open it; a locked CodeLock only
-    /// yields if this specific survivor is on its real whitelistPlayers
-    /// list (the same list PlaceCodeLockReplayRow itself adds a bot's own
-    /// userID to when it builds and locks its own door).
-    /// </summary>
-    /// <summary>
-    /// Real "stand square in front of the door, not off to the side"
-    /// point (2026-08-29, fourth round) - offsets from the door's own
-    /// center along whichever of the door's local axes best separates it
-    /// from the survivor's current position (its real forward/back facing
-    /// if the survivor is roughly ahead/behind it, otherwise its
-    /// perpendicular right/left), staying on the survivor's OWN current
-    /// side (never crossing the door's plane - this is a plain walk, not
-    /// a phase). Locks Y to the door's own transform.position the same
-    /// way GhostThroughOwnDoor's clearOfFrame already does, so the
-    /// approach itself never tries to climb/dive at an angle toward it.
+    /// Computes a point squarely in front of the door, offset along whichever local axis best separates it from the survivor's position, staying on the survivor's current side.
     /// </summary>
     private Vector3 ComputeDoorApproachPoint(BasePlayer npc, Door door)
     {
@@ -406,9 +203,7 @@ public partial class LivingRust
         doorForward.y = 0f;
         doorForward = doorForward.sqrMagnitude > 0.01f ? doorForward.normalized : Vector3.forward;
 
-        // Whichever of the door's own forward/back axis the survivor is
-        // more aligned with wins - keeps the approach point flush with
-        // the doorway's real opening axis instead of an arbitrary side.
+        // Picks whichever forward/back axis the survivor is more aligned with, to keep the approach point flush with the doorway.
         float alignment = toNpc.sqrMagnitude > 0.01f ? Vector3.Dot(toNpc.normalized, doorForward) : 1f;
         Vector3 approachDirection = alignment >= 0f ? doorForward : -doorForward;
 
@@ -430,11 +225,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real nearby-closed-door check (2026-08-29) - same real Construction
-    /// layer every other construction-adjacent check in this project
-    /// already scans (barricades/cactus etc use their own dedicated
-    /// masks; doors sit on Construction like any other BuildingBlock-
-    /// family piece).
+    /// Checks nearby for a closed door blocking the survivor, using the same Construction layer mask as other construction checks.
     /// </summary>
     private bool TryFindBlockingClosedDoor(BasePlayer npc, out Door blockingDoor)
     {
@@ -461,41 +252,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Known melee-capable tool shortnames, best (fastest/most efficient)
-    /// first - a real player would grab whatever's quickest for the job
-    /// rather than sticking with the starting rock once something better
-    /// turns up. The original list guessed underscore-joined names
-    /// (e.g. "combat_knife") - a live test confirmed via real looted-item
-    /// logs that this was silently wrong for every dotted item on the
-    /// list (Rust's real convention: "knife.combat", not "combat_knife" -
-    /// confirmed live shortnames were icepick.salvaged, knife.combat,
-    /// salvaged.cleaver, salvaged.sword), meaning EquipBestMeleeTool never
-    /// recognized ANY of them and silently kept the starting rock
-    /// equipped the entire game, even after looting a real cleaver/mace.
-    /// "mace" (a real, separately-existing melee weapon) was also missing
-    /// entirely. OnServerInitialized now validates every entry here
-    /// against ItemManager.FindItemDefinition on startup and logs a
-    /// warning for anything that still doesn't resolve, specifically so
-    /// this exact failure mode - a wrong shortname masquerading as a
-    /// working one - can't hide silently again.
-    /// </summary>
-    /// <summary>
-    /// Comprehensive as of a 2026-08-09 full scan of every real
-    /// Category:"Weapon"/"Tool" item in the bundled item database (grep
-    /// across every Bundles/items/*.json for its real Category field,
-    /// cross-checked against decompiled Assembly-CSharp.dll for anything
-    /// ambiguous) - Lucas's explicit request that this stop being
-    /// effectively hardcoded to whichever few items happened to show up
-    /// in a live test so far. Deliberately excludes anything NOT
-    /// confirmed real melee-attack-capable: mounted/siege
-    /// weapons (50cal.mounted, ballista, batteringram, catapult,
-    /// siegetower - not inventory-holdable items at all) and power tools
-    /// (chainsaw, jackhammer - real, but their actual attack mechanism
-    /// wasn't verified as a real BaseMelee cast the way EquipBestMeleeTool
-    /// needs; see this method's own doc comment on why a wrong guess here
-    /// silently breaks barrel destruction rather than erroring loudly).
-    /// Power tools are still ranked in GatherToolPriority below, which
-    /// doesn't have that same casting requirement.
+    /// Best-to-worst list of melee-capable tool/weapon shortnames used to pick a combat tool. Excludes mounted/siege weapons and power tools, which cannot be cast to BaseMelee.
     /// </summary>
     private static readonly string[] MeleeToolPriority =
     {
@@ -537,17 +294,7 @@ public partial class LivingRust
     };
 
     /// <summary>
-    /// Checks every MeleeToolPriority entry against the real, live item
-    /// database (ItemManager.FindItemDefinition) at startup and logs a
-    /// warning for anything that doesn't resolve - built specifically
-    /// after a live test found half this list silently wrong (underscore-
-    /// joined guesses instead of Rust's real dotted shortnames), which
-    /// meant EquipBestMeleeTool never recognized several real looted tools
-    /// at all, and nothing ever logged that fact. Deliberately checked
-    /// once at startup rather than trusted forever - a future edit to this
-    /// list re-guessing a shortname should be caught immediately on the
-    /// next boot, not discovered again by a bot dying with the wrong
-    /// weapon equipped.
+    /// Validates every MeleeToolPriority shortname against the item database at startup and logs a warning for any that don't resolve.
     /// </summary>
     private void ValidateMeleeToolPriority()
     {
@@ -572,37 +319,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Best-to-worst ranking for belt SLOT 0 ("main weapon") specifically -
-    /// deliberately a separate list from MeleeToolPriority, not an
-    /// extension of it. MeleeToolPriority drives EquipBestMeleeTool's
-    /// actual combat-equip behaviour, which casts the result to BaseMelee
-    /// (npc.GetHeldEntity() as BaseMelee) to call ServerUse() - a gun or
-    /// bow isn't a BaseMelee, so that cast would silently fail and break
-    /// barrel/roadsign destruction if ranged weapons were mixed into that
-    /// same list. This list only decides which item LOOKS like the
-    /// survivor's main weapon for belt layout purposes (Lucas's own
-    /// framing: "assault rifle is better than a bow and arrows") -
-    /// OrganizeBelt only ever repositions items, it never changes what's
-    /// equipped as the active item.
-    ///
-    /// Comprehensive as of a 2026-08-09 full scan of every real
-    /// Category:"Weapon" item in the bundled item database - Lucas's
-    /// explicit request that this stop being effectively hardcoded to
-    /// whichever few items happened to show up in a live test so far
-    /// ("that way it isn't hardcoded to L96 and LR300 rifle"). Deliberately
-    /// excludes: mounted/siege weapons (50cal.mounted, ballista,
-    /// batteringram, catapult, siegetower, homingmissile.launcher - not
-    /// inventory-holdable items at all), weapon.mod.* (attachments, not
-    /// weapons themselves), and thrown/deployed explosives (grenades,
-    /// rocket launchers, supply/rf signals - a real weapon in the loose
-    /// sense, but not something a player "wields as their main weapon" the
-    /// way this list's purpose means, and not real BaseMelee/ranged-aim
-    /// items this project's combat code has ever touched). Reskinned
-    /// workshop variants of the same base weapon (rifle.ak.ice,
-    /// rifle.lr300.space, ...) are deliberately NOT separately listed -
-    /// they're rare skin-specific spawns, not a distinct weapon tier, and
-    /// would just bloat this list without changing any real ranking
-    /// decision.
+    /// Best-to-worst weapon ranking used for belt slot 0 (main weapon). Separate from MeleeToolPriority since it only affects belt layout, not what gets equipped in combat. Excludes mounted/siege weapons, attachments, and thrown/deployed explosives.
     /// </summary>
     private static readonly string[] WeaponPriority =
     {
@@ -671,21 +388,7 @@ public partial class LivingRust
     };
 
     /// <summary>
-    /// Real fully-automatic firearms (sustained full-auto fire, confirmed
-    /// via decompiling Assembly-CSharp.dll / known real Rust weapon
-    /// behaviour - m16a2 deliberately excluded despite being select-fire,
-    /// since its real Rust implementation is 3-round burst, not sustained
-    /// automatic). Lucas's own named examples ("thompson, m249, rifle.ak,
-    /// lr300 etc"), extended to the rest of the real automatic roster
-    /// (mp5, the custom smg.2, hmlmg, minigun, t1_smg) per the same
-    /// 2026-08-09 full item-database scan WeaponPriority's own doc
-    /// comment describes. Used purely to decide belt slot 2's "offsider"
-    /// pick: if the best owned weapon (slot 1) is one of these, slot 2
-    /// should be the best NON-automatic weapon instead (a sniper, pistol,
-    /// or shotgun - Lucas's own examples of "predominantly offsider
-    /// weapons"), not a second automatic. Deliberately NOT a rewrite of
-    /// WeaponPriority's own ranking - both lists stay independent, this
-    /// is purely a category tag layered on top.
+    /// Fully-automatic firearm shortnames, used to pick a non-automatic "offsider" weapon for belt slot 2 when slot 1 is automatic.
     /// </summary>
     private static readonly string[] AutomaticWeaponShortnames =
     {
@@ -701,23 +404,7 @@ public partial class LivingRust
     };
 
     /// <summary>
-    /// Real gathering tools, best-first, for belt slot 5 - kept separate
-    /// from WeaponPriority (which is real weapons only now - see its own
-    /// doc comment) so a pickaxe/hatchet chosen here doesn't duplicate
-    /// whatever OrganizeBelt already placed as the primary weapon/tool.
-    /// Comprehensive as of the same 2026-08-09 full Category:"Tool" scan -
-    /// power tools (jackhammer, chainsaw) ranked first as genuinely
-    /// better at their job than a hand tool, then the base pickaxe/
-    /// hatchet, then every real skinned/material variant of each (stone,
-    /// concrete/salvaged, diver, lumberjack, frontier - all real, separate
-    /// shortnames, not reskins of the same item), then icepick.salvaged.
-    /// No dedicated per-task tool selection yet (which specific resource a
-    /// survivor is actively trying to gather isn't tracked anywhere in
-    /// this project - see [[project-livingrust-roadmap]]'s Current-task
-    /// entry) - pickaxes ranked marginally above hatchets as the more
-    /// generally useful of the two (stone/sulfur/metal ore, Lucas's own
-    /// examples) until real task-awareness exists to actually swap this
-    /// per-job.
+    /// Best-first gathering tool ranking for belt slot 5, kept separate from WeaponPriority. No per-task tool selection exists yet, so pickaxes rank slightly above hatchets as the more generally useful option.
     /// </summary>
     private static readonly string[] GatherToolPriority =
     {
@@ -741,13 +428,8 @@ public partial class LivingRust
     private const string MedicalSyringeShortname = "syringe.medical";
     private const string BandageShortname = "bandage";
 
-    // Belt layout, per Lucas's explicit spec (2026-08-09): slot 1 = best
-    // weapon overall ("priority is just best weapon at the time"), or the
-    // best tool instead if the survivor genuinely owns zero real weapons,
-    // not even a bow; slot 2 = the best "offsider" weapon (a different
-    // category from slot 1 - see AutomaticWeaponShortnames); slot 3 =
-    // medical; slot 4 = bandages; slot 5 = a gathering tool; slot 6 = any
-    // of the above, order doesn't matter (plain overflow).
+    // Belt layout: slot 1 = best weapon (or best tool if no weapon owned); slot 2 = best offsider weapon (different category from slot 1);
+    // slot 3 = medical; slot 4 = bandages; slot 5 = gathering tool; slot 6 = overflow.
     private const int BeltWeaponSlot = 0;
     private const int BeltOffsiderSlot = 1;
     private const int BeltMedicalSlot = 2;
@@ -756,9 +438,7 @@ public partial class LivingRust
     private static readonly int[] BeltOverflowSlots = { 5 };
 
     /// <summary>
-    /// Checks every WeaponPriority entry against the real item database at
-    /// startup - same reasoning, same failure mode this guards against, as
-    /// ValidateMeleeToolPriority's own doc comment.
+    /// Validates every WeaponPriority shortname against the item database at startup and logs a warning for any that don't resolve.
     /// </summary>
     private void ValidateWeaponPriority()
     {
@@ -783,45 +463,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Arranges the survivor's belt the way a real player deliberately
-    /// would, per Lucas's explicit spec (2026-08-09): slot 1 = the single
-    /// best weapon owned overall ("priority is just best weapon at the
-    /// time"), or the best gathering tool instead if the survivor
-    /// genuinely owns zero real weapons, not even a bow; slot 2 = the
-    /// best "offsider" - a weapon from a different category than slot 1
-    /// (if slot 1 is a fully-automatic weapon, the offsider is the best
-    /// NON-automatic one - a sniper, pistol, or shotgun; his own named
-    /// example: "m249 first slot... l96 sniper rifle in second slot as
-    /// an offsider"); slot 3 = medical, and slot 4 = bandages - both now a
-    /// real priority cascade rather than a single fixed item each, see
-    /// OrganizeMedicalAndExplosiveSlots' own doc comment for the full
-    /// F1-grenade/syringe/large-medkit/bandage rules; slot 5 = a gathering
-    /// tool; slot 6 = any of the above, order doesn't matter (plain
-    /// overflow). Slots are 0-indexed here (BeltWeaponSlot=0
-    /// is the game's slot 1, etc.) Every placement uses Item.MoveToContainer
-    /// with allowSwap:true, the same real mechanism a client drag-and-drop
-    /// uses - whatever was already sitting in the target slot gets swapped
-    /// elsewhere rather than needing to be manually evacuated first.
-    ///
-    /// Slot 1 is now a ONE-TIME assignment, not continuously re-evaluated
-    /// (2026-08-16, Lucas's own explicit request: "the main weapon (1st
-    /// slot) never gets replaced with any other weapon... regardless of
-    /// gear score, that way all looted items just go straight to the
-    /// inventory" - this, plus EquipBestWeaponForDisplay's identical
-    /// change, is also the real fix for repeated live reports of a bot's
-    /// held weapon visually going invisible: both methods being called
-    /// after almost every loot pickup, each independently re-picking
-    /// "best," was producing exactly the rapid MoveToContainer/
-    /// UpdateActiveItem churn this project's own OrganizeBelt comment
-    /// already identified as the root cause of that glitch). Once
-    /// something real already occupies slot 1, it's kept there
-    /// permanently regardless of what gets looted afterward - only a
-    /// genuinely empty slot 1 (nothing real ever equipped yet) still picks
-    /// via WeaponPriority/GatherToolPriority. Real combat can still swap
-    /// the equipped weapon out from under this when the primary runs dry
-    /// (TryEquipBestArmedWeapon, LivingRust.Combat.cs) - that's a
-    /// deliberate, separate exception Lucas explicitly asked to keep for
-    /// survivability, not something this method fights.
+    /// Arranges the survivor's belt: slot 1 best weapon (or gather tool if none owned), slot 2 best offsider weapon, slot 3/4 medical/bandages, slot 5 gather tool, slot 6 overflow. Slot 1 is assigned once and kept unless combat forces a swap.
     /// </summary>
     private void OrganizeBelt(Survivor survivor)
     {
@@ -832,10 +474,7 @@ public partial class LivingRust
             return;
         }
 
-        // Snapshot of the ACTIVE item's own slot before any of this
-        // method's own MoveToContainer calls run - see the final
-        // re-confirm step at the bottom for why this is captured here
-        // rather than just re-fetched fresh at the end.
+        // Records the active item's slot before any moves below, to detect later whether it changed.
         Item activeItemBefore = npc.GetActiveItem();
         int? activeItemPositionBefore = activeItemBefore?.position;
 
@@ -861,32 +500,22 @@ public partial class LivingRust
         {
             primaryWeapon = FindBestByPriority(allItems, WeaponPriority, exclude: null);
 
-            // No real weapon at all, not even a bow - the best tool takes the
-            // primary slot instead. Lucas's own explicit rule.
+            // If the survivor owns no real weapon, the best tool takes the primary slot instead.
             primaryTool = primaryWeapon == null ? FindBestByPriority(allItems, GatherToolPriority, exclude: null) : null;
 
             primary = primaryWeapon ?? primaryTool;
 
-            // Checks parent AND position, not position alone (2026-08-16 -
-            // see EquipBestWeaponForDisplay's identical fix/doc comment for
-            // the real live bug this same mistake caused there: position
-            // is only meaningful within an item's own current container, so
-            // a main-inventory item at position 0 isn't "already in belt
-            // slot 1" just because the numbers match).
+            // Checks parent AND position, since position alone is only meaningful within an item's current container.
             bool primaryAlreadyPlaced = primary != null && primary.parent == npc.inventory.containerBelt && primary.position == BeltWeaponSlot;
 
             if (primary != null && !primaryAlreadyPlaced && !primary.MoveToContainer(npc.inventory.containerBelt, BeltWeaponSlot))
             {
-                // Logged rather than silently ignored - a live report of the
-                // belt ending up nothing like this method intends (rock still
-                // in slot 1, the actual best weapon elsewhere) needs real
-                // evidence of WHERE this breaks down rather than another guess.
+                // Logs the failure so belt-layout issues can be diagnosed.
                 Puts($"WARNING: '{survivor.Character.Alias}' - couldn't move '{primary.info.shortname}' into belt slot {BeltWeaponSlot + 1} (already at position {primary.position}, parent {(primary.parent == npc.inventory.containerBelt ? "belt" : primary.parent == npc.inventory.containerMain ? "main" : "other")}).");
             }
         }
 
-        // Offsider only applies when slot 1 is a genuine weapon - a
-        // fallback primary tool has no "different category" counterpart.
+        // Offsider only applies when slot 1 is a genuine weapon.
         if (primaryWeapon != null)
         {
             Item offsider = FindBestOffsider(allItems, primaryWeapon);
@@ -899,11 +528,7 @@ public partial class LivingRust
 
         OrganizeMedicalAndExplosiveSlots(npc);
 
-        // Excludes primaryTool specifically (not primaryWeapon, which
-        // could never match GatherToolPriority anyway now that
-        // WeaponPriority is real weapons only) - covers the "owns two
-        // tools" case, where one became the primary-slot fallback and the
-        // other still gets its own dedicated gather-tool slot.
+        // Excludes primaryTool so a second owned tool still gets its own dedicated gather-tool slot.
         Item gatherTool = FindBestByPriority(allItems, GatherToolPriority, exclude: primaryTool);
 
         if (gatherTool != null && gatherTool.position != BeltGatherToolSlot && !gatherTool.MoveToContainer(npc.inventory.containerBelt, BeltGatherToolSlot))
@@ -915,35 +540,13 @@ public partial class LivingRust
 
         FillOverflowBeltSlots(npc);
 
-        // Re-confirms whatever's actually active with the client, but ONLY
-        // if this method's own MoveToContainer calls above actually moved
-        // the active item's own slot (2026-08-16 - originally this fired
-        // UNCONDITIONALLY every single call, on the theory that belt
-        // repositioning "can leave the client's held-item VISUAL out of
-        // sync... a bot visibly swinging an invisible hand." Real live
-        // report after that fix shipped: the glitch was still happening,
-        // specifically and reliably right when looting a corpse during the
-        // ghost route - and corpse loot from a scientist is very often a
-        // Weapon/Ammunition-category item, meaning PerformReorganizationCheck
-        // (and this unconditional resend) was firing on almost every single
-        // corpse. With the weapon slot now pinned (2026-08-16, same
-        // session) the active item's slot essentially never changes here
-        // anymore in the common case, so forcing a resend regardless was
-        // itself turning into the same repeated-churn problem this was
-        // meant to fix, just from a different trigger. Now this only
-        // forces a refresh on the actual rare case that matters - the
-        // active item's slot genuinely moved during this call.
+        // Refreshes the client's held-item visual, but only if the active item's slot actually changed during this call.
         Item currentActive = npc.GetActiveItem();
 
         if (currentActive != null && currentActive.position != activeItemPositionBefore)
         {
-            // Temporary diagnostic (2026-08-16) - real live reports of the
-            // invisible-weapon glitch kept recurring even after this block
-            // was gated to only fire on an actual slot change, with no way
-            // to confirm from the log alone whether THIS is still firing or
-            // something else entirely is now the cause. Pin down which
-            // before guessing at another fix.
-            Puts($"weapon-refresh-diag: '{survivor.Character.Alias}' active item '{currentActive.info.shortname}' moved from slot {activeItemPositionBefore} to slot {currentActive.position} during OrganizeBelt - forcing a held-entity refresh.");
+            // Diagnostic log for tracking held-entity refreshes.
+            VerbosePuts($"weapon-refresh-diag: '{survivor.Character.Alias}' active item '{currentActive.info.shortname}' moved from slot {activeItemPositionBefore} to slot {currentActive.position} during OrganizeBelt - forcing a held-entity refresh.");
 
             npc.UpdateActiveItem(currentActive.uid);
             ForceRefreshHeldEntity(npc);
@@ -975,17 +578,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Best belt-slot-2 "offsider" for primaryWeapon - a real weapon from
-    /// a different category, per Lucas's own explicit examples: an
-    /// automatic primary (see AutomaticWeaponShortnames) pairs with the
-    /// best NON-automatic weapon (sniper, pistol, shotgun); anything else
-    /// primary just pairs with the next-best weapon overall (which, since
-    /// there's no second copy of a non-automatic category to prefer, is
-    /// already the closest real "offsider" available). Falls back to the
-    /// next-best weapon overall if literally every other owned weapon is
-    /// also automatic (e.g. two SMGs and nothing else) - Lucas's rule is
-    /// "predominantly offsider weapons" go in slot 2, not "slot 2 must be
-    /// empty if no true offsider exists."
+    /// Picks the best belt-slot-2 "offsider" weapon for primaryWeapon: a non-automatic weapon if the primary is automatic, otherwise the next-best weapon overall.
     /// </summary>
     private static Item FindBestOffsider(List<Item> items, Item primaryWeapon)
     {
@@ -1016,32 +609,7 @@ public partial class LivingRust
     private const string LargeMedkitShortname = "largemedkit";
 
     /// <summary>
-    /// Fills BeltMedicalSlot and BeltBandageSlot together, per Lucas's
-    /// explicit priority-cascade spec (2026-08-09):
-    ///
-    /// BeltMedicalSlot ("slot 3"): F1 grenades - and ONLY F1 grenades, no
-    /// other thrown explosive - override syringes here if the survivor
-    /// owns any; syringes take it if no F1; bandages take it as the final
-    /// fallback once BOTH F1 and syringes are completely gone ("syringes
-    /// out? completely out? bandages take over medical slots").
-    ///
-    /// BeltBandageSlot ("slot 4"): a syringe displaced by F1 taking the
-    /// medical slot claims this one instead, ahead of a large medkit -
-    /// Lucas's own explicit ranking, confirmed twice: first "I prioritise
-    /// med syringes over bandages as they provide better healing
-    /// effects," then confirmed again specifically against large medkits
-    /// too ("medical syringe trumps large medkit" - instant heal plus a
-    /// passive regen-over-time effect a medkit doesn't have, and a medkit
-    /// costs meaningfully more to craft for a smaller instant boost, so
-    /// its real overall priority is lower). Large medkit only wins this
-    /// slot over a plain bandage, never over a syringe.
-    ///
-    /// Every check is against CURRENT ownership, re-evaluated fresh on
-    /// every call rather than tracked with separate state - exactly what
-    /// makes "once depleted, the original priority takes priority again"
-    /// true for free: the moment Rust's own item system removes a
-    /// fully-used stack, the next OrganizeBelt pass simply won't find it
-    /// anymore and the cascade naturally falls through to the next tier.
+    /// Fills BeltMedicalSlot and BeltBandageSlot by priority: F1 grenades then syringes then bandages for the medical slot, with a displaced syringe or large medkit falling to the bandage slot. Re-evaluated fresh each call based on current ownership.
     /// </summary>
     private void OrganizeMedicalAndExplosiveSlots(BasePlayer npc)
     {
@@ -1072,20 +640,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Moves any wearable (armor/clothing) still sitting in a belt slot
-    /// back into main inventory - the belt's only intended occupants are
-    /// the weapon/medical/gather-tool roles above (plus spare medical
-    /// overflow). A live report caught real armor parked in a belt slot,
-    /// put there by Rust's own raw loot-transfer placement before this
-    /// method ever ran (PlayerInventory.GiveItem can land an item on
-    /// either container depending on which had space at that exact
-    /// moment). EvaluateAndUpgradeArmor - which runs earlier in
-    /// OnLootObtained, and as of the same fix now also scans the belt,
-    /// not just main - already had its own chance to wear anything here
-    /// if it was a real upgrade; anything still sitting here afterward
-    /// wasn't worth wearing right now, and belongs in main inventory as
-    /// spare/backup material, not occupying a belt slot reserved for
-    /// something else.
+    /// Moves any wearable armor/clothing left sitting in a belt slot back into main inventory, since the belt is reserved for weapons/medical/gather-tool roles.
     /// </summary>
     private void DeclutterBeltOfWearables(BasePlayer npc)
     {
@@ -1100,13 +655,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Backs up any belt slots OrganizeBelt didn't already claim
-    /// (BeltOverflowSlots) with spare medical stacks pulled from main
-    /// inventory - Lucas's own "if the slots are free" framing, and
-    /// medical specifically since it's the one item type worth having
-    /// multiple ready stacks of rather than just one. Only ever touches a
-    /// slot that's genuinely empty - never displaces whatever a survivor
-    /// might already be carrying there.
+    /// Fills any empty overflow belt slots with spare medical stacks from main inventory. Never displaces an item already in a slot.
     /// </summary>
     private void FillOverflowBeltSlots(BasePlayer npc)
     {
@@ -1130,22 +679,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Main-inventory neatness pass - Lucas's own framing: "not a massive
-    /// implementation", but grouped by real category now, not just by
-    /// exact shortname - medical items sit together, weapons sit
-    /// together, resources sit together, rather than only guaranteeing
-    /// adjacency for exact duplicate stacks (the original version sorted
-    /// by shortname alone, which put e.g. "bandage" and "syringe.medical"
-    /// nowhere near each other despite both being medical). Uses Rust's
-    /// own real ItemCategory (Weapon/Construction/Items/Resources/Attire/
-    /// Tool/Medical/Food/Ammunition/Traps/Misc/...) as the grouping key -
-    /// the same real category ConsumeFoodImmediately's ItemCategory.Food
-    /// filter already relies on - rather than inventing a separate
-    /// ad-hoc taxonomy to build and maintain. Sorted by shortname within
-    /// each category, same as before, so exact-duplicate stacks still
-    /// land adjacent to each other too. Uses the current position of each
-    /// item (not a stale precomputed one) since MoveToContainer's
-    /// allowSwap:true can relocate an item this loop hasn't reached yet.
+    /// Sorts the main inventory by item category, then by shortname within each category, so similar items sit together.
     /// </summary>
     private void TidyMainInventory(Survivor survivor)
     {
@@ -1173,42 +707,12 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Safety cap on how many times ConsumeFoodImmediately will call
-    /// ItemModConsume.DoAction on a single item stack - guards against a
-    /// runaway loop if CanDoAction somehow kept returning true without
-    /// DoAction ever reducing item.amount (shouldn't happen given the real
-    /// DoAction always calls item.UseItem, but cheap insurance against a
-    /// stuck survivor endlessly "eating" the same stack).
+    /// Safety cap on how many times ConsumeFoodImmediately calls DoAction on a single item stack, to guard against a runaway loop.
     /// </summary>
     private const int MaxFoodConsumeActionsPerItem = 50;
 
     /// <summary>
-    /// Hunger/thirst is explicitly out of scope as its own system for now
-    /// (Lucas's own framing: "it really isn't a MASSIVE component of rust
-    /// gameplay, it is just a side thing") - rather than build metabolism
-    /// tracking, food just gets eaten the instant it enters inventory,
-    /// using the exact real consume action a client's "Consume" button
-    /// ultimately triggers (BasePlayer's own SV_Drink RPC handler follows
-    /// this identical CanDoAction/DoAction pattern for water, confirmed
-    /// via decompiling Assembly-CSharp.dll) - DoAction itself already
-    /// applies real metabolism effects (calories/hydration/health) and
-    /// consumes the item via Item.UseItem, so this is genuine eating, not
-    /// a synthetic shortcut.
-    ///
-    /// Filtered to ItemCategory.Food specifically (a real, separate
-    /// category from Medical - confirmed via decompiling ItemCategory) so
-    /// this never touches medical syringes/bandages, which also use
-    /// ItemModConsume but are deliberately kept as reserved belt stock by
-    /// OrganizeBelt instead of being eaten on sight.
-    ///
-    /// Looped per item rather than one DoAction call, since DoAction only
-    /// consumes up to the item's own amountToConsume (usually 1) per call -
-    /// a stack of several cooked meat needs several calls to actually
-    /// clear the whole stack, same as a real player pressing Consume
-    /// repeatedly. CanDoAction naturally stops this once
-    /// player.metabolism.CanConsume() says the survivor is already full,
-    /// so a stack that's actually more than currently needed just
-    /// partially consumes rather than force-feeding the rest.
+    /// Eats food immediately on pickup instead of modeling hunger/thirst as a separate system, using the same consume action a player's Consume button triggers. Skips medical items, which are reserved for the belt instead.
     /// </summary>
     private void ConsumeFoodImmediately(Survivor survivor)
     {
@@ -1219,20 +723,8 @@ public partial class LivingRust
             return;
         }
 
-        // Water bottles are also real ItemCategory.Food (confirmed via
-        // its own bundled item JSON) but excluded here and handled
-        // separately by DrinkWaterBottles - see that method's own doc
-        // comment for why a reusable container needs different handling
-        // after drinking than a food stack does.
-        //
-        // Worms excluded too (2026-08-28, Lucas's own live report: bots
-        // kept eating one right after every single hemp-bush gather) -
-        // worms are real incidental ground clutter picked up alongside
-        // hemp/grass, not something a survivor deliberately went and
-        // foraged for, so a fresh one getting auto-eaten on nearly every
-        // hemp cycle read as repetitive/undesirable rather than the
-        // "genuinely hungry, ate what's on hand" behaviour this system is
-        // meant to model.
+        // Water bottles are handled separately by DrinkWaterBottles since they're a reusable container, not a consumable stack.
+        // Worms are excluded too since they're incidental clutter from gathering, not something deliberately eaten.
         List<Item> foodItems = npc.inventory.containerMain.itemList
             .Concat(npc.inventory.containerBelt.itemList)
             .Where(item => item.info.category == ItemCategory.Food
@@ -1255,16 +747,7 @@ public partial class LivingRust
     private const string WormShortname = "worm";
 
     /// <summary>
-    /// Shared real "press Consume" loop - ItemModConsume.CanDoAction/
-    /// DoAction, the same mechanism BasePlayer's own SV_Drink RPC handler
-    /// uses (confirmed via decompiling Assembly-CSharp.dll). Looped since
-    /// DoAction only consumes up to the item's own amountToConsume
-    /// (usually 1) per call, not the whole stack/amount at once - a real
-    /// player would press Consume repeatedly too. CanDoAction naturally
-    /// stops this once player.metabolism.CanConsume() says the survivor's
-    /// already full, so this can't force-feed past that point. Returns
-    /// how many times DoAction actually fired, 0 if item has no
-    /// ItemModConsume component at all.
+    /// Repeatedly calls ItemModConsume's CanDoAction/DoAction to consume an item stack, stopping once the survivor is full. Returns how many times DoAction fired, or 0 if the item has no ItemModConsume component.
     /// </summary>
     private int ConsumeViaItemModConsume(Item item, BasePlayer npc)
     {
@@ -1287,19 +770,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Water bottles (real shortname "smallwaterbottle") are deliberately
-    /// excluded from ConsumeFoodImmediately's generic loop and handled
-    /// here instead - Lucas's explicit request specifically wanted the
-    /// drink animation, which ConsumeViaItemModConsume's DoAction already
-    /// fires for free (a real SignalBroadcast(Signal.Gesture, eatGesture)
-    /// internally, confirmed via decompiling ItemModConsume), so nothing
-    /// extra was needed there. What food doesn't need is the step after:
-    /// a real bottle is a reusable container in vanilla Rust (refillable
-    /// via right-click), not consumed/removed the way a food stack unit
-    /// is, so it can still exist - now empty - after drinking. The bot
-    /// has no use for an empty bottle it can never refill on its own, so
-    /// it gets dropped for real, same Item.Drop mechanism
-    /// DropUnneededLightSource already uses for the torch, not a delete.
+    /// Water bottles are drunk via ConsumeViaItemModConsume, then dropped once empty since the survivor cannot refill them.
     /// </summary>
     private const string WaterJugShortname = "waterjug";
 
@@ -1310,13 +781,7 @@ public partial class LivingRust
             .Where(item => item.info.shortname == WaterBottleShortname)
             .ToList();
 
-        // Lucas's explicit request (2026-08-11): owning a real water jug -
-        // strictly bigger capacity, same refillable-container role a bottle
-        // fills - makes every small bottle pure inventory clutter, full or
-        // empty, so they all get dropped outright rather than drunk-then-
-        // dropped one at a time. Checked fresh every call (not a one-time
-        // rule), so a jug picked up later still cleans out whatever bottles
-        // were accumulated before it.
+        // If the survivor owns a water jug, small bottles are pure clutter and get dropped outright instead of drunk.
         bool ownsJug = npc.inventory.containerMain.itemList
             .Concat(npc.inventory.containerBelt.itemList)
             .Any(item => item.info.shortname == WaterJugShortname);
@@ -1345,10 +810,7 @@ public partial class LivingRust
                 continue;
             }
 
-            // Still present (and presumably now empty) means it's the
-            // real refillable-container behaviour, not a single-use item
-            // Rust's own UseItem already removed - only drop what's
-            // actually still there.
+            // Only drops the bottle if it's still present (i.e. wasn't removed as a single-use item).
             Item stillHeld = npc.inventory.FindItemByUID(bottle.uid);
 
             if (stillHeld != null)
@@ -1366,17 +828,7 @@ public partial class LivingRust
     private const string RadiationPillsShortname = "antiradpills";
 
     /// <summary>
-    /// Radiation pills (real shortname "antiradpills") get taken the
-    /// instant they enter inventory, same immediate-consumption shape as
-    /// ConsumeFoodImmediately/DrinkWaterBottles and the same explicit
-    /// reasoning: no real metabolism/radiation-exposure tracking exists
-    /// (see the Needs roadmap entry), so there's nothing to gain by
-    /// hoarding a stack instead of taking it right away, and taking it
-    /// immediately reads as a survivor actually using what it finds
-    /// rather than just carrying medicine around forever. Reuses
-    /// ConsumeViaItemModConsume, the same real "press Consume"
-    /// ItemModConsume.CanDoAction/DoAction loop food/water already use -
-    /// genuine consumption, not a synthetic shortcut.
+    /// Consumes radiation pills immediately on pickup, the same as food and water, via the standard ItemModConsume action.
     /// </summary>
     private void ConsumeRadiationPillsImmediately(Survivor survivor, BasePlayer npc)
     {
@@ -1397,89 +849,22 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// How many loot attempts in a row (walk-unreachable or no-line-of-
-    /// sight) before the whole surrounding area gets treated as poisoned
-    /// rather than continuing to individually try/skip whatever's left in
-    /// it. Added after a live report: a survivor camped near junkpile_j
-    /// thrashed through a long chain of individually-doomed candidates
-    /// (junkpile_j's own van/gravel/terrain scatter obstructing line of
-    /// sight and paths to nearby, otherwise-unrelated containers) before
-    /// finally exhausting the search radius. Excluding junkpile_j's own
-    /// containers (IsInJunkpileJVan) didn't help, since the survivor
-    /// wasn't stuck on junkpile_j's loot - it was stuck near junkpile_j's
-    /// obstructive geometry while trying to reach something else nearby.
+    /// How many consecutive unreachable/no-line-of-sight loot attempts before the surrounding area gets treated as poisoned, rather than continuing to individually try each remaining candidate.
     /// </summary>
     private const int ConsecutiveFailuresBeforeAvoidingArea = 4;
 
     /// <summary>
-    /// Radius poisoned around the survivor's position once
-    /// ConsecutiveFailuresBeforeAvoidingArea is hit. Originally 20m -
-    /// tuned to clear junkpile_j's own footprint (its "Prevent Building"
-    /// trigger alone is a 10m-radius sphere per a live /lr.debug.look
-    /// scan) plus margin - but that turned out to over-exclude in denser
-    /// container layouts (e.g. deliberately scattered test crates only
-    /// 5-10m apart), catching legitimate nearby unrelated containers in a
-    /// single poisoning event. Settled on 12m: enough margin over
-    /// junkpile_j's 10m footprint to still clear it properly, while
-    /// staying far more surgical than the original 20m for dense
-    /// layouts. This only ever filters which container gets picked as
-    /// the NEXT candidate, never blocks actually walking/pathing through
-    /// a poisoned area to reach something beyond it, so a smaller radius
-    /// is lower-risk, not higher. The real failure mode this doesn't
-    /// protect against - an entire room becoming unreachable because its
-    /// one doorway is genuinely unwalkable, not because of poisoning - is
-    /// a separate, already-tracked navigation issue (see the
-    /// awning/doorway local-stepping misjudgment), not something this
-    /// radius controls either way.
+    /// Radius poisoned around the survivor's position once ConsecutiveFailuresBeforeAvoidingArea is hit. Only affects which container is picked next, not pathing through the area.
     /// </summary>
     private const float PoisonedZoneRadius = 12f;
 
     /// <summary>
-    /// How long a poisoned zone stays in effect - deliberately time-
-    /// limited rather than permanent for the rest of the task run (user's
-    /// own correction): a monument or roadside area a survivor briefly
-    /// struggled in isn't necessarily bad forever, and permanently
-    /// avoiding it for the whole run risked skipping perfectly legitimate
-    /// loot if the survivor ever wandered back that way later in the same
-    /// run.
+    /// How long a poisoned zone stays in effect. Time-limited rather than permanent so a briefly-struggled-in area isn't avoided forever.
     /// </summary>
     private const float PoisonedZoneDuration = 25f;
 
     /// <summary>
-    /// A crate/barrel-type container more than this far ABOVE the
-    /// survivor's current standing height gets excluded from search
-    /// entirely - added 2026-08-15 after a live trace report
-    /// (9376SilentVulture, powerplant): a crate sitting ~5m above the
-    /// survivor on a platform with no real navmesh connection got
-    /// targeted, walked toward, failed (genuine PathInvalid - confirmed
-    /// via the log, "destination 1.61m from nearest navmesh point...
-    /// origin 0.35m from nearest navmesh point," a real ~7m vertical gap
-    /// between the two), poisoned for PoisonedZoneDuration (25s), then
-    /// re-targeted again the moment that expired - a slow-motion infinite
-    /// loop, not a one-off stuck episode (the existing poison IS real and
-    /// DOES work, it just isn't durable enough to survive a genuinely
-    /// permanent, physically unreachable case - only a temporary "give
-    /// this a while" pause). Lucas's own proposed fix: a simple, cheap
-    /// pre-filter - most genuinely elevated loot that a bot actually
-    /// should reach sits inside a structure the bot would already be
-    /// standing at a similar height within (having climbed real stairs to
-    /// get there first), so a bot down at ground level looking at
-    /// something 3m+ above it is, in practice, looking at exactly this
-    /// class of unreachable platform loot far more often than a
-    /// legitimately climbable case.
-    ///
-    /// Deliberately scoped to crate_*/barrel_* containers ONLY (Lucas's
-    /// own explicit correction, same day) - NOT corpses, dropped bags,
-    /// standalone dropped items, or collectibles, which were pulled back
-    /// out of this check entirely rather than left in. Those other loot
-    /// types can have their own legitimate reasons to sit elevated (a
-    /// corpse on a rooftop where someone actually died, say) that a crate
-    /// spawn point doesn't - "we can try figure out everything else later"
-    /// was the explicit framing, so this stays narrow to the actually-
-    /// reported case for now. A cheap heuristic, not a real navmesh-aware
-    /// check - deliberately so, matching every other exclusion in this
-    /// search (IsInPoisonedZone/IsNearJunkpileJVan/etc are all cheap
-    /// heuristics too, not perfect verification).
+    /// A crate/barrel container more than this far above the survivor's standing height is excluded from search, as a cheap heuristic to avoid targeting unreachable elevated platform loot.
     /// </summary>
     private const float LootVerticalReachLimit = 3f;
 
@@ -1497,22 +882,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Same vertical pre-filter as IsUnreachableCrateOrBarrel, extended to
-    /// dropped items (2026-08-15) - this is exactly the "everything else
-    /// later" IsUnreachableCrateOrBarrel's own doc comment deferred, now
-    /// backed by real live evidence: '3RaggedBuilder' at Abandoned
-    /// Supermarket found and repeatedly re-targeted a real dropped item
-    /// sitting ~3.9m up on/near a ceiling air-duct fixture
-    /// (air_duct_crn_150x150) - genuinely unreachable ("step too high"),
-    /// but the existing 25s local poison (PoisonAreaNow) isn't durable
-    /// enough to survive a genuinely PERMANENT case, so the bot re-found
-    /// and re-attempted the exact same item every cycle once the poison
-    /// expired - a slow-motion infinite loop, matching Lucas's own live
-    /// description ("run to the counter, get stuck, move to the other
-    /// side, get stuck again"). Unlike crates/barrels this has no
-    /// shortname restriction - a dropped item's shortname says nothing
-    /// about whether it's sitting somewhere climbable, so the height check
-    /// alone is the whole filter here.
+    /// Same vertical pre-filter as IsUnreachableCrateOrBarrel, extended to dropped items. Has no shortname restriction since a dropped item's shortname says nothing about reachability.
     /// </summary>
     private static bool IsUnreachableDroppedItem(Vector3 npcPosition, Vector3 candidatePosition)
     {
@@ -1520,48 +890,19 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// A DIFFERENT, deliberately separate poisoning mechanism from
-    /// PoisonedZones above (2026-08-15, live trace report) - that one is
-    /// per-LootTaskState (a fresh, empty one every time StartLootForResourcesTask
-    /// runs, including the one EndFlee kicks off right after a threat flee
-    /// ends), so anything recorded there would be instantly forgotten the
-    /// moment the survivor resumed looting - no help at all for the actual
-    /// problem. Live trace evidence: an unarmed survivor near
-    /// nuclear_missile_silo got shot by a hostile scientist, fled
-    /// (StartFleeingFromThreat, correct), then EndFlee resumed looting,
-    /// which walked it straight back into the same scientist's engagement
-    /// range and got it shot again - repeated 3+ times for the same
-    /// survivor. This is keyed per-survivor (Character.Id) instead, at the
-    /// PLUGIN level, so it survives across separate loot-task instances the
-    /// way an actual memory of "I got hurt here" should. Deliberately NOT
-    /// reusing PoisonAreaNow itself - that method also registers a
-    /// container retry and feeds the permanent, monument-relative avoid-
-    /// zone system, both of which are about genuinely bad NAVIGATION
-    /// (unreachable geometry), not "a hostile NPC is here right now" -
-    /// conflating the two would permanently blacklist a perfectly walkable,
-    /// perfectly lootable spot just because a scientist happened to be
-    /// guarding it during one specific encounter.
+    /// Separate poisoning mechanism from PoisonedZones, keyed per-survivor at the plugin level so it survives across loot-task instances, used to avoid re-walking into a spot a survivor was just attacked at.
     /// </summary>
     private const float ThreatFleePoisonRadius = 20f;
 
     /// <summary>
-    /// How long a threat-flee poison zone lasts - Lucas's own explicit
-    /// number ("maybe 30 seconds at a 20m radius"). Long enough that the
-    /// SAME loot-task resume doesn't immediately walk back into it, short
-    /// enough that a survivor doesn't permanently write off a real loot-
-    /// dense spot (a missile silo's own containers) just because a guard
-    /// happened to be nearby once.
+    /// How long a threat-flee poison zone lasts.
     /// </summary>
     private const float ThreatFleePoisonDuration = 30f;
 
     private readonly Dictionary<Guid, List<(Vector3 Center, float Radius, float ExpiresAt)>> _threatFleeZones = new();
 
     /// <summary>
-    /// Called once from StartFleeingFromThreat (LivingRust.Combat.cs) the
-    /// moment a flee actually starts - marks roughly where the survivor
-    /// was when it got attacked as temporarily worth avoiding, so the loot
-    /// search that resumes once the flee ends doesn't immediately walk it
-    /// back into the same danger.
+    /// Marks the area around where a survivor was attacked as temporarily worth avoiding, so the loot search doesn't immediately walk back into the same danger after fleeing.
     /// </summary>
     private void PoisonAreaFromThreatFlee(Survivor survivor, Vector3 position, float radius = ThreatFleePoisonRadius, float duration = ThreatFleePoisonDuration)
     {
@@ -1580,28 +921,10 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Lazily expires stale entries on read (same pattern IsInPoisonedZone
-    /// already uses) rather than needing a separate cleanup timer - this
-    /// list per survivor is small and short-lived, not worth a dedicated
-    /// tick.
+    /// Entries are lazily expired on read rather than by a separate cleanup timer, since each survivor's list is small and short-lived.
     /// </summary>
     /// <summary>
-    /// Real ocean-level safety filter (2026-08-28, Lucas's own explicit
-    /// request after a live incident: a survivor's approach-point navmesh
-    /// snap (SnapApproachPointToNavMesh, this file - a real, separate,
-    /// still-open bug) landed on a cave/tunnel navmesh layer at Y=-40 while
-    /// it was just trying to reach an ordinary surface tree, phased down
-    /// into it, and was killed there by a real Tunnel Dweller NPC before
-    /// ever getting the chance to recover. Rather than (or in addition to)
-    /// fixing that specific snap bug, this is a blanket safety net any
-    /// loot/resource candidate now has to clear: real sea level in Rust is
-    /// Y=0, so anything more than SafeLootDepthBelowSeaLevel (15m, Lucas's
-    /// own figure) below that is either a genuine underwater wreck/lab
-    /// area or - far more likely for anything this shallow-sounding a
-    /// depth catches - a cave/tunnel system these overworld survivor bots
-    /// were never meant to path into at all. Checked the exact same way
-    /// IsInMonumentAvoidZone already is, at every candidate filter site
-    /// that checks that.
+    /// Safety filter that rejects loot candidates too far below sea level, as a guard against pathing into cave/tunnel systems overworld survivors aren't meant to enter.
     /// </summary>
     private const float SafeLootDepthBelowSeaLevel = -15f;
 
@@ -1633,12 +956,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Per-task-run scratch state threaded through the whole find-walk-
-    /// loot chain - which containers are already handled, and which areas
-    /// have proven repeatedly unreachable and should stop being
-    /// considered for a while. Not persisted (see Character.CurrentTask's
-    /// doc comment) - purely runtime, like PathFollower is for a single
-    /// walk.
+    /// Per-task-run scratch state threaded through the find-walk-loot chain: which containers are already handled, and which areas have proven unreachable for a while. Not persisted; purely runtime.
     /// </summary>
     private sealed class LootTaskState
     {
@@ -1646,150 +964,67 @@ public partial class LivingRust
         public readonly List<(Vector3 Center, float Radius, float ExpiresAt)> PoisonedZones = new();
         public int ConsecutiveFailures;
 
-        // See RetrySuccessesBeforeRevisit's own doc comment - a container
-        // that failed once stays in Visited (still excluded) while it
-        // counts down here, then gets removed from Visited (eligible
-        // again) once it hits zero. AlreadyRetried caps this at exactly
-        // one retry per container.
+        // A container that failed once stays excluded while this counts down, then becomes eligible again at zero.
         public readonly Dictionary<NetworkableId, int> PendingRetry = new();
         public readonly HashSet<NetworkableId> AlreadyRetried = new();
 
-        // See RoadFollowDistances' own doc comment - counts total
-        // road-following hops across the WHOLE task's lifetime (not
-        // per-escalation-call), so the bot can't chain an unbounded
-        // number of them just because each individual hop happens to
-        // land somewhere with nothing to loot.
+        // Counts total road-following hops across the task's lifetime, capping how many can be chained.
         public int RoadFollowAttempts;
 
-        // See EscalateSearchToMonumentZone's own doc comment - which zone
-        // indices (into _monumentLootZones[CurrentMonumentZoneKey]) this
-        // task has already walked to and searched from, so the same
-        // monument doesn't get visited in an infinite loop once every
-        // zone's been checked. Reset whenever the nearest monument changes
-        // (a survivor that wanders from one monument's vicinity into
-        // another's starts fresh against the new one).
+        // Which monument zone indices this task has already searched, reset when the nearest monument changes.
         public string? CurrentMonumentZoneKey;
         public readonly HashSet<int> VisitedMonumentZoneIndices = new();
 
-        // See GetMonumentDwellSeconds' own doc comment - the monument this
-        // task has committed to actively working, and the real-time deadline
-        // (UnityEngine.Time.realtimeSinceStartup-based) that commitment
-        // holds until. Set once, the first time EscalateSearchToMonumentZone
-        // starts checking a given monument's zones this task - not touched
-        // again until either the deadline passes or the task moves to a
-        // genuinely different monument.
+        // The monument this task has committed to working, and the deadline that commitment holds until.
         public string? CommittedMonumentName;
         public float CommittedMonumentDeadline;
 
-        // See EscalateSearchToKnownMonument's own doc comment - caps THIS
-        // task to at most one long cross-country trip toward a distant
-        // known monument, rather than potentially chaining an unbounded
-        // sequence of them if the first one's own zones also come up dry.
+        // Caps this task to at most one long cross-country trip toward a distant known monument.
         public bool TraveledToDistantMonument;
 
-        // Whichever container/corpse/bag THIS survivor currently has a
-        // shared claim on (see _lootClaims' own doc comment) - null
-        // whenever nothing's claimed right now. Only ever one at a time:
-        // ContinueLootTask releases the previous claim (if any) the
-        // instant it's called again, before picking a new target.
+        // The container/corpse/bag this survivor currently has a claim on, if any.
         public NetworkableId? ClaimedTargetId;
 
-        // Which monument name(s) this task has already run an authored
-        // ghost route through (see MonumentGhostRoutes/TryGetGhostRouteForMonument,
-        // 2026-08-16) - caps it to one detour per monument per task, so
-        // finishing the route and resuming ContinueLootTask nearby can't
-        // immediately re-trigger the same detour in a loop.
+        // Which monument(s) this task has already run an authored ghost route through, capping it to one detour per monument per task.
         public readonly HashSet<string> GhostRouteVisitedMonuments = new();
 
-        // Same one-attempt-per-monument-per-task cap as GhostRouteVisitedMonuments,
-        // for TryStartCardPuzzleDetour (LivingRust.CardPuzzles.cs, 2026-08-17).
+        // Same one-attempt-per-monument-per-task cap as GhostRouteVisitedMonuments, for the card puzzle detour.
         public readonly HashSet<string> CardPuzzleVisitedMonuments = new();
+
+        // Tracks genuine completion (not just an attempt) of ghost routes and card puzzles, used to decide monument handicap rewards.
+        public readonly HashSet<string> GhostRouteCompletedMonuments = new();
+        public readonly HashSet<string> CardPuzzleCompletedMonuments = new();
     }
 
     /// <summary>
-    /// How many OTHER containers must be successfully looted nearby before
-    /// a container that previously failed (unreachable, no line of sight,
-    /// too far) gets exactly one retry - user-requested, after a live test
-    /// showed a survivor permanently give up on a container it could
-    /// clearly see but not reach (behind a sandbag wall). By the time
-    /// RetrySuccessesBeforeRevisit other containers are done, the survivor
-    /// has likely moved to a meaningfully different physical position, so
-    /// the retry naturally approaches from a different angle rather than
-    /// immediately re-trying the exact same failed geometry. Only one
-    /// retry ever, per container (AlreadyRetried) - if that also fails,
-    /// it's skipped for good, same as before this existed.
+    /// How many other containers must be successfully looted nearby before a previously-failed container gets exactly one retry.
     /// </summary>
     private const int RetrySuccessesBeforeRevisit = 3;
 
     /// <summary>
-    /// Per-character active "breaking open a container" loop, mirroring
-    /// _activeMovement's own per-character timer-tracking pattern in
-    /// LivingRust.Commands.cs - lets an in-progress attack be cancelled
-    /// (e.g. the survivor dies mid-swing) without leaving a dangling timer
-    /// still ticking against a destroyed BasePlayer.
+    /// Per-character active "breaking open a container" timer, letting an in-progress attack be cancelled cleanly.
     /// </summary>
     private readonly Dictionary<Guid, Timer> _activeAttacks = new();
 
     /// <summary>
-    /// Shared "someone's already heading to this" registry, keyed by the
-    /// container/corpse/bag's own net ID, valued by when the claim expires.
-    /// Fixes a real live-observed bug: two survivors spawned near each
-    /// other independently pick the exact same nearest barrel (then the
-    /// exact same next crate right after) since each bot's own
-    /// LootTaskState.Visited only tracks ITS OWN history, nothing shared -
-    /// confirmed via a cross-referenced tracemany trace showing two bots
-    /// standing 0.02-0.06m apart for ~80s while both "looted" the same
-    /// barrel then the same crate back to back. Lucas's own framing once
-    /// this was diagnosed: a bot that finds its target already claimed
-    /// should "give up and try for another barrel or container" - not
-    /// abandon the whole task, just skip that one candidate, which is
-    /// exactly what checking this registry in the search predicates
-    /// (alongside the existing Visited/poisoned-zone exclusions) does
-    /// naturally: the next-nearest unclaimed candidate gets picked instead.
-    /// Deliberately NOT a literal "compare my distance to theirs" contest -
-    /// the game loop is single-threaded, so claim-first-wins has no real
-    /// race condition to resolve, and it's self-healing (TTL expiry below
-    /// covers the case where a claim never gets explicitly released, e.g.
-    /// a task restarting mid-claim after the old LootTaskState is
-    /// discarded) without needing to track/compare other survivors'
-    /// live distances anywhere.
+    /// Registry of loot targets already claimed by another survivor, keyed by net ID and valued by claim expiry. Prevents two survivors from converging on the same container.
     /// </summary>
     private readonly Dictionary<NetworkableId, float> _lootClaims = new();
 
     /// <summary>
-    /// Shared "someone's already heading toward this road/trail point"
-    /// registry, keyed by the claiming survivor's own Character ID (not
-    /// the point itself - unlike loot targets, a road point isn't a
-    /// stable entity to key off, so this is "the most recent destination
-    /// each survivor claimed" instead, checked by proximity). Stopgap per
-    /// Lucas's explicit request (2026-08-10), deliberately NOT meant to
-    /// be the permanent design: without this, multiple bots that all run
-    /// out of nearby loot near each other independently compute the same
-    /// "follow the road N metres further" hop and converge on it
-    /// together - same shape of problem the loot-target claim system
-    /// (_lootClaims) already fixed for containers/corpses/bags, just for
-    /// road-following destinations instead. Released unconditionally at
-    /// the top of every ContinueLootTask cycle (mirrors ReleaseLootClaim),
-    /// so no separate expiry/TTL is needed - a claim never outlives the
-    /// cycle that made it.
+    /// Registry of road/trail destinations already claimed by a survivor, keyed by Character ID. Prevents multiple survivors converging on the same road-following hop.
     /// </summary>
     private readonly Dictionary<Guid, Vector3> _roadHopClaims = new();
 
-    // How close another survivor's claimed road-hop destination needs to
-    // be before this one is considered "contested" and gets nudged
-    // further along the road instead.
+    // Distance within which another survivor's claimed road-hop destination is considered contested.
     private const float RoadHopContentionRadius = 30f;
 
-    // Lucas's own numbers - "the same road or path but just 50-100m
-    // away" - how far along the road (in the same direction already
-    // chosen) to nudge a contested destination.
+    // How far along the road to nudge a contested destination.
     private const float RoadHopContentionOffsetMin = 50f;
     private const float RoadHopContentionOffsetMax = 100f;
 
     /// <summary>
-    /// Whether position is close enough to another survivor's currently-
-    /// claimed road-hop destination to count as contested - see
-    /// _roadHopClaims' own doc comment.
+    /// Whether position is close enough to another survivor's claimed road-hop destination to count as contested.
     /// </summary>
     private bool IsRoadDestinationContested(Vector3 position, Guid selfCharacterId)
     {
@@ -1804,15 +1039,7 @@ public partial class LivingRust
         return false;
     }
 
-    // Generous upper bound on how long a real claim should ever legitimately
-    // live - full StartWalkingWithRecovery escalation (wiggle, navmesh
-    // nudge, emergency teleport) plus StartAttackingContainerWithReposition's
-    // own reposition attempts plus the actual swing/loot time can
-    // plausibly add up to 30-40s in a genuinely bad case, so this is
-    // purely a safety net against a leaked claim (state discarded before
-    // its ContinueLootTask cycle could release it), not a normal expiry
-    // path - every ordinary success/failure already releases explicitly
-    // well before this.
+    // Upper bound on how long a claim should live; a safety net against a leaked claim rather than a normal expiry path.
     private const float LootClaimTtlSeconds = 60f;
 
     private bool IsLootTargetClaimed(NetworkableId id)
@@ -1846,10 +1073,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Manually triggers the loot-for-resources task on a survivor -
-    /// there's no autonomous need-based trigger yet (see TaskType's doc
-    /// comment), so this is how the task gets exercised/tested for now,
-    /// same "debug command before autonomy" pattern as claimbag/giveitem.
+    /// Debug command that manually triggers the loot-for-resources task on a survivor, since there is no autonomous trigger yet.
     /// </summary>
     [ChatCommand("lr.debug.settask")]
     private void CmdDebugSetTask(BasePlayer player, string command, string[] args)
@@ -1904,14 +1128,22 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Kicks off the scan-vicinity-then-loot-everything-reachable loop.
-    /// The whole loop is driven by StartWalking's onArrived callback
-    /// chaining into the next step (find container -> walk to it -> loot
-    /// it -> find the next one), the same pattern every other multi-step
-    /// movement in this plugin already uses - no separate task-tick timer.
+    /// Kicks off the scan-vicinity-then-loot-everything-reachable loop, driven by chained onArrived callbacks rather than a separate task-tick timer.
     /// </summary>
     private void StartLootForResourcesTask(Survivor survivor)
     {
+        // Checked first and unconditionally, so an established survivor resuming its normal
+        // gear-weighted destination roll (the common case for a death well past the checklist -
+        // e.g. mid monument loot run) still detours to its own death spot first, not just a
+        // survivor still on the checklist/base-gather path that happens to route through
+        // ContinueLootTask below.
+        BasePlayer earlyNpc = survivor.Player;
+
+        if (earlyNpc != null && !earlyNpc.IsDestroyed && TryPursueDeathSiteLoot(survivor, earlyNpc, new LootTaskState()))
+        {
+            return;
+        }
+
         if (ShouldHoldForAirdrop(survivor.Character.Id))
         {
             return;
@@ -1919,23 +1151,28 @@ public partial class LivingRust
 
         survivor.Character.CurrentTask = TaskType.LootForResources;
 
-        // See RollPrimitiveGoalIfFreshLife's own doc comment
-        // (LivingRust.Crafting.cs) - StartLootForResourcesTask is called
-        // from many places (recycling finished, a monument route
-        // completing, EndCombat/EndFlee resuming, not just a fresh spawn),
-        // so the roll itself is internally gated to only ever fire once
-        // per life rather than needing a bespoke spawn-only call site.
+        // Checked before either roll below - a rushing survivor skips the checklist and home-site walk entirely.
+        if (RollMonumentRushIfFreshLife(survivor))
+        {
+            BasePlayer rushNpc = survivor.Player;
+
+            if (rushNpc == null || rushNpc.IsDestroyed)
+            {
+                Puts($"loot-task: '{survivor.Character.Alias}' has no live BasePlayer, can't start.");
+                survivor.Character.CurrentTask = TaskType.None;
+                return;
+            }
+
+            DropUnneededLightSource(survivor, rushNpc);
+            PerformInventoryCheck(survivor, rushNpc);
+            TryStartWithGearWeightedDestination(survivor, rushNpc);
+            return;
+        }
+
+        // Internally gated to fire only once per life, since this method is called from many places, not just a fresh spawn.
         RollPrimitiveGoalIfFreshLife(survivor);
 
-        // Same once-per-life gating pattern, same reasoning (LivingRust.
-        // HomeSiteStrategy.cs's own doc comment) - now takes a callback
-        // (2026-09-01, live report: bots "piling up in certain areas...
-        // all appear to be farming around the same area" - an inland roll
-        // used to only ever remember the target for LATER, at base-build
-        // time, so it never actually walked there and just farmed wherever
-        // it already was, same as every coastal-rolled survivor). The rest
-        // of this function's own body now only runs once the roll (and, for
-        // an inland pick, the real walk there) is actually done.
+        // Same once-per-life gating. Takes a callback so the rest of this method only runs once the roll (and any resulting walk) completes.
         RollHomeSiteStrategyIfFreshLife(survivor, () =>
         {
             BasePlayer npc = survivor.Player;
@@ -1949,102 +1186,44 @@ public partial class LivingRust
 
             DropUnneededLightSource(survivor, npc);
 
-            // Confirm kit is actually in order before heading off, not just
-            // reactively after each pickup - see PerformInventoryCheck's
-            // own doc comment.
+            // Confirms kit is in order before heading off, not just reactively after each pickup.
             PerformInventoryCheck(survivor, npc);
 
             VerbosePuts($"loot-task: '{survivor.Character.Alias}' scanning a {LootSearchRadius:F0}m radius for containers to loot.");
 
-            // Real root-cause fix (2026-09-01, live report: "any reason
-            // bots are trying to loot mining outpost and not going
-            // straight for the unconditional checklist").
-            // TryStartWithGearWeightedDestination can roll a real monument
-            // and commit to a genuine StartLongDistanceWalk toward it
-            // BEFORE ContinueLootTask (where the _pursuingPrimitiveGoals
-            // priority check actually lives) ever runs a single time -
-            // that check only ever gets consulted once the destination
-            // walk ARRIVES, not before it starts. A fresh survivor flagged
-            // as pursuing the checklist just two lines above could still
-            // end up walking halfway across the map to a monument first,
-            // checklist priority notwithstanding. Skipping straight to
-            // ContinueLootTask (forceLocalScan, same as the "nothing worth
-            // a destination" branches inside TryStartWithGearWeightedDestination
-            // already use) for a checklist-pursuing survivor means the
-            // checklist priority branch is the very first thing that
-            // actually runs, matching what its own doc comment already
-            // claimed ("BEFORE the normal six-category loot search") but
-            // didn't actually guarantee for this specific call site until
-            // now.
+            // Skips straight to a local scan for a survivor pursuing the primitive checklist, so that priority actually runs first
+            // instead of potentially being preceded by a long gear-weighted destination walk.
             if (_pursuingPrimitiveGoals.Contains(survivor.Character.Id))
             {
                 ContinueLootTask(survivor, new LootTaskState(), forceLocalScan: true);
                 return;
             }
 
-            // Same priority-before-destination-roll fix, extended to base-
-            // gathering (2026-09-19, live report: 'RecklessScrapper615'
-            // found dead with a broken hatchet, an inventory full of stone
-            // and wood, and no base anywhere - live trace showed it had
-            // already rolled a design and started walking to build, got
-            // stuck on forest geometry en route, and was eventually stall-
-            // rescued by the watchdog straight back into
-            // StartLootForResourcesTask. This exact check only ever covered
-            // _pursuingPrimitiveGoals, so a rescued base-gathering survivor
-            // fell through to the gear-weighted roll below same as any
-            // ordinary looter - happily wandering off toward a monument or
-            // road instead of resuming (or retrying) its own base attempt,
-            // with Character.Home still null and nowhere to ever deposit
-            // what it was carrying. See TryPursueBaseGatherGoal's own doc
-            // comment (LivingRust.HomeSiteStrategy.cs) for the matching fix
-            // that stopped _pursuingBaseGatherGoal from being cleared
-            // before a build actually succeeds - this check is what
-            // actually lets that retry happen instead of being ignored.
+            // Same priority-before-destination-roll handling, extended to base-gathering, so a survivor resuming a base attempt
+            // doesn't wander off toward a monument or road instead.
             if (_pursuingBaseGatherGoal.Contains(survivor.Character.Id))
             {
                 ContinueLootTask(survivor, new LootTaskState(), forceLocalScan: true);
                 return;
             }
 
-            // Gear-weighted starting destination (2026-08-15) - see
-            // LivingRust.GearScore.cs's own doc comment for the full spec.
-            // Replaces the old unconditional "just search right here"
-            // start - now that's still the single most likely outcome
-            // (Local is always in the weighted roll), but no longer the
-            // ONLY outcome, which is what let 200 simultaneous beach
-            // spawns all converge on whatever was nearest to the beach
-            // every single time.
+            // Rolls a gear-weighted starting destination instead of always just searching locally, so spawns don't all converge on the same nearby loot.
             TryStartWithGearWeightedDestination(survivor, npc);
         });
     }
 
     private void ContinueLootTask(Survivor survivor, LootTaskState state, bool forceLocalScan = false)
     {
-        // Combat takes over entirely once it starts (2026-08-11) - a live
-        // report caught bots "sometimes re-engage in looting whilst
-        // firing," confirmed via log: a corpse-loot timer or movement step
-        // already in flight the instant StartCombat's CancelActiveMovement/
-        // CancelActiveAttack calls fire has nothing registered yet to
-        // cancel (it's mid-setup, not yet holding its own timer), so it
-        // completes obliviously and calls straight back into this exact
-        // method, resuming the loot chain in parallel with an active fight.
-        // ContinueLootTask is the single funnel every loot step eventually
-        // re-enters (see its own architecture note - a callback chain, not
-        // a ticking loop), so checking here catches every path, not just
-        // the ones already covered by the two cancel calls at combat start.
+        // Combat takes over entirely once it starts. Checking here catches every loot-chain re-entry path, not just the cancel calls at combat start.
         if (_activeCombat.ContainsKey(survivor.Character.Id))
         {
             return;
         }
 
-        // Releases whatever this survivor claimed last cycle before doing
-        // anything else - unconditionally, even if npc turns out to be
-        // dead/gone below, so a claim never outlives the survivor that
-        // held it. See _lootClaims' own doc comment for why this exists.
+        // Releases whatever this survivor claimed last cycle, unconditionally, so a claim never outlives the survivor that held it.
         ReleaseLootClaim(state);
 
-        // Same release-at-the-top pattern for road-hop destinations - see
-        // _roadHopClaims' own doc comment.
+        // Same release-at-the-top pattern for road-hop destinations.
         _roadHopClaims.Remove(survivor.Character.Id);
 
         BasePlayer npc = survivor.Player;
@@ -2055,56 +1234,30 @@ public partial class LivingRust
             return;
         }
 
-        // Real "should want to be at 100 health all the time" proactive
-        // self-heal (2026-09-07, Lucas's own explicit spec, after a live
-        // trace found 90%+ of all deaths were bleeding out with literally
-        // no attacker attached - see OnPlayerDeath's own UNRECORDED-damage
-        // doc comment, LivingRust.Hooks.cs). TryUseMedicalItemIfHurt used
-        // to have exactly one caller in the whole project - StartTacticalRetreat,
-        // itself only reached on a probabilistic tactical-decision roll
-        // DURING active combat - so a survivor that took damage anywhere
-        // else (a losing fight the tactical roll didn't retreat from, an
-        // animal bite, whatever) had no path to ever bandage itself back
-        // up at all, regardless of what it was doing (farming, building,
-        // just walking). Fire-and-forget, same "heal while moving/working
-        // is the intended behaviour" reasoning StartTacticalRetreat's own
-        // doc comment already established - it no-ops instantly if health
-        // is fine, already mid-chain, on cooldown, or has nothing to heal
-        // with, so this is cheap in the overwhelmingly common case. Safe
-        // to call unconditionally here specifically because ContinueLootTask
-        // itself already returns early whenever _activeCombat is active
-        // (immediately above) - this can never double-fire against the
-        // combat-retreat call, the two are mutually exclusive by
-        // construction.
+        // Proactive self-heal so a survivor bandages itself regardless of what it's doing, not just during a tactical combat retreat.
+        // Fire-and-forget: no-ops instantly if health is fine, already mid-chain, on cooldown, or has nothing to heal with.
         TryUseMedicalItemIfHurt(survivor);
 
-        // Top priority after a fight-up kill - see LivingRust.KillLoot.cs.
+        // Top priority right after a respawn: go scavenge the survivor's own death spot first.
+        if (TryPursueDeathSiteLoot(survivor, npc, state))
+        {
+            return;
+        }
+
+        // Top priority after a fight-won kill.
         if (TryPursuePriorityKillLoot(survivor, npc, state))
         {
             return;
         }
 
-        // Airdrop priority - see ShouldHoldForAirdrop.
+        // Airdrop priority.
         if (ShouldHoldForAirdrop(survivor.Character.Id))
         {
             return;
         }
 
-        // Real standing "never let a survivor go fully toolless" safety net
-        // (2026-09-01, Lucas's own explicit spec: "the bot still will
-        // require tools regardless and if the bot ever has no tools (after
-        // checking all of these things), it will still need to get tools
-        // to farm more efficiently"). Checked UNCONDITIONALLY every cycle,
-        // ahead of the primitive-checklist/base-gather branches below - a
-        // survivor that skipped the checklist entirely (ShouldSkipPrimitiveChecklist),
-        // already finished it, or is off doing normal looting/base-gathering
-        // could all still end up with nothing but the starting rock (lost
-        // its tool, never found one, whatever) and this is the one place
-        // that keeps catching it regardless of which of those states it's
-        // actually in. Cheap in the common case - HasAnyToolOfFamily short-
-        // circuits immediately once a real tool of either family exists, so
-        // this only ever actually claims a cycle for a genuinely toolless
-        // survivor.
+        // Standing safety net so a survivor never goes fully toolless, checked every cycle ahead of the checklist/base-gather branches.
+        // Cheap in the common case since HasAnyToolOfFamily short-circuits once a tool already exists.
         if (!HasAnyToolOfFamily(npc, HatchetFamily) && TryPursueOneOffToolGoal(survivor, npc, state, StoneHatchetShortname, "stone hatchet"))
         {
             return;
@@ -2115,138 +1268,59 @@ public partial class LivingRust
             return;
         }
 
-        // Real "passively set, not forcefully done" bandage-supply priority
-        // (2026-09-07, Lucas's own explicit spec, same session/reasoning as
-        // TryUseMedicalItemIfHurt's own new unconditional call above) - a
-        // survivor that's genuinely hurt AND has nothing left to heal with
-        // at all (not just "below full," which the proactive heal call
-        // above already handles on its own once real supply exists) rolls
-        // THIS as a real priority, same tier as the toolless safety net
-        // just above - not an urgent interrupt, just the next thing it
-        // reaches for instead of normal looting/gathering this cycle.
+        // If the survivor is hurt and has nothing left to heal with, prioritizes finding bandage supply at the same tier as the toolless safety net above.
         if (TryPursueBandageSupplyIfHurt(survivor, npc, state))
         {
             return;
         }
 
-        // Standing survival-kit upkeep (2026-09-21) - see
-        // TryPursueSurvivalKitUpkeep's own doc comment.
+        // Standing survival-kit upkeep; see TryPursueSurvivalKitUpkeep's own doc comment.
         if (TryPursueSurvivalKitUpkeep(survivor, npc, state))
         {
             return;
         }
 
-        // Real checklist-retry re-entry (2026-09-01, Lucas's own explicit
-        // ask - see the timeout branch below, and _primitiveGoalRetryTime's
-        // own doc comment, LivingRust.Crafting.cs, for the full "revert to
-        // looting, retry from a different spot later" mechanism). Checked
-        // ahead of the priority branch itself so a survivor whose retry
-        // just came due re-enters checklist priority THIS cycle rather
-        // than needing one more normal-looting cycle first. No-ops (and
-        // clears the schedule) if the survivor already found a home in the
-        // meantime - nothing left to retry toward.
-        if (_primitiveGoalRetryTime.TryGetValue(survivor.Character.Id, out float retryTime) && UnityEngine.Time.realtimeSinceStartup >= retryTime)
+        // Prioritizes a deposit trip promptly when the survivor is carrying a spare firearm and has a base to deposit it at. Does nothing without a base.
+        if (TryPursueSpareFirearmDeposit(survivor, npc, state))
         {
-            _primitiveGoalRetryTime.Remove(survivor.Character.Id);
-
-            if (survivor.Character.Home == null)
-            {
-                _pursuingPrimitiveGoals.Add(survivor.Character.Id);
-                _primitiveGoalDeadline[survivor.Character.Id] = UnityEngine.Time.realtimeSinceStartup + PrimitiveGoalTimeLimitSeconds;
-                Puts($"craft-task: '{survivor.Character.Alias}' is retrying its primitive checklist from its new location.");
-            }
+            return;
         }
 
-        // Real spawn-time priority roll (2026-08-28, Lucas's own explicit
-        // request) - see RollPrimitiveGoalIfFreshLife's own doc comment
-        // (LivingRust.Crafting.cs) for the roll itself. A survivor that
-        // rolled into this checks its primitive starter checklist (bag,
-        // bow, arrows, stone tools) BEFORE the normal six-category loot
-        // search below, rather than only as a last resort once nothing's
-        // left nearby - deliberately reversed from TryStartCraftingFallback's
-        // own default placement, per Lucas's own framing ("prioritise...
-        // as a separate roll the dice to decide what I want to do when I
-        // spawn"). Once every goal on the checklist is actually satisfied,
-        // this permanently stops checking for the rest of that life -
-        // TryStartCraftingFallback further down still runs its own normal
-        // last-resort check afterward, same as any other survivor.
+        // Progression goal layer; see LivingRust.WipeGoals.cs's own doc comment. Falls through to normal looting when nothing is currently blocking progress.
+        if (TryPursueWipeGoal(survivor, npc, state))
+        {
+            return;
+        }
+
+        // A survivor pursuing the primitive starter checklist (bag, bow, arrows, stone tools) checks it before the normal loot search below.
+        // Once every checklist goal is satisfied, this permanently stops checking for the rest of that life.
         if (_pursuingPrimitiveGoals.Contains(survivor.Character.Id))
         {
-            // Real "give up on the coast, go inland" stall redirect
-            // (2026-09-01, Lucas's own explicit spec - see
-            // TryRedirectStalledCoastalBotInland's own doc comment,
-            // LivingRust.HomeSiteStrategy.cs, for the full mechanism).
-            // Checked before the 15-minute timeout below - a Coastal
-            // survivor genuinely making zero gathering progress for 2.5
-            // minutes shouldn't need to wait out the full 15-minute window
-            // before something changes; this gets it moving toward a real
-            // inland site well before that, same as if it had rolled
-            // Inland from the start.
+            // Redirects a coastal survivor making no gathering progress toward an inland site, before the 15-minute timeout below.
             if (TryRedirectStalledCoastalBotInland(survivor, npc))
             {
                 return;
             }
 
-            // Real 15-minute give-up (2026-09-01, Lucas's own explicit ask:
-            // "if the bots aren't able to effectively complete this
-            // checklist in 15 minutes have them move onto farm for wood
-            // and stones for a base") - checked BEFORE trying another
-            // craft cycle, so a survivor that's been stuck (unreachable
-            // ingredient, whatever) for the full window switches over
-            // immediately rather than needing one more failed cycle first.
+            // Gives up on the checklist after 15 minutes and switches to base-gathering, checked before trying another craft cycle.
             if (UnityEngine.Time.realtimeSinceStartup >= GetOrSetPrimitiveGoalDeadline(survivor.Character.Id))
             {
-                // Real "revert to normal looting, retry later" change
-                // (2026-09-01, Lucas's own explicit ask: "if the bot finds
-                // no stones nearby or trees to pass that 15 minute mark...
-                // have it revert to the generic looting task, then after
-                // 15 minutes it should theoretically be in a different
-                // location to retry that primitive checklist" -
-                // previously this jumped straight to base-gathering
-                // instead, which could just as easily get stuck on the
-                // SAME missing ingredient in the SAME spot for the exact
-                // same reason). Normal looting naturally relocates a
-                // survivor over time (monument travel, road-following),
-                // so scheduling a real retry after another
-                // PrimitiveGoalTimeLimitSeconds gives the checklist a
-                // genuinely different location and a fresh full window to
-                // work with, rather than a one-shot attempt.
+                // Moves straight to base-gathering instead of retrying the checklist later, since wood/stone are more reliably available than whatever checklist item was the blocker.
                 _pursuingPrimitiveGoals.Remove(survivor.Character.Id);
-                _primitiveGoalRetryTime[survivor.Character.Id] = UnityEngine.Time.realtimeSinceStartup + PrimitiveGoalTimeLimitSeconds;
-                Puts($"craft-task: '{survivor.Character.Alias}' didn't finish its primitive checklist within 15 minutes - reverting to normal looting, will retry the checklist in {PrimitiveGoalTimeLimitSeconds:F0}s from wherever it ends up.");
+                _pursuingBaseGatherGoal.Add(survivor.Character.Id);
+                Puts($"craft-task: '{survivor.Character.Alias}' didn't finish its primitive checklist within 15 minutes - moving straight to gathering for a base instead.");
             }
             else if (TryStartCraftingFallback(survivor, npc, state))
             {
                 return;
             }
-            // TryStartCraftingFallback returning false does NOT mean the
-            // checklist is done - see HasCompletedPrimitiveGoals's own doc
-            // comment (LivingRust.Crafting.cs) for the real live bug this
-            // fixes (a survivor kicked out of primitive-goal priority
-            // permanently the first time a needed ingredient just wasn't
-            // reachable nearby, having completed nothing). Only actually
-            // clears the flag once every real item is confirmed owned;
-            // otherwise falls through to normal looting for just this one
-            // cycle (which can turn up loose cloth/wood/stone too - see
-            // Lucas's own "loot collectable entities on the way" framing)
-            // while staying in the priority set to keep trying next cycle.
+            // A false return here does not mean the checklist is done. Only clears the flag once every item is confirmed owned;
+            // otherwise falls through to normal looting for this cycle while staying in the priority set to retry next cycle.
             else if (HasCompletedPrimitiveGoals(survivor, npc))
             {
                 _pursuingPrimitiveGoals.Remove(survivor.Character.Id);
 
-                // Real "next step is base building" (2026-09-01, Lucas's
-                // own explicit spec: "if the bot manages to hit the
-                // checklist its next step is base building... realistically
-                // looting is fine, however if a bot just indefinitely loots
-                // and it gets killed it loses potentially hours of progress
-                // with nowhere to store loot"). A genuinely finished
-                // checklist now leads into gathering for a base, same as
-                // the 15-minute-timeout path above and ShouldSkipPrimitiveChecklist's
-                // own skip branch (LivingRust.Crafting.cs) - all three real
-                // ways a survivor can be "done with" the checklist funnel
-                // into the same next step. No-ops if it somehow already has
-                // one (shouldn't happen here, but matches the other two
-                // call sites' own guard).
+                // A finished checklist leads into gathering for a base next, so loot progress isn't lost with nowhere to store it.
                 if (survivor.Character.Home == null)
                 {
                     _pursuingBaseGatherGoal.Add(survivor.Character.Id);
@@ -2259,10 +1333,7 @@ public partial class LivingRust
             }
         }
 
-        // Real "gather for a base" fallback (2026-09-01, Lucas's own
-        // explicit spec) - see TryPursueBaseGatherGoal's own doc comment
-        // (LivingRust.HomeSiteStrategy.cs) for the full checklist->design
-        // roll->gather->build pipeline this drives.
+        // Gather-for-a-base fallback, driving the design roll -> gather -> build pipeline.
         if (_pursuingBaseGatherGoal.Contains(survivor.Character.Id))
         {
             if (TryPursueBaseGatherGoal(survivor, npc, state))
@@ -2271,59 +1342,21 @@ public partial class LivingRust
             }
         }
 
-        // Main inventory alone, not IsInventoryFull's "both main AND belt"
-        // (2026-08-15, Lucas's own explicit correction) - a full toolbelt
-        // with room left in main isn't actually a survivor that's out of
-        // carrying capacity, since new loot lands in main first anyway
-        // (see TryTransferSingleItem). See LivingRust.Recycling.cs -
-        // replaces the old outright idle-forever give-up with a real
-        // recycler trip when one's reachable and worth the walk.
+        // Checks main inventory alone rather than main+belt, since new loot always lands in main first.
+        // Falls back to a recycler trip instead of idling forever when the inventory is full.
         if (IsMainInventoryFullIncludingBackpack(npc))
         {
             if (!TryStartRecyclingTask(survivor))
             {
-                // Real fix (2026-09-19, Lucas's own explicit ask: "a bot
-                // getting a full inventory... they should look to go back
-                // to their base they built and deposit loot then re-roll
-                // to go loot roads, monuments etc"). A based survivor with
-                // nothing worth recycling nearby used to just idle forever
-                // here instead - now takes the exact same real "go home,
-                // deposit everything, resume looting" trip
-                // GhostReturnHomeAndDeposit already gives a post-recycling
-                // survivor (LivingRust.Recycling.cs's own FinishRecycling),
-                // just triggered directly rather than via a recycler visit.
+                // A based survivor with nothing worth recycling nearby heads home to deposit instead of idling.
                 if (survivor.Character.Home != null)
                 {
                     VerbosePuts($"loot-task: '{survivor.Character.Alias}' is full up with nothing worth recycling nearby - heading home to deposit.");
                     GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
                 }
-                // Real fix (2026-09-19, live report: bots genuinely stuck
-                // in an infinite loop near Harbor's beach - "stuck doing
-                // nothing" while actually teleporting every ~15-20s
-                // forever. Root cause: a base-less survivor with a full
-                // inventory and nothing worth recycling nearby had no way
-                // forward at all under the old idle fallback - it went
-                // idle, the life-stall watchdog treated that as "stuck"
-                // and relocated it, which just re-discovered the
-                // identical full inventory instantly and went idle again,
-                // live evidence: '18QuietNomad' cycling this exact loop
-                // for 6+ minutes straight. A real player in this spot just
-                // drops junk to keep moving - reuses DropLowerPriorityItem
-                // (this file's own existing eviction logic, already
-                // keycard-protection-aware) to free exactly one slot from
-                // the single least valuable thing owned, sentinel tier
-                // -1 so literally anything (even Other-tier junk) is
-                // eligible, then resumes looting instead of parking
-                // forever.
-                // Cooldown-gated (2026-09-19, live report: this exact
-                // fallback firing 12 times in under 2 minutes for one
-                // survivor separately stuck on a real navmesh/movement
-                // problem near monument dressing props - dropping another
-                // item every retry never helps a bot that can't actually
-                // MOVE, just adds real per-call inventory-scan cost on top
-                // of an already-failing situation. A genuinely full,
-                // still-progressing survivor only needs this rarely
-                // regardless, so the cooldown costs it nothing real.
+                // A base-less survivor with a full inventory and nothing worth recycling drops its least valuable item to keep moving,
+                // rather than idling and getting stuck in a relocate loop.
+                // Cooldown-gated so a survivor stuck on an unrelated movement problem doesn't keep dropping items every retry.
                 else if (Time.realtimeSinceStartup - _lastFullInventoryDropTime.GetValueOrDefault(survivor.Character.Id) >= FullInventoryDropCooldownSeconds
                     && DropLowerPriorityItem(npc, (LootPriorityTier)(-1)))
                 {
@@ -2333,11 +1366,7 @@ public partial class LivingRust
                 }
                 else
                 {
-                    // Genuinely nothing evictable, or still on cooldown
-                    // from a recent drop - the one case still left idle,
-                    // same as before. A bot idling here for real (not
-                    // stuck-and-retrying) still gets picked up by the
-                    // life-stall watchdog's own rescue chain as usual.
+                    // Genuinely nothing evictable, or still on cooldown - left idle; the life-stall watchdog picks this up as usual.
                     VerbosePuts($"loot-task: '{survivor.Character.Alias}' is full up - done looting.");
                     survivor.Character.CurrentTask = TaskType.None;
                 }
@@ -2346,87 +1375,18 @@ public partial class LivingRust
             return;
         }
 
-        // Restores the display weapon before every new search/walk cycle,
-        // regardless of what the previous cycle actually was - covers the
-        // gap PerformInventoryCheck alone doesn't: a container attempt
-        // that failed before ever landing a hit or looting anything (no
-        // line of sight, too far, reposition exhausted) never calls
-        // OnLootObtained at all, so nothing else would ever swap the
-        // melee tool back out in that case. See EquipBestWeaponForDisplay's
-        // own doc comment.
+        // Restores the display weapon before every new search/walk cycle. Covers the case where a failed container attempt
+        // never called OnLootObtained, so nothing else would have swapped the melee tool back.
         RunLootHookSafely(survivor, nameof(EquipBestWeaponForDisplay), () => EquipBestWeaponForDisplay(survivor));
 
-        // Without any melee tool at all (a bare-handed survivor - not the
-        // normal case, since GiveStartingKit always gives a rock, but
-        // reachable by e.g. dropping/losing it), only ever consider
-        // containers that don't require destruction - there's nothing
-        // productive about repeatedly "swinging" at a barrel with empty
-        // hands. Once a tool turns up in a looted crate (EquipBestMeleeTool
-        // runs right after every direct-loot transfer too), barrels become
-        // fair game again on the next search.
+        // A bare-handed survivor only considers containers that don't require destruction, since swinging with empty hands is unproductive.
         bool hasMeleeTool = HasAnyMeleeTool(npc);
 
-        // Only computed if actually needed below (roadsign candidates
-        // specifically) - HasNonRockMeleeTool does its own inventory scan,
-        // no reason to pay for that on every single search cycle when
-        // most won't even have a roadsign candidate nearby.
+        // Only computed when actually needed (roadsign candidates), since HasNonRockMeleeTool does its own inventory scan.
         bool? hasNonRockMeleeTool = null;
 
-        // 50/50 coin flip between a local radius search (step 1) and
-        // heading straight for a known monument loot zone (step 2),
-        // 2026-08-15 - Lucas's own explicit call: roads/paths were getting
-        // "way too congested/contested with bots," with a lot of them
-        // visibly stalling on shorelines/paths/roads once every junkpile
-        // nearby was already farmed out. Previously step 1 ran
-        // unconditionally every single cycle and only fell through to step
-        // 2 once it came up completely empty, so every bot in a played-out
-        // area kept re-scanning the same dead ground before ever moving on.
-        // Skipping the local scan outright half the time gets bots off
-        // exhausted local ground and onto real, spread-out monument
-        // destinations sooner - "a clear separation of bots" per Lucas's
-        // own framing, rather than everyone lingering in lockstep on the
-        // same nearby roads. A real container/corpse/dropped item right
-        // next to the bot can still be missed on any given cycle, but
-        // ContinueLootTask runs again after every step of the monument-zone
-        // path too, so it's never missed for long.
-        //
-        // forceLocalScan (2026-08-15, real live bug: 'RustyScav' - a fresh
-        // spawn HasNearbyLootWorthStartingLocally had just confirmed real
-        // loot within 50m of, one cycle earlier, immediately rolled tails
-        // here, found no cached monument zone nearby, and walked 152m away
-        // to a road without ever actually looking at the loot it was JUST
-        // confirmed to be standing next to) - the "start right here"
-        // decision (LivingRust.GearScore.cs) and this dice roll were two
-        // completely uncoordinated decisions that could directly
-        // contradict each other. Every caller that just decided "search
-        // right here" now forces this one specific cycle's local scan to
-        // actually run, guaranteeing the loot that justified starting here
-        // gets a real look before any dice roll can skip past it - only
-        // this first guaranteed cycle is forced, every cycle after reverts
-        // to the normal coin flip.
-        //
-        // Also forced whenever the survivor is actually inside/near a real
-        // (non-excluded) monument right now (2026-08-15, Lucas's own
-        // explicit refinement) - the dice roll's whole point is spreading
-        // bots off ALREADY-exhausted local ground onto monuments sooner,
-        // which doesn't apply to a bot already standing inside one; there
-        // it should thoroughly work the monument's actual containers every
-        // cycle, not randomly skip past them to re-check the SAME
-        // monument's cached zone list instead. Same 60m detection radius
-        // EscalateSearchToMonumentZone itself uses for "is a monument even
-        // here" - reusing it keeps this consistent with what "checking a
-        // known loot zone" actually means. Falls back to the normal 50/50
-        // once nothing's within that radius - by then either the local
-        // area's genuinely played out or the survivor's mid-road-following,
-        // which is exactly the situation the dice roll was built for.
-        //
-        // Also checks the wider CommittedMonumentRangeRadius (150m) against
-        // whichever monument this task has already committed to, not just
-        // the generic 60m nearest-any-monument check (2026-08-15, Lucas's
-        // own explicit request) - a survivor working the far side of a
-        // large complex is still very much "inside the monument" even
-        // though it may have wandered past 60m from that monument's own
-        // transform origin.
+        // Coin flip between a local radius search and heading to a known monument loot zone, so bots spread out instead of lingering on exhausted ground.
+        // forceLocalScan forces the local scan this cycle; near a real monument (checked against both the nearby-monument and wider committed-monument radius) also forces it, so containers aren't skipped mid-monument.
         bool nearRealMonument = (state.CommittedMonumentName != null && TryGetCommittedMonument(npc.transform.position, state, out _))
             || (TryGetNearestMonument(npc.transform.position, MonumentLootZoneDetectionRadius, out MonumentInfo nearbyMonument)
                 && !IsMonumentExcludedFromAutonomy(nearbyMonument));
@@ -2438,26 +1398,13 @@ public partial class LivingRust
             return;
         }
 
-        // Computed once per cycle, reused across all three searches below -
-        // see GetOccupiedPowerlineTowers' own doc comment.
+        // Computed once per cycle and reused across all searches below; see GetOccupiedPowerlineTowers' own doc comment.
         List<Vector3> occupiedPowerlineTowers = GetOccupiedPowerlineTowers(survivor, npc.transform.position);
 
-        // Computed once per cycle, reused across every search below - see
-        // GetNearbyVisibleHostileScientistPositions' own doc comment
-        // (LivingRust.Combat.cs). Lucas's own explicit spec (2026-08-15):
-        // avoid looting containers near a visible hostile scientist unless
-        // armed with a ranged weapon that actually has ammo.
+        // Computed once per cycle and reused below; see GetNearbyVisibleHostileScientistPositions' own doc comment (LivingRust.Combat.cs). Avoids looting near a visible hostile scientist unless armed with ranged ammo.
         List<Vector3> nearbyVisibleHostileScientists = GetNearbyVisibleHostileScientistPositions(npc);
 
-        // Split into two separate tiers, 2026-08-14 (Lucas's own explicit
-        // priority ordering) - direct-loot containers (crates, lockers, ...)
-        // now rank strictly above anything requiring destruction (barrels,
-        // roadsigns), rather than the two being one combined "whichever's
-        // closest" search the way they used to be. LootContainerAndContinue
-        // itself already branches on RequiresDestructionToLoot internally,
-        // so both tiers below can keep sharing that same real loot method -
-        // only the SEARCH/priority ordering changed, not how either actually
-        // gets looted once reached.
+        // Direct-loot containers (crates, lockers, ...) rank above anything requiring destruction (barrels, roadsigns) as two separate search tiers.
         bool foundContainer = _engine.NavigationManager.TryFindNearestLootContainer(
             npc.transform.position,
             LootSearchRadius,
@@ -2466,13 +1413,7 @@ public partial class LivingRust
                 && !IsLootTargetClaimed(candidate.net.ID)
                 && candidate.inventory != null
                 && candidate.inventory.itemList.Count > 0
-                // See TryFindEnRouteLootCandidate's identical check for the
-                // full reasoning (2026-08-15 live bug) - a container made
-                // entirely of NeverLootShortnames-excluded items (e.g.
-                // vehicle_parts' engine components) always transfers 0
-                // items and never empties, so without this it can still
-                // get re-picked across separate fresh tasks (state.Visited
-                // only protects within a single task/state).
+                // Excludes containers made entirely of never-loot items, since they'd never empty and would keep getting re-picked. See TryFindEnRouteLootCandidate's identical check.
                 && candidate.inventory.itemList.Any(item => !IsNeverLootItem(item.info.shortname))
                 && !IsNearJunkpileJVan(candidate.transform.position)
                 && !IsInPoisonedZone(candidate.transform.position, state)
@@ -2497,13 +1438,7 @@ public partial class LivingRust
                 && !IsLootTargetClaimed(candidate.net.ID)
                 && candidate.inventory != null
                 && candidate.inventory.itemList.Count > 0
-                // See TryFindEnRouteLootCandidate's identical check for the
-                // full reasoning (2026-08-15 live bug) - a container made
-                // entirely of NeverLootShortnames-excluded items (e.g.
-                // vehicle_parts' engine components) always transfers 0
-                // items and never empties, so without this it can still
-                // get re-picked across separate fresh tasks (state.Visited
-                // only protects within a single task/state).
+                // Excludes containers made entirely of never-loot items, since they'd never empty and would keep getting re-picked. See TryFindEnRouteLootCandidate's identical check.
                 && candidate.inventory.itemList.Any(item => !IsNeverLootItem(item.info.shortname))
                 && !IsNearJunkpileJVan(candidate.transform.position)
                 && !IsInPoisonedZone(candidate.transform.position, state)
@@ -2523,28 +1458,11 @@ public partial class LivingRust
                     ? (hasNonRockMeleeTool ??= HasNonRockMeleeTool(npc))
                     : hasMeleeTool));
 
-        // Corpses (player, scientist/NPC, animal) are a completely separate
-        // search - see TryFindNearestLootableCorpse's own doc comment for
-        // why they can't just be folded into the container filter above.
-        // Real "rewarded for a kill" behaviour, per Lucas's own framing:
-        // one survivor's death (or a scientist's) becomes a real pickup
-        // opportunity for whichever survivor finds it first.
-        //
-        // Safe-zone ownership exclusion (2026-08-11, Lucas's live report -
-        // JitterySquatter was stuck trying to reach a corpse it could never
-        // actually loot): confirmed via decompile that PlayerCorpse (real
-        // class for any BasePlayer's death, ours included) and
-        // DroppedItemContainer both genuinely enforce this in vanilla Rust -
-        // PlayerCorpse.OnStartBeingLooted blocks looting whenever the corpse
-        // (or looter) is InSafeZone() and the looter isn't playerSteamID's
-        // owner. Plain world loot (LootableCorpse subclasses with no real
-        // owner, e.g. a dead scientist/animal, and every ordinary
-        // StorageContainer barrel/crate) is untouched - ownerless corpses
-        // never hit this branch and ordinary containers use a completely
-        // separate search above that was never touched.
-        bool foundCorpse = _engine.NavigationManager.TryFindNearestLootableCorpse(
+        // Corpses (player, scientist/NPC, animal) are searched separately from containers, excluding safe-zone-protected corpses the survivor doesn't own. Picks the highest-value corpse among candidates, not just the nearest.
+        bool foundCorpse = _engine.NavigationManager.TryFindBestLootableCorpse(
             npc.transform.position,
             LootSearchRadius,
+            scorer: candidate => GetContentsGearScore(candidate.containers?.Where(c => c != null).SelectMany(c => c.itemList) ?? Enumerable.Empty<Item>()),
             out LootableCorpse corpse,
             candidate => !state.Visited.Contains(candidate.net.ID)
                 && !IsLootTargetClaimed(candidate.net.ID)
@@ -2558,22 +1476,15 @@ public partial class LivingRust
                 && !IsNearOccupiedPowerlineTower(candidate.transform.position, occupiedPowerlineTowers)
                 && !IsNearVisibleHostileScientist(candidate.transform.position, nearbyVisibleHostileScientists)
                 && (candidate is not PlayerCorpse || candidate.playerSteamID == survivor.Character.BotId || !candidate.InSafeZone())
-                // See CorpseAmbientAwarenessRadius/IsRememberedOwnKill's own
-                // doc comments - a corpse the survivor genuinely killed
-                // stays reachable beyond the tightened ambient range,
-                // anything else has to actually be nearby.
+                // A corpse the survivor genuinely killed stays reachable beyond the tightened ambient range; anything else must be nearby.
                 && (Vector3.Distance(npc.transform.position, candidate.transform.position) <= CorpseAmbientAwarenessRadius
                     || IsRememberedOwnKill(survivor.Character.Id, candidate.transform.position)));
 
-        // Despawned/destroyed bodies (fire, explosives, or a corpse's own
-        // timer) convert into a real lootable bag - a completely separate
-        // class from both StorageContainer and LootableCorpse (see
-        // TryFindNearestDroppedItemContainer's own doc comment), so this
-        // needs its own third search the exact same way corpses needed a
-        // second one.
-        bool foundBag = _engine.NavigationManager.TryFindNearestDroppedItemContainer(
+        // Despawned bodies convert into a lootable bag, a separate entity class searched with the same loot-value weighting as corpses.
+        bool foundBag = _engine.NavigationManager.TryFindBestDroppedItemContainer(
             npc.transform.position,
             LootSearchRadius,
+            scorer: candidate => GetContentsGearScore(candidate.inventory?.itemList ?? Enumerable.Empty<Item>()),
             out DroppedItemContainer bag,
             candidate => !state.Visited.Contains(candidate.net.ID)
                 && !IsLootTargetClaimed(candidate.net.ID)
@@ -2587,21 +1498,12 @@ public partial class LivingRust
                 && !IsNearOccupiedPowerlineTower(candidate.transform.position, occupiedPowerlineTowers)
                 && !IsNearVisibleHostileScientist(candidate.transform.position, nearbyVisibleHostileScientists)
                 && (candidate.playerSteamID == 0 || candidate.playerSteamID == survivor.Character.BotId || !candidate.InSafeZone())
-                // Same ambient-awareness gate the corpse search above uses -
-                // see CorpseAmbientAwarenessRadius/IsRememberedOwnKill's own
-                // doc comments.
+                // Same ambient-awareness gate the corpse search above uses.
                 && (Vector3.Distance(npc.transform.position, candidate.transform.position) <= CorpseAmbientAwarenessRadius
                     || IsRememberedOwnKill(survivor.Character.Id, candidate.transform.position)));
 
-        // A genuinely standalone loose item - see TryFindNearestDroppedItem's
-        // own doc comment (a fifth distinct real entity type, confirmed live
-        // via /lr.debug.scan finding a dropped rifle.ak/shotgun.m4 sitting
-        // right next to - but NOT inside - a real DroppedItemContainer bag
-        // at the same spot). IsNeverLootItem pre-filters here (the SAME
-        // exclusion list TryTransferSingleItem itself checks again on
-        // arrival) specifically so a survivor doesn't waste a walk toward
-        // something it was always going to refuse - Lucas's own framing:
-        // "pickup everything... except a few specific items."
+        // A standalone loose item, a distinct entity type from a dropped-item container. IsNeverLootItem pre-filters here
+        // so a survivor doesn't waste a walk toward something it will refuse to pick up on arrival anyway.
         bool foundDroppedItem = _engine.NavigationManager.TryFindNearestDroppedItem(
             npc.transform.position,
             LootSearchRadius,
@@ -2618,21 +1520,8 @@ public partial class LivingRust
                 && !IsNearVisibleHostileScientist(candidate.transform.position, nearbyVisibleHostileScientists)
                 && !IsUnreachableDroppedItem(npc.transform.position, candidate.transform.position));
 
-        // 2026-08-18, Lucas's own explicit redesign - previously only ever
-        // searched at all once every other loot source came up completely
-        // empty within the full 50m LootSearchRadius (2026-08-14: "only
-        // grab if basically on the way"). Real live report: a bot at
-        // Junkyard looted each junkpile's spawned container, but ignored
-        // every barrel right next to it (and a whole second junkpile
-        // within 20m) because a container kept turning up SOMEWHERE within
-        // 50m each cycle, permanently starving the barrel/collectible
-        // tiers - "he got too focused on go to monument rather than loot
-        // what's in front of me first." Now always searched (own much
-        // tighter CollectibleSearchRadius, unchanged - 10m, "to detract
-        // from the bot diverting off course way too much") so it can
-        // participate in the new proximity-priority check below alongside
-        // everything else, rather than being structurally unreachable
-        // whenever any container exists anywhere in the wider radius.
+        // Always searched within the tighter CollectibleSearchRadius, so collectibles can participate in the proximity-priority
+        // check below alongside everything else, rather than being starved whenever a container exists anywhere in the wider radius.
         bool foundCollectible = _engine.NavigationManager.TryFindNearestCollectible(
             npc.transform.position,
             CollectibleSearchRadius,
@@ -2652,34 +1541,20 @@ public partial class LivingRust
 
         if (!foundContainer && !foundBarrel && !foundCorpse && !foundBag && !foundDroppedItem && !foundCollectible)
         {
-            // Real crafting (2026-08-28) - see TryStartCraftingFallback's
-            // own doc comment (LivingRust.Crafting.cs) for why this is
-            // checked before active resource gathering: crafting is
-            // effectively free (instant, zero movement) whenever the
-            // survivor already holds enough raw material, so it's worth
-            // deciding before ever walking anywhere for more.
+            // Checked before active resource gathering, since crafting is effectively free when enough raw material is already held.
             if (TryStartCraftingFallback(survivor, npc, state))
             {
                 return;
             }
 
-            // Real active resource gathering (2026-08-25) - see
-            // TryStartResourceGatheringFallback's own doc comment
-            // (LivingRust.ResourceGathering.cs) for why this is checked
-            // here specifically, right before falling back to monument-zone
-            // road-following, rather than blended into the six-category
-            // search above.
+            // Checked before falling back to monument-zone road-following.
             if (TryStartResourceGatheringFallback(survivor, npc, state))
             {
                 return;
             }
 
-            // Checked before road-following - a monument's interior often
-            // has no real road running through it at all, and a known loot
-            // cluster elsewhere in the SAME monument (e.g. a roof room once
-            // the ground floor's exhausted) is a much more targeted next
-            // step than blindly following whatever road happens to be
-            // nearby. See EscalateSearchToMonumentZone's own doc comment.
+            // Checked before road-following, since a monument's interior often has no road running through it, and a known
+            // loot cluster elsewhere in the same monument is a more targeted next step.
             EscalateSearchToMonumentZone(survivor, state);
             return;
         }
@@ -2691,26 +1566,9 @@ public partial class LivingRust
         float droppedItemDistance = foundDroppedItem ? Vector3.Distance(npc.transform.position, droppedItem.transform.position) : float.MaxValue;
         float collectibleDistance = foundCollectible ? Vector3.Distance(npc.transform.position, collectible.transform.position) : float.MaxValue;
 
-        // Proximity override, 2026-08-18 (Lucas's own explicit redesign,
-        // replacing the old ALWAYS-strict tier order below for anything
-        // genuinely close) - real live report: a bot at Junkyard looted
-        // each junkpile's spawned container but walked straight past every
-        // barrel sitting right next to it, and past a whole second
-        // junkpile within 20m, because a container kept turning up
-        // somewhere within the full 50m LootSearchRadius every single
-        // cycle - the old strict tiers meant "any container anywhere in
-        // 50m" permanently outranked "a barrel 2m away." Lucas's own
-        // framing: "if something is within a 10-30 metre distance of the
-        // bot, it should prioritise those loot containers, barrels,
-        // corpses etc... loot as much as they can on the way" - real
-        // players sweep everything genuinely close before moving on, they
-        // don't beeline past it for a "higher tier" find much farther
-        // away. Anything within NearbyLootPriorityRadius (30m) now wins
-        // outright, whichever's actually closest regardless of type;
-        // collectibles use their own much tighter CollectibleSearchRadius
-        // (10m) for this same check. Only when NOTHING is close enough to
-        // trigger this does the original strict type-tier order below
-        // apply, for opportunistic finds further out.
+        // Proximity override: anything within NearbyLootPriorityRadius wins outright, whichever's closest regardless of type,
+        // so a survivor sweeps everything genuinely close before moving on rather than beelining past it for a "higher tier" find
+        // farther away. Only when nothing is close enough does the strict type-tier order below apply.
         float bestNearbyDistance = float.MaxValue;
 
         if (foundContainer && containerDistance <= NearbyLootPriorityRadius) bestNearbyDistance = Mathf.Min(bestNearbyDistance, containerDistance);
@@ -2718,25 +1576,20 @@ public partial class LivingRust
         if (foundCorpse && corpseDistance <= NearbyLootPriorityRadius) bestNearbyDistance = Mathf.Min(bestNearbyDistance, corpseDistance);
         if (foundBag && bagDistance <= NearbyLootPriorityRadius) bestNearbyDistance = Mathf.Min(bestNearbyDistance, bagDistance);
         if (foundDroppedItem && droppedItemDistance <= NearbyLootPriorityRadius) bestNearbyDistance = Mathf.Min(bestNearbyDistance, droppedItemDistance);
-        // No extra radius check needed here (unlike the other 5) - the
-        // search predicate above already enforces the real per-type cutoff
-        // (GetCollectibleDivertRadius) directly, so any foundCollectible is
-        // already guaranteed close enough to matter.
+        // No extra radius check needed here - the search predicate above already enforces the per-type cutoff, so any
+        // foundCollectible is already guaranteed close enough to matter.
         if (foundCollectible) bestNearbyDistance = Mathf.Min(bestNearbyDistance, collectibleDistance);
 
         bool proximityOverrideActive = bestNearbyDistance < float.MaxValue;
 
-        // Strict priority tiers, 2026-08-14 (Lucas's own explicit ordering -
-        // superseding the previous "corpse/bag/dropped-item are one combined
-        // distance-based tier" rule): a standalone dropped item now
-        // unconditionally outranks EVERYTHING else, regardless of distance -
-        // whichever's closest between corpse and bag still only matters as
-        // the tier right below it. Still the fallback whenever nothing
-        // triggered the proximity override above.
+        // Strict priority tiers, fallback whenever nothing triggered the proximity override above: a standalone dropped item
+        // outranks everything else regardless of distance; corpse-vs-bag ties break on better loot value rather than distance.
         bool preferDroppedItemOverOthers = proximityOverrideActive ? droppedItemDistance == bestNearbyDistance : foundDroppedItem;
         bool preferCorpseOverOthers = proximityOverrideActive
             ? corpseDistance == bestNearbyDistance
-            : !preferDroppedItemOverOthers && foundCorpse && (!foundBag || corpseDistance <= bagDistance);
+            : !preferDroppedItemOverOthers && foundCorpse
+                && (!foundBag || GetContentsGearScore(corpse.containers?.Where(c => c != null).SelectMany(c => c.itemList) ?? Enumerable.Empty<Item>())
+                    >= GetContentsGearScore(bag.inventory?.itemList ?? Enumerable.Empty<Item>()));
         bool preferBagOverOthers = proximityOverrideActive
             ? bagDistance == bestNearbyDistance
             : !preferDroppedItemOverOthers && !preferCorpseOverOthers && foundBag;
@@ -2747,14 +1600,9 @@ public partial class LivingRust
             ? barrelDistance == bestNearbyDistance
             : !preferDroppedItemOverOthers && !preferCorpseOverOthers && !preferBagOverOthers && !preferContainerOverOthers && foundBarrel;
         bool preferCollectibleOverOthers = proximityOverrideActive && collectibleDistance == bestNearbyDistance;
-        //
-        // No shouldWalkCarefully needed here - StartWalking now sprints by
-        // default for every walk (user's correction: real Rust players
-        // run essentially all the time, not just when motivated by a
-        // specific "I can see the loot" trigger), and already eases off
-        // automatically near any destination (ApproachSlowdownDistance),
-        // so the container-specific line-of-sight/distance gating this
-        // used to need is gone - it's just the new universal default now.
+
+        // No shouldWalkCarefully needed here - StartWalking sprints by default for every walk and eases off automatically
+        // near the destination, so no container-specific gating is required.
         if (preferCorpseOverOthers)
         {
             state.Visited.Add(corpse.net.ID);
@@ -2768,15 +1616,7 @@ public partial class LivingRust
                 onArrived: () => LootCorpseAndContinue(survivor, corpse, state),
                 onFailed: () =>
                 {
-                    // Same reasoning as the container onFailed below -
-                    // StartWalkingWithRecovery already exhausted every
-                    // cheaper recovery option by the time this runs. Never
-                    // trust the outer npc local here - this fires well
-                    // after the recovery chain finishes (real seconds
-                    // later), long enough for the survivor to have died/
-                    // respawned/despawned in the meantime, and touching a
-                    // destroyed BasePlayer's .transform throws (confirmed
-                    // live via a real NRE crash trace). Re-fetch fresh.
+                    // Re-fetches the player fresh since it may have died or despawned during the recovery chain.
                     BasePlayer liveNpc = survivor.Player;
 
                     if (liveNpc == null || liveNpc.IsDestroyed)
@@ -2795,17 +1635,7 @@ public partial class LivingRust
 
         if (preferBagOverOthers)
         {
-            // Reached whenever bag "won" the corpse-vs-bag comparison
-            // above (or no corpse was found at all) - unconditionally
-            // beats an ordinary container, same as corpse's own original
-            // behavior, extended equally to bag now that the two are
-            // treated as peer-tier "fresh loot" sources (both real signals
-            // someone died/lost their stuff here) rather than corpse alone
-            // being special-cased. Avoids an inconsistent edge case where
-            // corpse loses to a closer bag, but that bag then also loses
-            // to an even-closer plain container, leaving neither picked
-            // even though the corpse alone would have beaten that same
-            // container under the old rule.
+            // Reached when bag wins the corpse-vs-bag comparison, or no corpse was found. Bags and corpses are treated as peer-tier "fresh loot" sources, both outranking a plain container.
             state.Visited.Add(bag.net.ID);
             ClaimLootTarget(state, bag.net.ID);
 
@@ -2837,12 +1667,7 @@ public partial class LivingRust
 
         if (preferDroppedItemOverOthers)
         {
-            // A standalone loose item, not a container - only ever ONE real
-            // Item to actually decide on (TryTransferSingleItem, the same
-            // never-loot/duplicate/inferior-armor checks a corpse or bag's
-            // own per-item transfer already applies), so this skips the
-            // paced multi-item LootMultiContainerEntityAndContinue flow
-            // entirely in favour of its own much simpler single-pickup one.
+            // A standalone loose item, not a container, so it uses the simpler single-pickup flow instead of the paced multi-item loot flow.
             state.Visited.Add(droppedItem.net.ID);
             ClaimLootTarget(state, droppedItem.net.ID);
 
@@ -2854,8 +1679,7 @@ public partial class LivingRust
                 onArrived: () => PickupDroppedItemAndContinue(survivor, droppedItem, state),
                 onFailed: () =>
                 {
-                    // See the corpse onFailed above for why the outer npc
-                    // local can't be trusted here - re-fetch fresh.
+                    // Re-fetches npc fresh since the outer local can't be trusted here.
                     BasePlayer liveNpc = survivor.Player;
 
                     if (liveNpc == null || liveNpc.IsDestroyed)
@@ -2885,19 +1709,8 @@ public partial class LivingRust
                 onArrived: () => LootContainerAndContinue(survivor, container, state),
                 onFailed: () =>
                 {
-                    // container is already in Visited, so simply moving on to
-                    // the next nearest one won't retry this same unreachable
-                    // spot - matches the line-of-sight give-up in
-                    // StartAttackingContainer (same "skip it, don't get stuck
-                    // on one container forever" principle). Poisons
-                    // immediately (PoisonAreaNow, not the counted
-                    // RegisterLootFailure) - by the time StartWalkingWithRecovery
-                    // calls this, it's already exhausted wiggling, a navmesh
-                    // nudge, AND an emergency teleport, so this single failure
-                    // is already strong evidence the whole area is bad, not
-                    // just this one container.
-                    // See the corpse onFailed above for why the outer npc
-                    // local can't be trusted here - re-fetch fresh.
+                    // container is already in Visited, so moving to the next nearest one won't retry this unreachable spot.
+                    // Poisons immediately since StartWalkingWithRecovery has already exhausted its full recovery ladder by this point.
                     BasePlayer liveNpc = survivor.Player;
 
                     if (liveNpc == null || liveNpc.IsDestroyed)
@@ -2916,16 +1729,8 @@ public partial class LivingRust
 
         if (preferBarrelOverOthers)
         {
-            // Reached either because it won the proximity-priority check
-            // above (closest real loot within NearbyLootPriorityRadius,
-            // 2026-08-18), or - the original 2026-08-14 fallback, still
-            // intact for anything found further out - once every higher
-            // tier (dropped item, corpse, bag, direct-loot container) came
-            // up empty. Shares LootContainerAndContinue with the
-            // direct-loot tier above unchanged (it already branches on
-            // RequiresDestructionToLoot internally) - only which tier gets
-            // searched/preferred first changed, not how a barrel is
-            // actually broken into once reached.
+            // Reached either via the proximity-priority check, or as the original fallback once every higher tier came up empty.
+            // Shares LootContainerAndContinue with the direct-loot tier; only which tier is preferred first differs.
             state.Visited.Add(barrel.net.ID);
             ClaimLootTarget(state, barrel.net.ID);
 
@@ -2955,30 +1760,13 @@ public partial class LivingRust
             return;
         }
 
-        // Reached either because it won the proximity-priority check above
-        // (closest real loot within its own tighter CollectibleSearchRadius,
-        // 2026-08-18) or - the original 2026-08-14 fallback, still intact -
-        // as the absolute last resort once nothing else was found at all.
-        // No explicit "if (preferCollectibleOverOthers)" guard needed here:
-        // the top-of-function gate already guarantees at least one of the
-        // six foundX flags is true, and every OTHER flag's own prefer-check
-        // above returns before ever reaching this point, so getting here at
-        // all already proves collectible is the one that won.
+        // Reached either because it won the proximity-priority check, or as the last resort when nothing else was found.
         state.Visited.Add(collectible.net.ID);
         ClaimLootTarget(state, collectible.net.ID);
 
         Vector3 collectibleApproachPoint = GetApproachPoint(collectible, npc);
 
-        // Plain StartWalking, not StartWalkingWithRecovery, and a short
-        // CollectibleWalkTimeoutSeconds cap - Lucas's own explicit request
-        // (2026-08-15): a collectible (mushroom/hemp/stone/sulfur/ore/
-        // berries) is the lowest-value loot source this project searches,
-        // sitting deep in dense foliage/trees often enough that the FULL
-        // wiggle/navmesh-nudge/emergency-teleport recovery ladder (several
-        // real seconds per tier) was visibly wasting time on something not
-        // worth that effort - bots looked "stuck inside foliage" for far
-        // longer than a berry bush warrants. A real player would just give
-        // up on an awkward one almost immediately, not fight the geometry.
+        // Uses plain StartWalking with a short timeout instead of the full stuck-recovery ladder, since a collectible is low-value and not worth much recovery effort.
         StartWalking(
             survivor,
             collectibleApproachPoint,
@@ -3000,79 +1788,26 @@ public partial class LivingRust
             maxSeconds: CollectibleWalkTimeoutSeconds);
     }
 
-    // See the StartWalking call above for the full reasoning - deliberately
-    // much shorter than the default 200s walk timeout, and deliberately
-    // skips the full stuck-recovery ladder entirely (plain StartWalking,
-    // not StartWalkingWithRecovery).
+    // Deliberately much shorter than the default 200s walk timeout, matching the plain StartWalking call above.
     private const float CollectibleWalkTimeoutSeconds = 2f;
 
     /// <summary>
-    /// How far to look for ANY real road when the immediate area has
-    /// nothing left to loot - deliberately generous, since the whole
-    /// point is finding a road to walk toward when there's genuinely
-    /// nothing nearby, not a tight proximity check.
+    /// How far to look for any real road when the immediate area has nothing left to loot.
     /// </summary>
     private const float RoadSearchDetectionRadius = 60f;
 
     /// <summary>
-    /// Genuine last-resort search radius, tried only once RoadSearchDetectionRadius
-    /// comes up completely empty - Lucas's own live report: bots spawned
-    /// on remote shorelines (ToxicWolf, CrazyCamper, LuckyTorch794) with
-    /// no loot AND no road within 60m just stood still forever, since
-    /// EscalateSearchAlongRoad's old behaviour was to give up outright at
-    /// that point. This is deliberately wide - large enough to plausibly
-    /// reach a real road from almost anywhere on a 1500-size map, even a
-    /// remote beach far from the nearest cluster - since the alternative
-    /// is a permanently idle survivor. Only spent once per "found nothing
-    /// nearby" episode (see the fallback walk below), not repeated every
-    /// cycle, so the one-time wider search cost is acceptable.
+    /// Wider last-resort road search radius, tried only once RoadSearchDetectionRadius finds nothing, so a survivor isn't left permanently idle.
     /// </summary>
     private const float RoadSearchFallbackRadius = 800f;
 
     /// <summary>
-    /// Cumulative distances (metres) tried, one per road-following
-    /// escalation, before really giving up - Lucas's own example numbers
-    /// ("10, 20, 30, 40 metres"). Not a hard "stay on the road" rule
-    /// (Lucas's own framing: "it shouldn't be like I HAVE to stay on the
-    /// road... it's the path in which I will find other lootable
-    /// containers") - ContinueLootTask's normal radius scan still runs at
-    /// every new point this walks to, and can find loot anywhere within
-    /// it, on or off the road; this only decides where to walk next once
-    /// that scan has already come up empty right where the survivor is
-    /// standing. Real Rust loot (barrels, junkpiles) spawns disproportionately
-    /// along roads/paths, so following one is a genuine "where am I likely
-    /// to find more" heuristic, not an arbitrary wander.
+    /// Cumulative distances (metres) tried, one per road-following escalation, before giving up. ContinueLootTask's normal radius scan still runs at each new point, on or off the road.
     /// </summary>
-    // Widened 2026-08-10 (10/20/30/40 -> 20/50/75/150, 100m total -> 350m
-    // total) - Lucas's own framing: 100m cumulative is negligible on a
-    // 1500-size map, nowhere near enough to actually cross the gaps
-    // between real loot clusters on a large map.
     private static readonly float[] RoadFollowDistances = { 20f, 50f, 75f, 150f };
 
     /// <summary>
-    /// Called once ContinueLootTask's normal radius scan comes up
-    /// completely empty (no containers, no corpses) - rather than giving
-    /// up immediately, checks for a real nearby road and walks further
-    /// along it before conceding, mirroring how a real player would keep
-    /// moving toward wherever loot tends to spawn instead of stopping
-    /// dead in an empty patch of terrain.
-    ///
-    /// Each call re-finds the nearest road point fresh from wherever the
-    /// survivor currently stands (not a remembered anchor from the first
-    /// call) - since a successful hop already moves the survivor further
-    /// along, this naturally produces a real cumulative progression
-    /// (hop 1 walks 10m from the start; by hop 2 the survivor's already
-    /// 10m in, so walking another 20m from THERE lands ~30m from the
-    /// original spot) without needing to track a fixed anchor point or
-    /// direction explicitly. state.RoadFollowAttempts is what actually
-    /// bounds the total, incremented once per call regardless of whether
-    /// the walk itself succeeds - a walk failure still "uses up" an
-    /// attempt rather than letting the bot retry the same hop forever.
-    ///
-    /// Direction (forward vs backward along the spline) is re-decided
-    /// every call too, preferring whichever side of the nearest point
-    /// still has more real road left - avoids repeatedly aiming at a
-    /// road's own dead-end.
+    /// Called once ContinueLootTask's normal radius scan finds nothing nearby. Checks for a nearby road and walks further along it before giving up, re-finding the nearest road point and direction fresh each call.
     /// </summary>
     private void EscalateSearchAlongRoad(Survivor survivor, LootTaskState state)
     {
@@ -3093,12 +1828,7 @@ public partial class LivingRust
 
         if (!_engine.NavigationManager.TryFindNearestRoadPoint(npc.transform.position, RoadSearchDetectionRadius, out _, out PathInterpolator road, out float distanceAlongRoad))
         {
-            // Genuine last resort before giving up outright - see
-            // RoadSearchFallbackRadius's own doc comment. Walks straight
-            // to the nearest point on whatever road this wider search
-            // finds (not a hop-distance extension - the normal escalation
-            // above doesn't apply here, this is "get to ANY road at all"),
-            // then resumes the ordinary loot search from there.
+            // Last resort before giving up: walks to the nearest point on any road this wider search finds, then resumes the ordinary loot search from there.
             if (!_engine.NavigationManager.TryFindNearestRoadPoint(npc.transform.position, RoadSearchFallbackRadius, out Vector3 fallbackPoint, out PathInterpolator fallbackRoad, out float fallbackDistanceAlongRoad))
             {
                 VerbosePuts($"loot-task: '{survivor.Character.Alias}' found nothing left to loot nearby, and no road within {RoadSearchFallbackRadius:F0}m to follow either.");
@@ -3191,46 +1921,21 @@ public partial class LivingRust
 
         VerbosePuts($"loot-task: '{survivor.Character.Alias}' found nothing left to loot nearby - following the road {hopDistance:F0}m further to look for more ({state.RoadFollowAttempts}/{RoadFollowDistances.Length}).");
 
-        // StartLongDistanceWalkDirect, not plain StartWalkingWithRecovery
-        // (2026-08-15) - confirmed live gap: road-hop following (this
-        // branch, by far the most common/longest travel step in the whole
-        // ladder) was the ONE place that skipped the en-route "grab
-        // something on the way" scanner entirely, despite being exactly
-        // where it matters most (a long walk along a real road, past real
-        // containers). Only the gear-weighted start, monument-zone
-        // escalation, and distant-monument escalation went through
-        // StartLongDistanceWalk before this - Lucas's own question
-        // ("shouldn't they loot along the way regardless of which
-        // escalation step they're on?") caught it.
+        // Uses StartLongDistanceWalkDirect so en-route loot is scanned for during this long road-hop travel, same as the other escalation steps.
         StartLongDistanceWalkDirect(
             survivor,
             destination,
             onArrived: () => ContinueLootTask(survivor, state),
             onFailed: () =>
             {
-                // Still counts as this attempt used up (RoadFollowAttempts
-                // already incremented above) - re-running the normal scan
-                // from wherever the survivor actually ended up (not
-                // necessarily destination) either finds something nearby
-                // after all, or escalates again for the next hop.
+                // The attempt still counts as used; re-running the scan from wherever the survivor ended up either finds something or escalates to the next hop.
                 VerbosePuts($"loot-task: '{survivor.Character.Alias}' couldn't reach the next point along the road - trying the next stretch.");
                 ContinueLootTask(survivor, state);
             });
     }
 
     /// <summary>
-    /// Counts a failed loot attempt toward the current streak, and once
-    /// ConsecutiveFailuresBeforeAvoidingArea is hit, poisons the area - see
-    /// ConsecutiveFailuresBeforeAvoidingArea's own doc comment for the
-    /// junkpile_j case this fixes. Used for lighter failures that never
-    /// went through the full stuck-recovery escalation (currently the
-    /// line-of-sight/too-far give-ups in StartAttackingContainer and
-    /// LootContainerDirectly) - a single one of those isn't strong
-    /// evidence the whole area is bad, just that this one container's
-    /// angle was bad. Contrast with PoisonAreaNow, used when a walk
-    /// already exhausted every recovery option first. container is
-    /// optional (registers a retry attempt - see
-    /// RetrySuccessesBeforeRevisit's own doc comment - when given).
+    /// Counts a failed loot attempt toward the current streak, poisoning the area once ConsecutiveFailuresBeforeAvoidingArea is hit. Used for lighter failures that skip the full stuck-recovery escalation. container is optional and registers a retry attempt when given.
     /// </summary>
     private void RegisterLootFailure(Survivor survivor, LootTaskState state, Vector3 position, StorageContainer container = null)
     {
@@ -3248,18 +1953,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Poisons the area immediately, no streak needed - used when a walk
-    /// already exhausted the full stuck-recovery escalation (wiggle,
-    /// navmesh nudge, emergency teleport - see StartWalkingWithRecovery)
-    /// before failing. That's already much stronger evidence the whole
-    /// surrounding area is bad than a single ordinary failure, confirmed
-    /// via a live trace: two survivors each repeated the ENTIRE expensive
-    /// escalation, once per nearby container, because
-    /// ConsecutiveFailuresBeforeAvoidingArea previously required 4
-    /// separate full exhaustions before poisoning ever kicked in - a lot
-    /// of wasted real time re-litigating the same bad area. container is
-    /// optional (registers a retry attempt - see
-    /// RetrySuccessesBeforeRevisit's own doc comment - when given).
+    /// Poisons the area immediately, no streak needed, since a walk that already exhausted the full stuck-recovery escalation is strong evidence the area is bad. container is optional and registers a retry attempt when given.
     /// </summary>
     private void PoisonAreaNow(Survivor survivor, LootTaskState state, Vector3 position, StorageContainer container = null)
     {
@@ -3272,25 +1966,12 @@ public partial class LivingRust
 
         VerbosePuts($"loot-task: '{survivor.Character.Alias}' avoiding the area around {position} ({PoisonedZoneRadius:F0}m) for the next {PoisonedZoneDuration:F0}s.");
 
-        // On top of the temporary, this-task-only poisoning above: also
-        // feeds this into the permanent, monument-relative avoid-zone
-        // system (LivingRust.MonumentAvoidZones.cs) - a full recovery
-        // exhaustion is exactly the strong per-incident evidence that
-        // system needs, and unlike the poisoning above, a confirmed zone
-        // there is remembered for every survivor and never expires.
+        // Also feeds this into the permanent, monument-relative avoid-zone system, which is remembered for every survivor and never expires (LivingRust.MonumentAvoidZones.cs).
         RecordPotentialAvoidZone(position);
     }
 
     /// <summary>
-    /// Marks container as eligible for exactly one retry once
-    /// RetrySuccessesBeforeRevisit other containers have been
-    /// successfully looted (see AdvanceRetryCountdown). Stays in Visited
-    /// (still excluded from candidate search) until that countdown
-    /// actually elapses - this only starts the countdown. A container
-    /// that already used its one retry (AlreadyRetried) is left alone -
-    /// permanently skipped, same as before this system existed. No-op if
-    /// container is null (callers that don't have one to hand, e.g. the
-    /// old area-only poisoning path).
+    /// Marks container as eligible for exactly one retry once RetrySuccessesBeforeRevisit other containers have been successfully looted (see AdvanceRetryCountdown). A container that already used its one retry is left permanently skipped. No-op if container is null.
     /// </summary>
     private void RegisterContainerRetry(LootTaskState state, StorageContainer container)
     {
@@ -3301,17 +1982,7 @@ public partial class LivingRust
 
         if (state.AlreadyRetried.Contains(container.net.ID))
         {
-            // The one retry this container ever gets has already been
-            // used, and it failed again. AdvanceRetryCountdown removed it
-            // from Visited once already, specifically to grant that one
-            // retry - nothing else re-adds it, so without this a
-            // container that fails its retry too becomes permanently
-            // re-searchable instead of permanently skipped, contradicting
-            // this method's own original intent. Confirmed live via a
-            // 35-bot trace: 'LuckyGoblin' re-attempted the exact same
-            // 'oil_barrel' a third time, immediately after its one retry
-            // had already failed all 4 reposition angles too. Re-add to
-            // Visited for real, permanent exclusion this time.
+            // The one retry already failed too; re-add to Visited for permanent exclusion this time.
             state.Visited.Add(container.net.ID);
             return;
         }
@@ -3321,14 +1992,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Called after every successfully completed container (looted or
-    /// broken open) - counts down every container currently waiting on a
-    /// retry, and un-skips (removes from Visited) any that reach zero, so
-    /// the next search picks them up again like any other candidate. By
-    /// then the survivor has moved on to loot elsewhere, so a retry
-    /// naturally approaches from wherever it happens to be standing next -
-    /// a different physical angle than whatever failed the first time,
-    /// without needing to explicitly compute or remember one.
+    /// Called after every successfully completed container. Counts down containers waiting on a retry and un-skips (removes from Visited) any that reach zero, so the next search can pick them up again.
     /// </summary>
     private void AdvanceRetryCountdown(LootTaskState state)
     {
@@ -3377,37 +2041,12 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// How close a candidate container needs to be to a "van_d_white"
-    /// collider (junkpile_j's van, confirmed by name via a live
-    /// /lr.debug.look scan) to count as "inside/right next to the van"
-    /// and get excluded. The van's own bounds span ~6.8m x 5.7m
-    /// (confirmed via that same scan), so this comfortably covers
-    /// anything actually sitting in or immediately beside it without
-    /// reaching far enough to exclude unrelated loot scattered elsewhere
-    /// around the broader junkpile.
+    /// How close a candidate container needs to be to junkpile_j's van collider to count as inside/right next to it and get excluded.
     /// </summary>
     private const float JunkpileJVanAvoidRadius = 6f;
 
     /// <summary>
-    /// Rejects any container physically near junkpile_j's van - unlike
-    /// other junkpile variants, that one's barrels/crates sit physically
-    /// inside the van model rather than out on the ground, which made
-    /// bots reliably get stuck trying to reach them (user report,
-    /// confirmed via a live trace: a survivor oscillated in place for
-    /// over a minute trying to close a final 2.2m gap before being
-    /// killed).
-    ///
-    /// Originally implemented by walking the candidate's own transform-
-    /// parent chain looking for "junkpile_j" in an ancestor's name - that
-    /// didn't actually work (a second live trace showed a bot still
-    /// targeting a van-interior item), almost certainly because Rust's
-    /// spawn system places spawned loot as independent, unparented
-    /// entities near the junkpile rather than as literal children of it,
-    /// so there was nothing "junkpile_j"-named in the candidate's own
-    /// ancestry to find. This checks physical proximity to the van's own
-    /// collider instead - doesn't depend on any assumption about how
-    /// Rust's spawner actually parents things, just where the van
-    /// physically is relative to the candidate.
+    /// Rejects any container physically near junkpile_j's van, since that variant's barrels/crates sit inside the van model rather than on the ground, causing bots to get stuck reaching them. Checks physical proximity to the van's collider rather than its parent chain, since spawned loot isn't parented to the junkpile.
     /// </summary>
     private bool IsNearJunkpileJVan(Vector3 position)
     {
@@ -3425,42 +2064,17 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// How close a candidate needs to be to real powerline-tower geometry
-    /// to count as "physically at/on this tower" - small and tight,
-    /// deliberately just the structure's own footprint, not a wide area
-    /// around it (that's PowerlineOccupancyRadius's job, applied
-    /// separately once a tower's actually confirmed occupied).
+    /// How close a candidate needs to be to real powerline-tower geometry to count as physically at/on this tower.
     /// </summary>
     private const float PowerlineTowerProximityRadius = 8f;
 
     /// <summary>
-    /// Once a powerline tower is confirmed occupied by another survivor,
-    /// how wide an area around its own root position gets excluded from
-    /// every OTHER survivor's loot search - covers the tower's full
-    /// base-to-top climb path, not just its ground footprint, since the
-    /// whole point is keeping other bots from converging on the same
-    /// structure while one's already climbing it. Deliberately kept
-    /// tight (was 40f, dropped to match CardReaderAvoidRadius) per
-    /// Lucas's own concern: too wide an exclusion risks swallowing
-    /// unrelated nearby loot, or a fresh /lr.debug.spawnmany beach spawn
-    /// landing inside it outright.
+    /// Once a powerline tower is confirmed occupied by another survivor, how wide an area around its root position gets excluded from every other survivor's loot search.
     /// </summary>
     private const float PowerlineOccupancyRadius = 20f;
 
     /// <summary>
-    /// Finds the real powerline-tower structure (if any) physically at
-    /// position, returning its own stable per-instance root position.
-    /// Powerline towers aren't registered Rust monuments (confirmed via
-    /// /lr.monument.where - no TerrainMeta.Path.Monuments entry, see
-    /// MonumentRoutes.cs's own doc comment on why its authored route is
-    /// keyed by GameObject name instead), so this can't use
-    /// TryGetNearestMonument/MonumentInfo the way MonumentAvoidZones does.
-    /// Every collider on a real powerline tower reports a "powerline_*"
-    /// GameObject as its ultimate root ancestor (confirmed live via
-    /// /lr.debug.nearby) - Transform.root gives that directly, matched by
-    /// substring so this covers every real variant (powerline_a/b/c/d/...)
-    /// per Lucas's own "any powerline monument" framing, not just
-    /// powerline_a specifically.
+    /// Finds the real powerline-tower structure (if any) physically at position, returning its stable per-instance root position. Powerline towers aren't registered Rust monuments, so this matches by "powerline" substring on the collider's root GameObject name instead.
     /// </summary>
     private bool TryFindPowerlineTowerRoot(Vector3 position, out Vector3 towerRootPosition)
     {
@@ -3482,37 +2096,12 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// How wide a sweep the cheap "is anything powerline-related even
-    /// nearby" gate uses - deliberately NOT LootSearchRadius (50f). A
-    /// real, severe live bug: the first version gated on the full
-    /// LootSearchRadius with an unfiltered (~0) layer mask, and near
-    /// powerline_a specifically - a large, dense, many-collider structure
-    /// (MonumentRoutes.cs's own doc comment: "every collider on the
-    /// Powerline tower reports 'powerline_a' as its ultimate parent") - a
-    /// single 50m-radius all-layers OverlapSphere near it was expensive
-    /// enough to synchronously stall a bot's very first ContinueLootTask
-    /// cycle. Confirmed live: three bots spawned near powerline_a
-    /// (FastBuilder8205, DirtyHunter4167, MadAK) never logged so much as
-    /// their first "scanning" line - frozen from the moment they spawned.
-    /// PowerlineOccupancyRadius (20f) plus a little approach buffer is
-    /// all this gate actually needs to stay correct for candidates within
-    /// a bot's real search range - it doesn't need LootSearchRadius's
-    /// full reach, since a tower further out than this can't have any
-    /// candidate within PowerlineOccupancyRadius of it that also falls
-    /// inside this gate's sweep anyway in the cases that matter live.
+    /// Radius for the cheap "is anything powerline-related nearby" gate. Kept smaller than LootSearchRadius, since a full-radius unfiltered physics sweep near a dense powerline tower was expensive enough to stall a bot's first search cycle.
     /// </summary>
     private const float PowerlineGateRadius = 25f;
 
     /// <summary>
-    /// Cheap gate for GetOccupiedPowerlineTowers - whether ANY real
-    /// powerline-tower geometry exists within radius of position at all,
-    /// regardless of which instance or whether anyone's on it. A single
-    /// OverlapSphere, not one per other survivor - if this comes back
-    /// false, none of this bot's own loot candidates could plausibly be
-    /// near a tower either, so the far more expensive per-survivor
-    /// occupancy scan isn't worth paying for at all. See
-    /// PowerlineGateRadius's own doc comment for why radius here is
-    /// deliberately much smaller than LootSearchRadius.
+    /// Cheap gate for GetOccupiedPowerlineTowers: whether any real powerline-tower geometry exists within radius at all. A single OverlapSphere avoids paying for the more expensive per-survivor occupancy scan when nothing is nearby.
     /// </summary>
     private bool IsAnyPowerlineTowerWithinRadius(Vector3 position, float radius)
     {
@@ -3532,33 +2121,7 @@ public partial class LivingRust
     private static readonly List<Vector3> NoOccupiedPowerlineTowers = new();
 
     /// <summary>
-    /// Every distinct powerline tower another currently-spawned survivor
-    /// is physically at right now, as a small list of tower root
-    /// positions - computed once per ContinueLootTask cycle (not once per
-    /// candidate) and reused across all three candidate filters, same
-    /// "compute the expensive check once, not per-candidate" shape
-    /// hasNonRockMeleeTool already uses. Fixes a real live problem: with
-    /// many survivors all searching simultaneously, multiple bots could
-    /// independently target loot on/inside the same powerline tower,
-    /// converge on it together, and each individually get stuck on its
-    /// known-difficult geometry (see MonumentRoutes.cs's own doc comment -
-    /// "took a full session of individual bug fixes"). No claim/release
-    /// bookkeeping needed - this is a live check against real survivor
-    /// positions every search cycle, same self-cleaning shape
-    /// IsNearCardReader already uses.
-    ///
-    /// Real performance bug fixed same day it shipped: the very first
-    /// version unconditionally scanned every OTHER survivor with its own
-    /// Physics.OverlapSphere call (TryFindPowerlineTowerRoot), on every
-    /// single ContinueLootTask cycle, for every bot - O(bots^2) physics
-    /// queries per cycle. Confirmed live: with a 35-bot spawnmany batch,
-    /// most bots effectively froze (only ~12 of 35 showed any movement/
-    /// loot activity across a full minute of log). Fixed with a cheap
-    /// early-exit: skip the whole per-survivor scan unless there's
-    /// actually a powerline tower within THIS bot's own LootSearchRadius
-    /// to begin with - one OverlapSphere instead of up to 34, for the
-    /// overwhelming majority of cycles where no tower is anywhere nearby
-    /// at all.
+    /// Every distinct powerline tower another currently-spawned survivor is physically at right now, computed once per cycle and reused across candidate filters. Prevents multiple bots converging on the same tower. Uses a cheap gate to skip the per-survivor scan when no tower is nearby, avoiding an O(bots^2) cost.
     /// </summary>
     private List<Vector3> GetOccupiedPowerlineTowers(Survivor self, Vector3 selfPosition)
     {
@@ -3715,49 +2278,11 @@ public partial class LivingRust
     private const float ApproachPointNavMeshSnapTightRadius = 3.5f;
     private const float ApproachPointNavMeshSnapWideRadius = 20f;
 
-    // Real cross-layer snap guard (2026-08-28, Lucas's own live incident:
-    // '198NumbWarden' tried to approach an ordinary surface tree, the wide-
-    // radius sample below landed on a completely different navmesh layer -
-    // a cave/tunnel system sitting Y=-40 directly underneath - it phased
-    // down into that on the resulting stuck-recovery escalation, and was
-    // killed there by a real Tunnel Dweller NPC before ever getting a
-    // chance to recover). NavMesh.SamplePosition (what RustNavMeshAgent.
-    // SamplePosition wraps) measures plain 3D Euclidean distance within
-    // its radius sphere - it has no concept of "same walkable surface,"
-    // so a generous 20m search radius can genuinely reach a vertically
-    // stacked navmesh island (a tunnel, a basement, a cave ceiling/floor)
-    // that happens to sit within that sphere even though it's nothing a
-    // real player would ever consider "nearby." A real single footstep's
-    // worth of vertical error is well under a couple of metres; anything
-    // beyond this is treated as a different layer entirely, not a minor
-    // ground-height correction.
+    // Guards against a wide-radius navmesh sample landing on a different vertical layer (e.g. a cave/tunnel below a surface point). Anything beyond this vertical delta is treated as a different layer, not a ground-height correction.
     private const float ApproachPointMaxVerticalSnapDelta = 6f;
 
     /// <summary>
-    /// Snaps a computed approach point onto the real baked navmesh
-    /// (2026-08-15) - a real, precisely-identified gap found via decompile:
-    /// GetApproachPoint's own geometry (bounds edge + standoff, obstruction-
-    /// checked via Linecast) can pass every geometric check and still land
-    /// somewhere the navmesh simply doesn't cover - a doorway threshold, a
-    /// wall lip, a raised curb - which native RustNavMeshAgent pathing then
-    /// rejects outright ("PathInvalid... no navmesh surface found within
-    /// Xm"), a failure signature seen constantly across this session's live
-    /// traces. Real Scientist2 NPCs never hand a raw target position to
-    /// their own movement - every single destination gets run through
-    /// RustNavMeshAgent.SamplePosition first (State_ScientistRush.
-    /// GetMoveDestination: tight 3.5m radius, falling back to a generous
-    /// 20m radius), using the SAME RustNavMeshAgent component this
-    /// project's own bots already carry (Scientist2FSM itself declares
-    /// RustNavMeshAgent as a SoftRequireComponent - confirmed via decompile
-    /// this isn't a separate/exclusive system). This is that identical
-    /// validation step, applied to every approach point this project
-    /// computes, now with an added vertical sanity check (see
-    /// ApproachPointMaxVerticalSnapDelta's own doc comment) that a plain
-    /// distance-only sample can't provide on its own. Falls back to the
-    /// original unsnapped point (not some invented fallback) if nothing
-    /// real and same-level is found nearby at all - StartWalking's own
-    /// stuck-recovery ladder remains the final safety net for a genuinely
-    /// bad pick, same as before this existed.
+    /// Snaps a computed approach point onto the baked navmesh, since a geometrically valid point can still land somewhere the navmesh doesn't cover. Includes a vertical sanity check so it doesn't snap to a different layer. Falls back to the original unsnapped point if nothing suitable is found nearby.
     /// </summary>
     private Vector3 SnapApproachPointToNavMesh(BasePlayer npc, Vector3 worldPosition)
     {
@@ -3779,11 +2304,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// One radius attempt for SnapApproachPointToNavMesh above - splits out
-    /// purely so the vertical-layer rejection (see
-    /// ApproachPointMaxVerticalSnapDelta's own doc comment) applies
-    /// identically to both the tight and wide radius passes, rather than
-    /// only guarding the outer function's final return.
+    /// One radius attempt for SnapApproachPointToNavMesh, applying the vertical-layer rejection to both the tight and wide radius passes.
     /// </summary>
     private bool TryGetSameLevelNavMeshSnap(BasePlayer npc, RustNavMeshAgent agent, Vector3 positionNS, Vector3 originalWorldPosition, float radius, out Vector3 result)
     {
@@ -3806,11 +2327,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// The actual closest-point-on-bounds + standoff + real-ground-height
-    /// computation, parameterized by whatever reference position "closest"
-    /// is measured from - GetApproachPoint calls this once for the
-    /// survivor's real position, then again for each rotated candidate
-    /// angle it's trying.
+    /// Computes closest-point-on-bounds plus standoff plus real ground height, parameterized by the reference position "closest" is measured from. GetApproachPoint calls this for the survivor's position and each rotated candidate angle.
     /// </summary>
     private Vector3 ComputeApproachPoint(BaseEntity entity, OBB bounds, Vector3 referencePosition, float standoffDistance)
     {
@@ -3832,14 +2349,7 @@ public partial class LivingRust
 
         Vector3 approach = closest + outward.normalized * standoffDistance;
 
-        // Real ground/floor height at this point via a downward raycast,
-        // not the coarse terrain heightmap - which only ever reports raw
-        // terrain elevation and would badly misplace this for a container
-        // sitting on an elevated platform (a monument's upper level,
-        // exactly the powerline_a case this originally fixed), same
-        // reasoning TryFindGroundBelow's own doc comment gives.
-        // approach.y is already ~= closest.y at this point (outward.y was
-        // zeroed), a reasonable search-origin height for the raycast.
+        // Uses a downward raycast for real ground/floor height, since the coarse terrain heightmap would misplace this on an elevated platform.
         if (_engine.NavigationManager.TryFindGroundBelow(approach, 4f, 6f, out float groundY, out _))
         {
             approach.y = groundY;
@@ -3858,11 +2368,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// A cheap sanity check, not a real path guarantee - just whether a
-    /// straight line between two points is free of solid obstruction, the
-    /// same idea (and mask) as HasLineOfSight uses for the attack-range
-    /// check, reused here to pre-screen candidate approach angles before
-    /// ever committing a walk to one.
+    /// Cheap sanity check for whether a straight line between two points is free of solid obstruction, used to pre-screen candidate approach angles before committing a walk to one.
     /// </summary>
     private bool IsPathClear(Vector3 from, Vector3 to)
     {
@@ -3904,13 +2410,7 @@ public partial class LivingRust
             },
             onFailed: () =>
             {
-                // Fires well after StartAttackingContainerWithReposition
-                // exhausts its repositioning attempts (real seconds
-                // later) - the outer npc local can be stale by then (the
-                // exact NRE crash trace this comment is fixing: survivor
-                // died/respawned/despawned mid-attack, then this closure
-                // touched a destroyed BasePlayer's .transform). Re-fetch
-                // fresh instead of trusting the captured npc.
+                // Re-fetches the player fresh, since it may have died or despawned during repositioning.
                 BasePlayer liveNpc = survivor.Player;
 
                 if (liveNpc == null || liveNpc.IsDestroyed)
@@ -3925,18 +2425,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Whether this container needs to be destroyed to get at its
-    /// contents, matching real Rust behaviour - barrels and roadsigns
-    /// genuinely have no interact-to-loot option and only drop their
-    /// contents when broken with a tool; crates/boxes (crate_normal,
-    /// crate_tools, crate_food_1/2, crate_ammunition, crate_mine,
-    /// crate_elite, crate_fuel, crate_shore, crate_medical, foodbox,
-    /// vehicle_parts, ...) are opened and looted intact, never attacked -
-    /// user's explicit correction after scanning several crate types that
-    /// should never be hit. Matched by shortname substring rather than an
-    /// exhaustive list, since every crate variant seen so far shares
-    /// neither "barrel" nor "roadsign" in its name and new crate types
-    /// are far more likely to appear than new barrel types.
+    /// Whether this container needs to be destroyed to get at its contents. Barrels and roadsigns must be broken open; crates are opened and looted intact. Matched by shortname substring rather than an exhaustive list.
     /// </summary>
     private bool RequiresDestructionToLoot(StorageContainer container)
     {
@@ -3947,12 +2436,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real roadsign HP is high enough that mining one with just the
-    /// starting rock takes a genuinely long time - Lucas's own framing:
-    /// it leaves the bot standing out in the open, exposed, for way
-    /// longer than a barrel takes. Barrels stay rock-eligible (unchanged,
-    /// HasAnyMeleeTool below still covers them); this is specifically a
-    /// stricter gate for roadsigns only, requiring a real tool.
+    /// Roadsign HP is high enough that mining one with just the starting rock takes too long, leaving a bot exposed. Requires a real tool for roadsigns specifically; barrels stay rock-eligible.
     /// </summary>
     private bool IsRoadsign(StorageContainer container)
     {
@@ -3960,17 +2444,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// A vehicle/deployable's own fuel tank (modular car, minicopter,
-    /// RHIB, snowmobile, DPV, submarine, a placed quarry/pump jack, ...) -
-    /// a real StorageContainer, so it passes every other loot filter, but
-    /// it's not free-standing world loot the way a barrel or crate is: a
-    /// live report caught a survivor targeting one as if it were. Matched
-    /// by shortname substring against Rust's real prefab naming (confirmed
-    /// via the bundled AssetSceneManifest.json - "fuelstorage" for older
-    /// prefabs like the quarry's tank, "fuel_storage" for every vehicle
-    /// variant added since, e.g. modular_car_fuel_storage, fuel_storage_attackheli),
-    /// same substring-matching approach as RequiresDestructionToLoot uses
-    /// for barrels/crates.
+    /// A vehicle or deployable's own fuel tank. Excluded since it's a real StorageContainer that would otherwise pass every loot filter, but isn't free-standing world loot. Matched by shortname substring.
     /// </summary>
     private bool IsVehicleFuelStorage(StorageContainer container)
     {
@@ -3981,19 +2455,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// The hot air balloon's own attached loot container (real shortname
-    /// "hab_storage", confirmed via a live /lr.debug.scan) - excluded the
-    /// same way IsVehicleFuelStorage/IsVehiclePartsContainer are: it's a
-    /// real StorageContainer so it'd otherwise pass every other loot
-    /// filter, but it sits inside the balloon's own dense cage/gondola
-    /// collider cluster (Cage, Corners, Entrance, GasCollider, a
-    /// SnareTrigger, several Prevent_move zones - all confirmed via the
-    /// same scan), which is exactly the kind of tightly-packed local
-    /// geometry a cactus's own thin/jutting colliders already proved can
-    /// wedge a bot in place (see IsBlockedByCactus's own doc comment).
-    /// Removing the incentive to walk in there at all is the real fix -
-    /// IsBlockedByHotAirBalloon below is a second, general safety net for
-    /// a bot just passing near one for an unrelated reason.
+    /// The hot air balloon's own attached loot container, excluded since it sits inside a dense collider cluster that can wedge a bot in place. IsBlockedByHotAirBalloon below is a separate general safety net.
     /// </summary>
     private bool IsHotAirBalloonStorage(StorageContainer container)
     {
@@ -4001,17 +2463,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// A rowboat's own cargo storage (real shortname "rowboat_storage",
-    /// confirmed via AssetSceneManifest.json - shared across every real
-    /// skin variant: Rowboat, MetalRowboat, and the weathered/beached
-    /// "washed up" wreck version - all reuse the same SubEnts/
-    /// rowboat_storage.prefab). Separate from the boat's own fuel tank,
-    /// which IsVehicleFuelStorage already excludes. Lucas's own live
-    /// report: a bot (BrokenRock) was attempting to loot a washed-up
-    /// small "tinny" rowboat wreck - excluded the same way
-    /// IsVehicleFuelStorage/IsVehiclePartsContainer/IsHotAirBalloonStorage
-    /// are, a real StorageContainer that'd otherwise pass every other
-    /// filter.
+    /// A rowboat's cargo storage, shared across every skin variant including beached wrecks. Excluded the same way as the other vehicle-storage exclusions, since it would otherwise pass every loot filter.
     /// </summary>
     private bool IsRowboatStorage(StorageContainer container)
     {
@@ -4019,12 +2471,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// A player-owned mailbox (real prefab "mailbox.deployed", confirmed
-    /// via AssetSceneManifest.json) is a real StorageContainer that'd
-    /// otherwise pass every other loot filter - excluded the same way
-    /// IsVehicleFuelStorage/IsHotAirBalloonStorage/IsRowboatStorage are.
-    /// It's base furniture tied to a specific player's ownership, not
-    /// scavengeable loot.
+    /// A player-owned mailbox, excluded since it's base furniture tied to a specific player's ownership, not scavengeable loot.
     /// </summary>
     private bool IsMailbox(StorageContainer container)
     {
@@ -4032,26 +2479,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Loots a container by opening it directly, the way a real player
-    /// interacting with a crate would - no combat, no destruction. The
-    /// container itself still needs to go away afterward the same way it
-    /// would for a real player: LootContainer.PlayerStoppedLooting is
-    /// what normally triggers destroyOnEmpty's auto-cleanup once someone
-    /// closes the loot panel on an empty container, but nothing here ever
-    /// opens a real loot panel, so that native cleanup never fires on its
-    /// own - Kill() (default DestroyMode.None, not Gib - this is a closed
-    /// container disappearing, not something broken) replicates it
-    /// directly once actually empty.
-    ///
-    /// Delayed by DirectLootDelay rather than completing the instant it
-    /// arrives - an instant transfer read as "inhuman" (user's own word)
-    /// next to the barrel/roadsign combat loop, which naturally takes a
-    /// few seconds of real swinging. No timer-cancellation bookkeeping
-    /// for this delay (unlike movement/attacks, which get cancelled via
-    /// _activeMovement/_activeAttacks) - the callback re-checks npc/
-    /// container validity itself before touching either, so a survivor
-    /// dying or the container vanishing mid-delay just falls through to
-    /// ContinueLootTask harmlessly instead of needing to be cancelled.
+    /// Loots a container by opening it directly, no combat or destruction. Since no real loot panel is opened, this calls Kill() itself to replicate the auto-cleanup a real player closing the panel would trigger. Delayed by DirectLootDelay instead of completing instantly, so it doesn't read as unnaturally fast.
     /// </summary>
     private void LootContainerDirectly(Survivor survivor, StorageContainer container, LootTaskState state, Action onDone = null)
     {
@@ -4071,11 +2499,7 @@ public partial class LivingRust
 
             if (!IsWithinLootRange(npc, container))
             {
-                // Nothing here previously verified actual proximity before
-                // looting, only that a walk had reported "arrived" - a
-                // live test caught a survivor looting a container 10-15m
-                // away, stuck the whole time on the far side of a sandbag
-                // wall. See LootInteractionRange's own doc comment.
+                // Verifies actual proximity before looting, not just that a walk reported "arrived". See LootInteractionRange's own doc comment.
                 VerbosePuts($"loot-task: '{survivor.Character.Alias}' can't reach '{container.ShortPrefabName}' - too far away ({Vector3.Distance(npc.transform.position, container.transform.position):F1}m, obstacle in the way?). Skipping it.");
                 RegisterLootFailure(survivor, state, npc.transform.position, container);
                 resume();
@@ -4103,12 +2527,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Loots a real corpse - a player, scientist/NPC, or animal death, the
-    /// "rewarded for combat" case Lucas asked for. Paced one item at a
-    /// time across every entry in LootableCorpse.containers (up to 3 real
-    /// ItemContainers for a player corpse - main inventory, wear, belt) -
-    /// see LootMultiContainerEntityAndContinue's own doc comment for the
-    /// shared pacing logic.
+    /// Loots a real corpse (player, scientist/NPC, or animal), paced one item at a time across up to 3 containers. See LootMultiContainerEntityAndContinue for the shared pacing logic.
     /// </summary>
     private void LootCorpseAndContinue(Survivor survivor, LootableCorpse corpse, LootTaskState state)
     {
@@ -4120,15 +2539,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Loots a real dropped bag - what a destroyed/despawned body (fire,
-    /// explosives, or a corpse's own despawn timer) converts into. A
-    /// completely separate class from both StorageContainer and
-    /// LootableCorpse - see TryFindNearestDroppedItemContainer's own doc
-    /// comment - but its actual loot content is functionally identical to
-    /// a corpse's (a real player's dropped items), so it shares the exact
-    /// same paced per-item loot logic via LootMultiContainerEntityAndContinue,
-    /// just with a single real ItemContainer (DroppedItemContainer.inventory)
-    /// instead of a corpse's array of up to 3.
+    /// Loots a dropped bag, which a destroyed or despawned body converts into. A separate entity class from StorageContainer and LootableCorpse, but shares the same paced per-item loot logic with a single container.
     /// </summary>
     private void LootDroppedItemContainerAndContinue(Survivor survivor, DroppedItemContainer bag, LootTaskState state)
     {
@@ -4311,79 +2722,29 @@ public partial class LivingRust
         });
     }
 
-    // 20-30m, Lucas's own explicit range (2026-08-15): "if within LOS and
-    // 20-30m away, loot stuff on the way" during a long-distance monument
-    // walk. Deliberately smaller than LootSearchRadius (50m) - this is
-    // "basically on the way," not a detour search.
+    // Detection radius for real loot found basically on the way during a long-distance walk. Smaller than LootSearchRadius since this isn't a detour search.
     private const float EnRouteLootDetectionRadius = 25f;
 
-    // Collectibles (berries, mushrooms, stone/wood deposits, ...) get their
-    // own, much tighter en-route radius (2026-08-18, Lucas's own explicit
-    // request) - unlike a real container or a dropped item, a collectible
-    // is low-value enough that it's only worth a detour when it's
-    // genuinely right next to the path, not merely within LOS 25m away.
-    // Containers/dropped items still use EnRouteLootDetectionRadius above,
-    // unchanged. This is now just the outer search ceiling (the widest any
-    // single type is allowed - see GetCollectibleDivertRadius) - the real
-    // per-type cutoff (berries 3m, mushrooms 5m, real resources 15m) is
-    // enforced per-candidate in the filter below, same split this radius
-    // used to handle alone with one flat number.
+    // Collectibles get a tighter en-route radius than containers/dropped items, since they're low-value enough to only be worth a detour when genuinely close to the path. This is the outer ceiling; per-type cutoffs are enforced in the filter (see GetCollectibleDivertRadius).
     private const float EnRouteCollectibleDetectionRadius = 15f;
 
-    // How often a long walk re-checks for something worth grabbing nearby -
-    // every tick would be wasteful (a fresh set of physics queries per bot
-    // per WalkTickInterval at 200-bot scale), a periodic sweep is plenty
-    // for something that's only ever "was there something on the way,"
-    // never time-critical.
+    // How often a long walk re-checks for something worth grabbing nearby. A periodic sweep instead of every tick keeps physics query cost down at scale.
     private const float EnRouteLootScanIntervalSeconds = 4f;
 
-    // Short and deliberately skips the full stuck-recovery ladder, same
-    // reasoning as CollectibleWalkTimeoutSeconds - an en-route detour that
-    // turns out to be awkward to actually reach isn't worth fighting the
-    // geometry over when the bot was already headed somewhere specific.
+    // Short and skips the full stuck-recovery ladder, since an awkward en-route detour isn't worth fighting the geometry over.
     private const float EnRouteLootWalkTimeoutSeconds = 6f;
 
-    // Real tree/ore node en-route gathering (2026-09-15, Lucas's own
-    // explicit spec, first floated 2026-09-07: "have bots divert their
-    // course... by farming a stone ore (along the way, if within 20 metres
-    // at anypoint during its run to X destination) once... and farming a
-    // tree or two", confirmed feasible then, actually built now). Own
-    // radius, Lucas's own literal figure - deliberately tighter than
-    // EnRouteLootDetectionRadius (25m, real loot) since a full node/tree
-    // gather is a genuinely bigger time investment than grabbing a
-    // container, so it should only trigger when one is truly right next to
-    // the path, not merely nearby.
+    // Detection radius for en-route tree/ore gathering, tighter than EnRouteLootDetectionRadius since a full gather is a bigger time investment than grabbing a container.
     private const float EnRouteResourceNodeDetectionRadius = 20f;
 
-    // "just stop at 1 or 2 of each stone ore or tree along its journey... I
-    // don't want them stopping at every stone ore along the way and
-    // certainly not every tree" - Lucas's own explicit cap, enforced
-    // per-walk (reset in StartLongDistanceWalk, NOT StartLongDistanceWalkDirect -
-    // the latter is also what every en-route detour's own resumeOriginalWalk
-    // calls back into, so resetting there would silently uncap this every
-    // single stop instead of across the whole journey).
+    // Caps stops per walk so a survivor doesn't stop at every stone ore or tree along the way. Reset in StartLongDistanceWalk, not StartLongDistanceWalkDirect, since the latter is also called by each detour's own resume.
     private const int EnRouteResourceNodeMaxStopsPerWalk = 2;
 
     private readonly Dictionary<Guid, int> _enRouteTreeStopsThisWalk = new();
     private readonly Dictionary<Guid, int> _enRouteOreStopsThisWalk = new();
 
     /// <summary>
-    /// How long a failed en-route detour target stays excluded from
-    /// re-selection (2026-08-15) - live trace found '8319DirtyLooter' stuck
-    /// in a genuine infinite loop: every EnRouteLootScanIntervalSeconds
-    /// (4s), the scan re-picked the EXACT SAME unreachable candidate it had
-    /// just spent EnRouteLootWalkTimeoutSeconds (6s) failing to reach,
-    /// detoured to it again, failed again, forever - net zero forward
-    /// progress toward the real destination, reading as "gave up halfway"
-    /// even though it never actually gave up, just churned on the same
-    /// unreachable item indefinitely. The throwaway detourState passed to
-    /// PoisonAreaNow inside the detour is discarded every single detour (a
-    /// fresh LootTaskState each time), and TryFindEnRouteLootCandidate
-    /// never took any state at all, so nothing was remembering the failure
-    /// from one scan tick to the next. Long enough that the bot has clearly
-    /// moved on past this spot before the item's eligible again; short
-    /// enough that a genuinely temporary obstruction (another bot standing
-    /// on it, momentary claim contention) doesn't exclude it forever.
+    /// How long a failed en-route detour target stays excluded from re-selection, preventing the scan from repeatedly re-picking the same unreachable candidate.
     /// </summary>
     private const float EnRouteLootFailureCooldownSeconds = 90f;
 
@@ -4420,24 +2781,11 @@ public partial class LivingRust
         }
     }
 
-    // How many points to sample along the straight line between current
-    // position and a candidate long-distance destination, checking each
-    // for water - deliberately coarse (not every metre), this only needs
-    // to catch a real crossing (a river, bay, stretch of ocean between the
-    // survivor and the destination), not graze detection of a single wet
-    // footstep.
+    // Number of sample points along the straight line to the destination, checking each for water. Coarse by design, just enough to catch a real crossing.
     private const int WaterCrossingSampleCount = 12;
 
     /// <summary>
-    /// Whether the straight line from -> to passes through water at any
-    /// sampled point - the trigger for routing via roads instead of
-    /// walking the direct line (2026-08-15, Lucas's own explicit request:
-    /// "is there water in between me and the destination I am trying to
-    /// go to? yes, go around and follow the roads"). Deliberately a
-    /// straight-line heuristic, not real water-body geometry - cheap, and
-    /// good enough to catch the common case (a bay/river/inlet directly
-    /// between here and there) without needing a real flood-fill or
-    /// shoreline polygon lookup.
+    /// Whether the straight line from -> to passes through water at any sampled point, the trigger for routing via roads instead of walking direct. A cheap straight-line heuristic, not real water-body geometry.
     /// </summary>
     private bool DoesPathCrossWater(Vector3 from, Vector3 to)
     {
@@ -4454,37 +2802,17 @@ public partial class LivingRust
         return false;
     }
 
-    // How far to search for a road to route via, once a water crossing is
-    // detected - deliberately generous (this is for real cross-map travel,
-    // not just "is there a road nearby"), and separate from
-    // RoadSearchDetectionRadius (that one's for the loot-search escalation,
-    // a different concern with a much tighter radius).
+    // How far to search for a road to route via once a water crossing is detected. Generous, for real cross-map travel, and separate from the tighter RoadSearchDetectionRadius used for loot-search escalation.
     private const float RoadRouteDetectionRadius = 300f;
 
-    // How far to advance along the road spline per hop while routing
-    // around water - large enough that a real road-routed trip makes
-    // genuine progress each hop rather than crawling.
+    // How far to advance along the road spline per hop while routing around water.
     private const float RoadRouteHopDistance = 80f;
 
-    // Hard cap on road hops before just accepting the direct route anyway,
-    // water or not - a pure termination guarantee (see
-    // MaxDistanceDecisionRerolls's own doc comment for the same reasoning
-    // elsewhere in this project) for the rare case a destination genuinely
-    // can't be reached by hopping along this particular road network (an
-    // island monument, a road that dead-ends short of clearing the water).
+    // Hard cap on road hops before accepting the direct route anyway, as a termination guarantee for a destination that can't be reached by hopping this road network.
     private const int RoadRouteMaxHops = 15;
 
     /// <summary>
-    /// Routes a survivor around a water crossing by hopping along the
-    /// nearest road network instead of walking the water-crossing straight
-    /// line, re-checking after every hop whether the remaining direct line
-    /// to finalDestination has cleared - the moment it has, breaks off onto
-    /// the normal direct approach rather than needlessly following the
-    /// road all the way to wherever it happens to end. Each hop advances
-    /// toward whichever direction along the spline (forward or backward)
-    /// is actually closer to finalDestination, so this naturally curves
-    /// toward the real target rather than committing to one direction
-    /// blindly.
+    /// Routes a survivor around a water crossing by hopping along the nearest road network, re-checking each hop whether the direct line to finalDestination has cleared, and breaking off onto it once it has.
     /// </summary>
     private void StartRoadRouteToward(Survivor survivor, Vector3 finalDestination, string destinationLabel, PathInterpolator road, float distanceAlongRoad, Action onArrived, Action onFailed, int hopsRemaining)
     {
@@ -4526,12 +2854,7 @@ public partial class LivingRust
             onArrived: () => StartRoadRouteToward(survivor, finalDestination, destinationLabel, road, nextDistanceAlongRoad, onArrived, onFailed, hopsRemaining - 1),
             onFailed: () =>
             {
-                // Couldn't reach this particular hop - rather than getting
-                // stuck retrying the same road point, just fall through to
-                // the direct route from wherever the survivor currently is.
-                // The direct walk's own water-depth/distance safety net
-                // (WaterAvoidMaxDistance/IsTooDeepUnderwater) still applies
-                // if this really does run back into water.
+                // Couldn't reach this hop; falls through to the direct route from wherever the survivor currently is.
                 BasePlayer liveNpc = survivor.Player;
 
                 if (liveNpc == null || liveNpc.IsDestroyed)
@@ -4545,31 +2868,11 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Entry point for every long-distance walk in the project (the
-    /// initial gear-weighted destination, monument-zone escalation,
-    /// distant-monument escalation). The road-routing detour
-    /// (StartRoadRouteToward, DoesPathCrossWater) is DISABLED as of
-    /// 2026-08-15 (later same session) - its very first live test caught
-    /// a real bug (confirmed via trace: '641ShadyReaper' cycling between
-    /// different nearby hop targets multiple times per SECOND, far faster
-    /// than any real travel could complete - a bad interaction in the
-    /// forward/backward hop-selection logic, not yet root-caused), and
-    /// very likely explains a live report of "a lot of bots stuck around
-    /// power_sub_big_1" (19 different bots all converged on that exact
-    /// monument via EscalateSearchToKnownMonument in the same run). Left
-    /// in place (not deleted) in case it's worth debugging properly later,
-    /// but bypassed for now - Lucas's own explicit follow-up call: real
-    /// swimming instead of routing around water is "honestly better than
-    /// just making everything pathfind around an obvious gap." Water
-    /// crossings are now just walked through directly (see
-    /// WaterAvoidMaxDistance/IsTooDeepUnderwater's own updated doc
-    /// comments) rather than turned back OR routed around.
+    /// Entry point for every long-distance walk in the project. The road-routing detour around water (StartRoadRouteToward, DoesPathCrossWater) is currently disabled due to a hop-selection bug; water crossings are walked through directly instead.
     /// </summary>
     private void StartLongDistanceWalk(Survivor survivor, Vector3 destination, string destinationLabel, Action onArrived, Action onFailed)
     {
-        // Real per-walk reset (2026-09-15) - see EnRouteResourceNodeMaxStopsPerWalk's
-        // own doc comment for why this has to happen HERE specifically, not
-        // in StartLongDistanceWalkDirect.
+        // Resets the per-walk stop counters here, not in StartLongDistanceWalkDirect; see EnRouteResourceNodeMaxStopsPerWalk's own doc comment.
         Guid characterId = survivor.Character.Id;
         _enRouteTreeStopsThisWalk[characterId] = 0;
         _enRouteOreStopsThisWalk[characterId] = 0;
@@ -4578,17 +2881,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Drop-in replacement for StartWalkingWithRecovery at the specific
-    /// long-distance call sites (the initial gear-weighted destination,
-    /// monument-zone escalation, distant-monument escalation) - the walk
-    /// itself is completely unchanged, this just runs a periodic en-route
-    /// scan alongside it (2026-08-15, Lucas's own explicit request: bots
-    /// walked straight past real loot sitting right next to the path on
-    /// a long monument trip, only ever searching once they'd fully
-    /// arrived). Not used for every walk in the project - a short local
-    /// hop to a container the bot already decided on doesn't need this,
-    /// only the genuinely long trips where "something was basically on
-    /// the way" can plausibly happen.
+    /// Drop-in replacement for StartWalkingWithRecovery at long-distance call sites. The walk itself is unchanged; this also runs a periodic en-route loot scan alongside it, since short local hops don't need one.
     /// </summary>
     private void StartLongDistanceWalkDirect(Survivor survivor, Vector3 destination, Action onArrived, Action onFailed)
     {
@@ -4616,8 +2909,7 @@ public partial class LivingRust
         {
             BasePlayer npc = survivor.Player;
 
-            // No longer actually walking (arrived/failed/interrupted by
-            // combat/flee/despawn) - nothing left to scan alongside.
+            // No longer actually walking, so nothing left to scan alongside.
             if (npc == null || npc.IsDestroyed || !_activeMovement.ContainsKey(characterId)
                 || _activeCombat.ContainsKey(characterId) || _activeFlee.ContainsKey(characterId))
             {
@@ -4632,22 +2924,10 @@ public partial class LivingRust
 
             StopEnRouteLootScan(characterId);
 
-            // Resumes via the direct walk, not the full water-checking
-            // StartLongDistanceWalk - the water-crossing decision was
-            // already made once for this whole trip, and a short en-route
-            // detour resuming from nearly the same spot doesn't need to
-            // re-litigate it. Also deliberately does NOT reset the
-            // tree/ore stop counters (see EnRouteResourceNodeMaxStopsPerWalk's
-            // own doc comment) - this is a resume of the SAME walk, not a
-            // new one.
+            // Resumes via the direct walk rather than re-checking water crossing, and deliberately does not reset the tree/ore stop counters since this resumes the same walk.
             Action resumeOriginalWalk = () => StartLongDistanceWalkDirect(survivor, destination, onArrived, onFailed);
 
-            // Tree/ore get their own dedicated gather-and-resume path
-            // (full node clear via StartGatheringResourceNode, same as the
-            // normal loot-task fallback uses) rather than the generic
-            // walk-up-and-pick-up flow below every other kind shares - see
-            // GatherEnRouteTreeAndResume/GatherEnRouteOreAndResume's own
-            // doc comments.
+            // Tree/ore get their own dedicated gather-and-resume path; see GatherEnRouteTreeAndResume/GatherEnRouteOreAndResume's own doc comments.
             if (kind == EnRouteLootKind.Tree)
             {
                 _enRouteTreeStopsThisWalk[characterId] = _enRouteTreeStopsThisWalk.GetValueOrDefault(characterId) + 1;
@@ -4666,10 +2946,7 @@ public partial class LivingRust
 
             VerbosePuts($"loot-task: '{survivor.Character.Alias}' spotted something worth grabbing on the way - detouring.");
 
-            // Throwaway state, purely so the existing Loot*AndContinue
-            // machinery (RegisterLootFailure/PoisonAreaNow, etc.) has
-            // somewhere to record a failed detour attempt - discarded once
-            // this detour resolves, never carried into the resumed walk.
+            // Throwaway state so the existing Loot*AndContinue machinery has somewhere to record a failed detour attempt; discarded once the detour resolves.
             LootTaskState detourState = new();
 
             StartWalking(
@@ -4692,7 +2969,14 @@ public partial class LivingRust
                 },
                 onFailed: () =>
                 {
-                    MarkEnRouteLootFailure(candidate.net.ID);
+                    // candidate can be destroyed/despawned (looted by another survivor, expired)
+                    // between being spotted and this detour timing out, well before the walk
+                    // itself reports failure - candidate.net is null once that happens.
+                    if (candidate != null && !candidate.IsDestroyed)
+                    {
+                        MarkEnRouteLootFailure(candidate.net.ID);
+                    }
+
                     resumeOriginalWalk();
                 },
                 maxSeconds: EnRouteLootWalkTimeoutSeconds);
@@ -4801,13 +3085,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Deliberately narrow compared to the main local search
-    /// (ContinueLootTask) - only non-destructible containers, standalone
-    /// dropped items, and collectibles (mushroom/hemp/stone/etc). Barrels/
-    /// roadsigns (destruction takes real time) and corpses (multi-item,
-    /// safe-zone nuance) are excluded on purpose - "grab it on the way"
-    /// means a quick, casual pickup a real player would make without
-    /// stopping to work for it, not a full detour project.
+    /// Deliberately narrow compared to the main local search (ContinueLootTask): only non-destructible containers, standalone dropped items, and collectibles. Barrels/roadsigns and corpses are excluded on purpose, since a quick en-route pickup shouldn't become a full detour project.
     /// </summary>
     private bool TryFindEnRouteLootCandidate(Survivor survivor, BasePlayer npc, out BaseEntity candidate, out EnRouteLootKind kind)
     {
@@ -4819,22 +3097,7 @@ public partial class LivingRust
                 && !RecentlyFailedEnRouteLoot(c.net.ID)
                 && c.inventory != null
                 && c.inventory.itemList.Count > 0
-                // Confirmed live (2026-08-15) - a real infinite loop:
-                // 'FilthyNomad'/'JitteryReaper' both got stuck endlessly
-                // detouring to the same 'vehicle_parts' crate, "looting"
-                // it, then immediately treating it as a fresh candidate
-                // again seconds later. Root cause: itemList.Count > 0 alone
-                // doesn't mean anything actually TRANSFERS - a container
-                // made entirely of NeverLootShortnames-excluded items (e.g.
-                // vehicle_parts' engine components) always transfers 0
-                // items, so it never empties and never stops qualifying as
-                // a candidate. This check requires at least one item that
-                // would actually be taken before it's worth a detour at
-                // all - the main local search doesn't need this since a
-                // container like this just gets walked up to and looted
-                // for 0 items once, then naturally never revisited (no
-                // detour-and-repeat cycle the way en-route candidates get
-                // re-evaluated on every scan tick).
+                // Requires at least one item that would actually transfer, since a container made entirely of never-loot items would never empty and would keep re-qualifying as a candidate.
                 && c.inventory.itemList.Any(item => !IsNeverLootItem(item.info.shortname))
                 && !RequiresDestructionToLoot(c)
                 && !IsNearJunkpileJVan(c.transform.position)
@@ -4873,25 +3136,8 @@ public partial class LivingRust
 
         Guid enRouteCharacterId = survivor.Character.Id;
 
-        // Trees checked before ore - matches this project's own existing
-        // convention (see GatherTreeAndContinue's own doc comment, "wood is
-        // the more universally needed resource") - and both checked before
-        // Collectible so a real farmable node takes priority over a small
-        // ground pickup when both happen to be nearby (2026-09-15, Lucas's
-        // own explicit ask: "stone nodes should hold priority over
-        // collectable entities"). Each gated on the per-walk cap and on
-        // actually owning a real gather-capable tool - a toolless survivor
-        // walking up to a node it can't harvest would just waste the
-        // detour.
-        //
-        // HasEnoughWoodAlready (2026-09-19, Lucas's own explicit live
-        // report: killed bots carrying "3000-8000 wood... quite overkill
-        // for what the bot ACTUALLY needs to build a base") - this en-route
-        // stop had zero awareness of what the survivor actually needed,
-        // stacking a full tree's worth of wood on top of whatever it
-        // already had, once per stop, for its entire life with no ceiling.
-        // Now skips the stop entirely once already well-stocked - see its
-        // own doc comment for the real target used.
+        // Trees checked before ore, and both before collectibles, so a farmable node takes priority when both are nearby. Each is gated on the per-walk cap and on owning a gather-capable tool.
+        // Also skips the tree stop once the survivor already has enough wood, so it doesn't keep stacking more than it needs.
         if (_enRouteTreeStopsThisWalk.GetValueOrDefault(enRouteCharacterId) < EnRouteResourceNodeMaxStopsPerWalk
             && !HasEnoughWoodAlready(survivor, npc)
             && HasAnyGatherCapableTool(npc, TreeGatherToolPriority)
@@ -4955,33 +3201,17 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// How long each individual item takes to loot from a corpse or bag -
-    /// Lucas's own real-player comparison: even auto-loot/quick-loot on a
-    /// real corpse has a real per-item timer/latency (his estimate: ~0.1s),
-    /// so an instant "everything transfers at once" read as unrealistic
-    /// for something with potentially many items across multiple real
-    /// containers. Starting at 0.2s per Lucas's own explicit "let's start
-    /// there and see how we go" - tune from here, not a value confirmed
-    /// correct yet.
+    /// How long each individual item takes to loot from a corpse or bag, so an instant "everything transfers at once" doesn't read as unrealistic.
     /// </summary>
     private const float CorpseLootPerItemDelay = 0.2f;
 
     /// <summary>
-    /// Shared paced multi-container loot logic behind both
-    /// LootCorpseAndContinue and LootDroppedItemContainerAndContinue - a
-    /// corpse and a dropped bag are different entity types but the actual
-    /// looting behaviour (real containers full of real items, no
-    /// destruction needed, paced one item at a time) is identical, so
-    /// this is generic over any entity + its real ItemContainer list.
-    /// Left alone once empty rather than manually cleaned up - both
-    /// corpses and bags already despawn on their own via Rust's own
-    /// timers, same as they would after a real player looted them.
-    ///
-    /// Registered in _activeAttacks (same registry StartAttackingContainer
-    /// uses) purely so this repeating timer gets torn down by the existing
-    /// CancelActiveAttack cleanup path (death, despawnall, ...) - without
-    /// that, a survivor removed mid-loot would leave this timer ticking
-    /// against a gone Character forever.
+    /// A corpse/bag find that multiplies the survivor's pre-loot gear score by at least this much triggers an immediate interrupt to protect the find (base-gathering or a deposit trip). See the bigGearJump check below.
+    /// </summary>
+    private const float BigLootGearJumpMultiplier = 1.75f;
+
+    /// <summary>
+    /// Shared paced multi-container loot logic behind LootCorpseAndContinue and LootDroppedItemContainerAndContinue, generic over any entity and its ItemContainer list. Registered in _activeAttacks so the timer is torn down by the existing cleanup path.
     /// </summary>
     private void LootMultiContainerEntityAndContinue(Survivor survivor, BaseEntity entity, List<ItemContainer> containers, string entityLabel, LootTaskState state)
     {
@@ -4993,15 +3223,7 @@ public partial class LivingRust
 
         timer.Once(DirectLootDelay, () =>
         {
-            // Real gap CancelActiveAttack can't reach - this initial
-            // timer.Once isn't registered in _activeAttacks until the real
-            // per-item lootTimer below is created, so combat starting
-            // during this exact delay previously had nothing to cancel and
-            // this callback would fire obliviously (confirmed via a live
-            // log: "is looting a corpse" then "engaging ... in combat" then
-            // "looted 0 item stack(s)" moments later, from the same
-            // survivor). Bail here too, same as ContinueLootTask's own
-            // entry guard.
+            // The per-item lootTimer isn't registered in _activeAttacks until it's created below, so this bails on combat starting during the delay too.
             if (_activeCombat.ContainsKey(characterId))
             {
                 return;
@@ -5015,6 +3237,9 @@ public partial class LivingRust
                 return;
             }
 
+            // Snapshotted before looting, compared against the survivor's gear score once looting finishes, to detect a jackpot find worth protecting immediately.
+            int gearScoreBeforeLoot = GetGearScore(npc);
+
             if (!IsWithinLootRange(npc, entity))
             {
                 VerbosePuts($"loot-task: '{survivor.Character.Alias}' can't reach {entityLabel} - too far away ({Vector3.Distance(npc.transform.position, entity.transform.position):F1}m, obstacle in the way?). Skipping it.");
@@ -5023,10 +3248,7 @@ public partial class LivingRust
                 return;
             }
 
-            // Snapshot every item across every real container up front -
-            // same reasoning TransferAllItems' own doc comment gives:
-            // mutating a container's itemList while iterating it directly
-            // would skip items.
+            // Snapshots every item across every container up front, since mutating a container's itemList while iterating it would skip items.
             List<Item> pending = new();
 
             foreach (ItemContainer container in containers)
@@ -5063,14 +3285,7 @@ public partial class LivingRust
                 {
                     BasePlayer currentNpc = survivor.Player;
 
-                    // Not gated on IsInventoryFull anymore - a full
-                    // inventory should only skip whatever specific item
-                    // can't fit (or can't earn its own room - see
-                    // EnsureRoomFor), not end the whole loot session early
-                    // while later items in the same corpse/bag might
-                    // still be exactly the kind of upgrade worth making
-                    // room for. See TransferAllItems' own identical
-                    // reasoning for the bulk-loot equivalent of this.
+                    // Not gated on IsInventoryFull, since a full inventory should only skip the specific item that can't fit, not end the whole loot session early.
                     if (currentNpc == null || currentNpc.IsDestroyed || index >= pending.Count)
                     {
                         lootTimer.Destroy();
@@ -5090,6 +3305,32 @@ public partial class LivingRust
 
                         state.ConsecutiveFailures = 0;
                         AdvanceRetryCountdown(state);
+
+                        // A corpse/bag find that jumps gear score by the threshold interrupts current behavior to protect it: base-gathering if no base yet, or a deposit trip if one exists. Only applies to corpse/bag loot (moved > 0), not container/barrel loot.
+                        int gearScoreAfterLoot = GetGearScore(currentNpc);
+                        bool bigGearJump = moved > 0 && (gearScoreBeforeLoot == 0
+                            ? gearScoreAfterLoot > 0
+                            : gearScoreAfterLoot >= gearScoreBeforeLoot * BigLootGearJumpMultiplier);
+
+                        if (bigGearJump)
+                        {
+                            Puts($"loot-task: '{survivor.Character.Alias}' hit a big gear jump from {entityLabel} (gear {gearScoreBeforeLoot} -> {gearScoreAfterLoot}) - cashing in instead of continuing to loot.");
+
+                            if (survivor.Character.Home == null)
+                            {
+                                // Forces the base-gather deadline into the past immediately instead of the normal randomized window, so the existing deadline-pass-through mechanism grants any still-missing base resources on the next cycle.
+                                _pursuingBaseGatherGoal.Add(characterId);
+                                _baseGatherDeadline[characterId] = UnityEngine.Time.realtimeSinceStartup - 1f;
+                                ContinueLootTask(survivor, state);
+                            }
+                            else
+                            {
+                                GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
+                            }
+
+                            return;
+                        }
+
                         ContinueLootTask(survivor, state);
                         return;
                     }
@@ -5108,7 +3349,8 @@ public partial class LivingRust
                     lootTimer.Destroy();
                     _activeAttacks.Remove(characterId);
 
-                    Puts($"WARNING: '{survivor.Character.Alias}' - {entityLabel} loot tick threw and was aborted: {exception.Message}");
+                    // Logs the full exception, not just its message, since a bare message alone doesn't identify which line threw.
+                    Puts($"WARNING: '{survivor.Character.Alias}' - {entityLabel} loot tick threw and was aborted: {exception}");
 
                     ContinueLootTask(survivor, state);
                 }
@@ -5119,41 +3361,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Repeatedly swings the survivor's actually-equipped melee tool at a
-    /// container - real BaseMelee.ServerUse() calls, the same entry point
-    /// a real player's client-sent attack RPC ultimately drives into, not
-    /// a synthetic shortcut. This is what makes the swing animation and
-    /// swing sound/VFX actually happen for observers (via
-    /// BasePlayer.SignalBroadcast(Signal.Attack, ...), which ServerUse
-    /// calls internally) - confirmed via decompiling Assembly-CSharp.dll,
-    /// after establishing earlier that Rust's real melee combat is
-    /// otherwise entirely client-driven (a real player's client decides
-    /// when to swing) and that the server-driven alternative Rust's own
-    /// AI NPCs use lives in NPCPlayer/HumanNPC, not plain BasePlayer -
-    /// ServerUse() turned out to be a plain, public, connection-
-    /// independent method callable directly, sidestepping both of those
-    /// dead ends. ServerUse() also does its own real raycast hit-test
-    /// (from the wielder's eyes, forward) and applies damage itself after
-    /// a real swing delay - EquipBestMeleeTool/FaceDirection below exist
-    /// to make sure that hit-test actually lands on the intended
-    /// container, and TransferAllItems still runs every poll tick
-    /// regardless of whether a hit actually lands this tick, so loot keeps
-    /// coming out safely ahead of whenever the container actually dies -
-    /// same reasoning as the old direct-Hurt() approach this replaces.
-    ///
-    /// A real player physically can't click faster than their held tool's
-    /// own swing/reset animation allows - "hold click, animation begins,
-    /// tool connects, animation resets, click again" (Lucas's own
-    /// description) - and every hit used to land on a flat 1s tick
-    /// regardless of which tool was equipped, reading as unnaturally fast
-    /// against slower tools. BaseMelee.ServerUse() already tracks this for
-    /// real: every real swing calls StartAttackCooldown(repeatDelay * 2f)
-    /// using the actually-equipped item's own real AttackEntity.repeatDelay
-    /// (a per-weapon value baked into each tool's prefab, not a constant -
-    /// confirmed via decompiling AttackEntity, default 0.5f but overridden
-    /// per item). Checking melee.HasAttackCooldown() before landing another
-    /// hit reuses that exact same real per-weapon pacing instead of
-    /// guessing at a single fixed interval for every tool.
+    /// Repeatedly swings the survivor's equipped melee tool at a container via real BaseMelee.ServerUse() calls, so the swing animation, sound, and hit-test all behave like a real player's attack. Paces hits using the tool's own attack cooldown so a better tool swings faster.
     /// </summary>
     private void StartAttackingContainer(Survivor survivor, StorageContainer container, Action onSuccess, Action onFailed)
     {
@@ -5168,8 +3376,7 @@ public partial class LivingRust
 
         attackTimer = timer.Every(AttackHitInterval, () =>
         {
-            // Same combat-preemption guard as ContinueLootTask's own entry -
-            // see that guard's doc comment for the exact race it closes.
+            // Same combat-preemption guard as ContinueLootTask's own entry.
             if (_activeCombat.ContainsKey(characterId))
             {
                 attackTimer.Destroy();
@@ -5189,18 +3396,7 @@ public partial class LivingRust
 
             if (!HasLineOfSight(npc, container))
             {
-                // GetApproachPoint only accounts for the container's own
-                // bounds, not what's physically between it and wherever
-                // the survivor started from - a container tucked just
-                // behind a thin wall could compute an approach point that
-                // "arrives" without ever actually walking around it (a
-                // live test caught this: a bot destroyed two barrels
-                // through a solid wall). Rather than let a swing land
-                // through a wall, give up on this specific container
-                // instead - it's already in Visited, so the task moves on
-                // to the next one. Properly routing around the obstacle
-                // to a reachable approach angle is real future work, not
-                // something this fixes.
+                // Gives up on this container rather than letting a swing land through a wall; it's already in Visited so the task moves on.
                 VerbosePuts($"loot-task: '{survivor.Character.Alias}' can't reach '{container.ShortPrefabName}' - no clear line of sight (wall in the way?). Skipping it.");
 
                 attackTimer.Destroy();
@@ -5211,11 +3407,7 @@ public partial class LivingRust
 
             if (!IsWithinLootRange(npc, container))
             {
-                // Line of sight alone isn't proximity - a live test caught
-                // a survivor looting a container 10-15m away the whole
-                // time, stuck on the far side of a sandbag wall it could
-                // clearly see over. See LootInteractionRange's own doc
-                // comment.
+                // Line of sight alone isn't proximity; see LootInteractionRange's own doc comment.
                 VerbosePuts($"loot-task: '{survivor.Character.Alias}' can't reach '{container.ShortPrefabName}' - too far away ({Vector3.Distance(npc.transform.position, container.transform.position):F1}m, obstacle in the way?). Skipping it.");
 
                 attackTimer.Destroy();
@@ -5232,15 +3424,7 @@ public partial class LivingRust
 
                 OnLootObtained(survivor, npc, movedShortnames);
 
-                // OnLootObtained's own reorganization pass now equips the
-                // best WEAPON for display (EquipBestWeaponForDisplay), not
-                // the melee tool - a live report caught this undoing the
-                // EquipBestMeleeTool call at the top of this method mid-
-                // swing, every tick loot actually transferred, leaving the
-                // bot visibly holding its gun while "destroying" the
-                // barrel with a GetToolDamage(null) fallback instead of
-                // its real tool. Re-asserting the melee tool here restores
-                // it before the swing logic below runs.
+                // OnLootObtained's reorganization pass equips the best weapon for display, not the melee tool; re-asserting the melee tool here restores it before the swing logic below runs.
                 EquipBestMeleeTool(survivor);
             }
 
@@ -5248,61 +3432,23 @@ public partial class LivingRust
 
             if (melee != null && melee.HasAttackCooldown())
             {
-                // Still mid-swing/reset for this exact tool's real
-                // repeatDelay - a real player can't click faster than
-                // their held tool's own animation allows. See this
-                // method's doc comment.
+                // Still mid-swing/reset for this tool's real repeatDelay, same as a real player can't click faster than their held tool allows.
                 return;
             }
 
             hits++;
 
-            // ServerUse_Strike (called from inside ServerUse after a real
-            // swing delay) raycasts from the wielder's eyes forward - the
-            // survivor needs to actually be looking at the container each
-            // tick for that hit-test to land on it, not just have arrived
-            // near it once.
+            // ServerUse_Strike's hit-test raycasts from the wielder's eyes forward, so the survivor needs to be looking at the container each tick.
             AimAtContainer(npc, container);
 
-            // ServerUse() purely for its visual/audio side effects (the
-            // swing animation via SignalBroadcast, plus the configured
-            // swing sound/VFX) - not relied on for actual damage anymore.
-            // ServerUse() also schedules its own real hit-test
-            // (ServerUse_Strike) to fire later via Invoke(ServerUse_Strike,
-            // aiStrikeDelay) - if left alone, that delayed hit-test
-            // sometimes ALSO lands now that aim is fixed, applying its own
-            // damage (scaled by the weapon's own npcDamageScale field,
-            // applied unconditionally inside BaseMelee regardless of the
-            // attacker's IsNpc status) on top of the controlled Hurt()
-            // call below. A live trace showed exactly this: barrels
-            // sometimes dying in one hit, inconsistently - whenever that
-            // delayed native hit happened to also connect that tick.
-            // Cancelling the scheduled invoke immediately after
-            // triggering it keeps the animation/sound (both already fired
-            // synchronously inside ServerUse() itself) while making sure
-            // its delayed damage application never actually runs, so only
-            // this method's own Hurt() call ever affects health. melee can
-            // still be null here (bare-handed edge case - see
-            // AttackDamagePerHit's doc comment) - ServerUse() only applies
-            // when there's an actual tool to swing.
+            // ServerUse() is called purely for its swing animation/sound; actual damage is applied manually below. Its own delayed hit-test (ServerUse_Strike) is cancelled immediately after to avoid double-applying damage.
             if (melee != null)
             {
                 melee.ServerUse();
                 melee.CancelInvoke(melee.ServerUse_Strike);
             }
 
-            // Cancelling ServerUse_Strike above also cancels the ONLY place
-            // Rust's own hit impact FX/sound (Effect.server.ImpactEffect,
-            // called from inside ServerUse_Strike - confirmed via
-            // decompiling BaseMelee) ever gets triggered - ServerUse()
-            // itself only plays the swing/swoosh, never the impact. Without
-            // this, every single swing sounded and looked identical to a
-            // clean miss, confirmed by ear in a live test even while damage
-            // (via Hurt() below) was landing correctly. Firing the same
-            // effect manually, using the same real BaseMelee.GetStrikeEffectPath
-            // material lookup ServerUse_Strike itself uses, restores the
-            // hit sound/VFX without reintroducing the double-damage bug the
-            // cancel above exists to prevent.
+            // Cancelling ServerUse_Strike also cancels Rust's hit impact FX/sound, so it's replayed manually here to restore it without reintroducing double damage.
             PlayMeleeImpactEffect(npc, melee, container);
 
             container.Hurt(GetToolDamage(melee), DamageType.Blunt, npc, useProtection: false);
@@ -5328,21 +3474,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Hits a real, melee-destructible wood door barricade (the actual
-    /// game Barricade class, confirmed via decompile 2026-08-16) blocking
-    /// a bot's path, exactly like a real player has to. Root cause behind
-    /// what looked all night like a navmesh/pathing bug at a specific
-    /// Abandoned Supermarket doorway: TryGetNextStep was correctly
-    /// reporting Blocked the whole time - there really was solid,
-    /// destructible geometry there, just invisible to every navmesh/
-    /// ground-probe fix applied earlier, since none of those could ever
-    /// be "wrong" about a real obstacle. Modeled directly on
-    /// StartAttackingContainer's real swing loop (manual Hurt() call,
-    /// ServerUse_Strike cancelled to avoid double damage, impact FX played
-    /// manually) minus the inventory-transfer step, since a barricade has
-    /// nothing to loot - just needs breaking so the collider disappears
-    /// and normal movement can resume on its own next tick, with zero
-    /// need for the bot to separately "remember" it destroyed anything.
+    /// Hits a melee-destructible wood door barricade blocking a bot's path, exactly like a real player has to. Modeled on StartAttackingContainer's swing loop, minus the inventory-transfer step since a barricade has nothing to loot.
     /// </summary>
     private void StartAttackingBarricade(Survivor survivor, Barricade barricade, Action onSuccess, Action onFailed)
     {
@@ -5435,50 +3567,17 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Angles (degrees, off the straight line from npc to container) tried
-    /// in turn once StartAttackingContainer gives up from the current spot
-    /// (no line of sight, or out of real melee range). This is a different
-    /// failure mode than EscalateStuckRecovery's wiggle/navmesh-nudge/
-    /// teleport chain: the survivor isn't physically stuck (it walked to
-    /// the approach point fine) - the approach ANGLE is bad, e.g. a barrel
-    /// sitting just past a low wall or sandbag lip that GetApproachPoint's
-    /// own simple bounds-standoff math didn't account for.
-    ///
-    /// Deliberately 45°/90° off the direct line, not a straight retreat -
-    /// a live report on the separate (but analogous) generic wiggle tier
-    /// caught it trying a pure 180° "back" step first, which just retraces
-    /// the exact path the survivor arrived by and walks straight back into
-    /// the identical block once retried. An angled offset changes the real
-    /// approach LINE to the container, which a pure backward-then-forward
-    /// retreat never does. 45° tried before 90° - Lucas's own framing
-    /// ("maybe even a 45 degree angle, not a 90 degree") - since a wide
-    /// swing still keeps some of the original, presumably-mostly-correct
-    /// approach direction rather than discarding it outright.
+    /// Angles (degrees off the straight line to the container) tried in turn once StartAttackingContainer gives up on the current approach. This is a bad-angle problem, not the physically-stuck case EscalateStuckRecovery handles.
     /// </summary>
     private static readonly float[] ContainerRepositionAngles = { 45f, -45f, 90f, -90f };
 
     /// <summary>
-    /// How far along the rotated direction to walk for each reposition
-    /// attempt - widened from an earlier 3-5f after a live report that the
-    /// smaller distances weren't reliably clearing whatever was blocking
-    /// the original line (Lucas's own estimate: "left or right 5-6
-    /// metres").
+    /// How far along the rotated direction to walk for each reposition attempt.
     /// </summary>
     private const float ContainerRepositionDistance = 5.5f;
 
     /// <summary>
-    /// Wraps StartAttackingContainer with the angled-reposition retries
-    /// described by ContainerRepositionAngles before finally giving up on
-    /// this container. Deliberately does NOT fall through to
-    /// EscalateStuckRecovery/emergency teleport - Lucas's own framing was
-    /// explicit that this case is "not physically stuck" (the walk here
-    /// already succeeded), so a random relocation isn't the right tool;
-    /// once every angle tried still can't see/reach the container, that's
-    /// good evidence it's genuinely unreachable from ground level (e.g.
-    /// raised on something the bot can't climb) rather than a solvable
-    /// positioning problem, and the caller's existing "skip it, move on"
-    /// handling (RegisterLootFailure) already does the right thing with
-    /// that conclusion.
+    /// Wraps StartAttackingContainer with the angled-reposition retries described by ContainerRepositionAngles before giving up on this container. Does not fall through to EscalateStuckRecovery, since the survivor isn't physically stuck.
     /// </summary>
     private void StartAttackingContainerWithReposition(Survivor survivor, StorageContainer container, Action onSuccess, Action onFailed, int repositionAttempt = 0)
     {
@@ -5486,19 +3585,7 @@ public partial class LivingRust
         {
             BasePlayer npc = survivor.Player;
 
-            // Checked FIRST, before touching container in any way below -
-            // a live crash (NullReferenceException in container.transform,
-            // reported via Carbon's "Timer ... has failed" log) confirmed
-            // this container reference can go stale mid-callback: another
-            // survivor (or this same one, on an earlier tick) can destroy
-            // the exact container this reposition attempt is still holding
-            // a reference to, between StartAttackingContainer's own
-            // internal onFailed call and this closure actually running.
-            // An uncaught exception here silently breaks the whole loot-task
-            // callback chain - ContinueLootTask never gets called again -
-            // which is consistent with a separate live report of a
-            // survivor freezing mid-task while other survivors kept
-            // working normally nearby.
+            // Checked first, before touching container: it can go stale mid-callback if destroyed between StartAttackingContainer's onFailed call and this closure running.
             if (npc == null || npc.IsDestroyed || container == null || container.IsDestroyed)
             {
                 onFailed?.Invoke();
@@ -5519,9 +3606,7 @@ public partial class LivingRust
             Vector3 rotatedDirection = Quaternion.Euler(0f, ContainerRepositionAngles[repositionAttempt], 0f) * towardContainer;
             Vector3 candidate = npc.transform.position + rotatedDirection * ContainerRepositionDistance;
 
-            // See StuckReassessPause's own doc comment - a real "let me try
-            // a different angle" beat rather than an instant snap into the
-            // next attempt.
+            // See StuckReassessPause's own doc comment for the brief pause before the next attempt.
             FaceDirection(npc, rotatedDirection);
 
             VerbosePuts($"'{survivor.Character.Alias}' couldn't reach/see '{container.ShortPrefabName}' from here - repositioning ({repositionAttempt + 1}/{ContainerRepositionAngles.Length}, {ContainerRepositionAngles[repositionAttempt]:F0}°) to try a different angle.");
@@ -5546,18 +3631,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real per-hit damage from whatever tool is actually equipped -
-    /// BaseMelee.damageTypes is a public field holding the same raw
-    /// damage sum ServerUse_Strike itself reads before scaling it by the
-    /// weapon's own opaque npcDamageScale (confirmed via decompiling
-    /// Assembly-CSharp.dll). Reading it directly and applying it
-    /// ourselves via the controlled Hurt() call sidesteps that scaling
-    /// entirely, while still meaning a better tool (a real sword vs a
-    /// rock) actually deals more damage here, not just looks different -
-    /// matches the original ask that tool choice should matter for
-    /// speed/efficiency, not only which animation plays. Falls back to
-    /// AttackDamagePerHit only if there's no melee tool at all or it has
-    /// no configured damage.
+    /// Per-hit damage from whatever tool is equipped, read directly from BaseMelee.damageTypes rather than the weapon's scaled damage, so a better tool deals more damage here too. Falls back to AttackDamagePerHit if there's no melee tool.
     /// </summary>
     private float GetToolDamage(BaseMelee melee)
     {
@@ -5577,34 +3651,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Aims npc's eyes (both the visible body/movement-facing rotation
-    /// AND the internal eyes.bodyRotation ServerUse_Strike's hit-test
-    /// raycast actually reads) at container's real collision center -
-    /// not container.transform.position, which for many prefabs is a
-    /// base/pivot point rather than the visual/collision middle.
-    ///
-    /// Two distinct bugs fixed here, found via a live trace showing 20
-    /// swings in a row with zero hits landing:
-    ///
-    /// 1. The previous aim flattened Y to zero (matching FaceDirection's
-    ///    own convention, correct for movement/body-facing where a
-    ///    walking bot shouldn't visibly tilt up/down) - but
-    ///    ServerUse_Strike's raycast fires from eye height, dead level,
-    ///    which sails clean over a low target like a barrel instead of
-    ///    hitting its actual hitbox. This uses the real 3D direction,
-    ///    pitch included, for the aim/eyes rotation specifically (body
-    ///    rotation stays horizontal-only, so the model doesn't visibly
-    ///    tilt).
-    /// 2. OverrideViewAngles alone only ever sets the viewAngles field -
-    ///    eyes.bodyRotation (what BasePlayer.eyes.BodyForward() actually
-    ///    reads, confirmed via decompiling PlayerEyes) only gets
-    ///    refreshed from viewAngles by Rust's own native per-tick
-    ///    "active connected player" batch processing loop, which
-    ///    disconnected bots never run through - so eyes.bodyRotation
-    ///    just kept pointing wherever it last was, completely
-    ///    disconnected from whatever OverrideViewAngles set. Calling
-    ///    eyes.NetworkUpdate directly (the same call that native loop
-    ///    itself makes) is what actually propagates it.
+    /// Aims npc's eyes and body-facing rotation at container's real collision center, not its transform position. Uses full 3D pitch for the eye aim so the raycast hits low targets, while keeping body rotation horizontal-only; also forces an eyes.NetworkUpdate since disconnected bots never get it refreshed automatically.
     /// </summary>
     private void AimAtContainer(BasePlayer npc, BaseEntity container)
     {
@@ -5652,6 +3699,7 @@ public partial class LivingRust
         RunLootHookSafely(survivor, nameof(DropOwnedSeeds), () => DropOwnedSeeds(survivor, npc));
         RunLootHookSafely(survivor, nameof(DropBowKitIfArmed), () => DropBowKitIfArmed(survivor, npc));
         RunLootHookSafely(survivor, nameof(EquipBestBackpack), () => EquipBestBackpack(survivor));
+        RunLootHookSafely(survivor, nameof(TryUnlockAmmoTypesFromWeapons), () => TryUnlockAmmoTypesFromWeapons(survivor, npc));
 
         if (ContainsReactiveLootCategory(movedShortnames))
         {
@@ -5898,25 +3946,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Equips whichever known melee tool the survivor is currently
-    /// carrying (main or belt) ranks best in MeleeToolPriority - a real
-    /// player would grab whatever's quickest for the job rather than
-    /// sticking with the starting rock once something better turns up.
-    /// Only belt items can be the active held item (confirmed via
-    /// decompiling BasePlayer.UpdateActiveItem - it looks the target item
-    /// up specifically in inventory.containerBelt), so the chosen item
-    /// gets moved there first if it's sitting in main. Every bot starts
-    /// with a rock (GiveStartingKit), so there's always at least a
-    /// fallback candidate somewhere in inventory - this just prefers
-    /// whatever's actually best once something better gets looted.
-    /// </summary>
-    /// <summary>
-    /// Whether the survivor is carrying any known melee tool anywhere
-    /// (main or belt) - not the same question as "what's currently
-    /// equipped" (a survivor can own a rock without it being the active
-    /// item yet, especially right at task start before EquipBestMeleeTool
-    /// has ever run this task). Used to decide whether barrels/roadsigns
-    /// are worth considering as a target at all.
+    /// Whether the survivor is carrying any known melee tool anywhere (main or belt), regardless of what's currently equipped. Used to decide whether barrels/roadsigns are worth considering as a target at all.
     /// </summary>
     private bool HasAnyMeleeTool(BasePlayer npc)
     {
@@ -5932,10 +3962,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Same as HasAnyMeleeTool, but excludes the starting "rock" itself -
-    /// see IsRoadsign's own doc comment for why roadsigns specifically
-    /// need this stricter gate instead of HasAnyMeleeTool's "literally
-    /// anything, rock included" bar.
+    /// Same as HasAnyMeleeTool but excludes the starting rock. See IsRoadsign's own doc comment for why roadsigns need this stricter gate.
     /// </summary>
     private bool HasNonRockMeleeTool(BasePlayer npc)
     {
@@ -5951,13 +3978,24 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Equips once and stops - the very first real tool (anything other
-    /// than the starting rock) a survivor picks up gets equipped and kept
-    /// for the rest of that life, even if something ranked higher turns up
-    /// later. User-requested simplification: continuously re-evaluating
-    /// and swapping mid-loot-run wasn't wanted for now. Revisit once real
-    /// combat behavior (the FSM work) wants genuine tool upgrades
-    /// mid-fight.
+    /// Stricter than HasNonRockMeleeTool: also excludes the plain bone knife, since neither it nor the rock is a meaningful combat weapon. knife.bone.obsidian still counts.
+    /// </summary>
+    private bool HasCombatReadyMeleeWeapon(BasePlayer npc)
+    {
+        foreach (Item item in npc.inventory.containerMain.itemList.Concat(npc.inventory.containerBelt.itemList))
+        {
+            if (item.info.shortname != "rock" && item.info.shortname != "knife.bone"
+                && Array.IndexOf(MeleeToolPriority, item.info.shortname) >= 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Equips once and stops: the first real tool a survivor picks up gets equipped and kept for the rest of that life, even if something ranked higher turns up later.
     /// </summary>
     private void EquipBestMeleeTool(Survivor survivor)
     {
@@ -5976,20 +4014,7 @@ public partial class LivingRust
             return;
         }
 
-        // Prefer whatever's ALREADY on the belt (almost always the real
-        // gather tool sitting in BeltGatherToolSlot - a pickaxe or
-        // hatchet) before ever reaching into main inventory for a
-        // technically-higher-ranked melee weapon. A live report + its log
-        // evidence showed this reaching for a looted salvaged.cleaver
-        // (MeleeToolPriority rank 2) over an already-equipped-ready
-        // pickaxe/hatchet sitting right there on the belt, repeatedly
-        // failing to find room for the swap ("no free belt slot") since
-        // OrganizeBelt's scheme now claims all 6 slots - real wasted
-        // effort for a marginal combat difference, when a pickaxe/hatchet
-        // is "perfectly capable of hitting barrels" (Lucas's own words).
-        // Only falls back to the full main+belt search (which can still
-        // hit that same capacity edge case) if nothing on the belt
-        // qualifies as a melee tool at all.
+        // Prefers whatever's already on the belt (usually the gather tool) before reaching into main inventory for a higher-ranked but harder-to-swap-in melee weapon.
         Item best = FindBestByPriority(npc.inventory.containerBelt.itemList.ToList(), MeleeToolPriority, exclude: null);
 
         if (best == null)
@@ -6017,20 +4042,7 @@ public partial class LivingRust
 
         if (!npc.inventory.containerBelt.itemList.Contains(best))
         {
-            // OrganizeBelt's newer scheme (weapon/offsider/medical/
-            // bandage/tool/overflow) now claims all 6 belt slots, so an
-            // auto-position (-1) move has no genuinely free slot to land
-            // in - a live report caught this failing every time and
-            // silently giving up on the tool swap entirely (leaving melee
-            // null for the whole attack, which also bypassed the real
-            // attack-cooldown gate below since that's only checked when
-            // melee != null - explains both "tool never swaps" and
-            // "hitting way too fast" from the same root cause). Targeting
-            // whatever's currently equipped's own belt position directly
-            // (with allowSwap - real MoveToContainer semantics) guarantees
-            // a slot regardless of how full the belt is: it swaps the
-            // active item out to wherever the tool used to be, rather
-            // than needing an actually-empty slot to exist first.
+            // Targets the currently-equipped item's own belt position directly (allowSwap), since OrganizeBelt claims all 6 belt slots and an auto-position move would find no free slot.
             int targetPosition = currentlyEquipped != null && currentlyEquipped.parent == npc.inventory.containerBelt
                 ? currentlyEquipped.position
                 : -1;
@@ -6048,31 +4060,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Equips the survivor's best real WEAPON (WeaponPriority - guns/bows/
-    /// dedicated melee weapons) as the active/displayed item for ordinary
-    /// exploring and looting - Lucas's own framing: a bot shouldn't be
-    /// visibly walking around with a pickaxe out while an M249 sits
-    /// unused on its belt "for obvious reasons." EquipBestMeleeTool is
-    /// still what actually gets equipped for the brief real window of
-    /// swinging at a barrel (StartAttackingContainer calls it directly,
-    /// right before the swing loop starts) - this is what restores the
-    /// display weapon again once that's done, called from
-    /// PerformInventoryCheck and at the top of every ContinueLootTask
-    /// cycle so it's never left holding a tool a moment longer than
-    /// actually necessary. Falls back to the best gathering tool if the
-    /// survivor genuinely owns no real weapon at all, not even a bow -
-    /// mirrors OrganizeBelt's own primary-slot fallback rule exactly, so
-    /// what's equipped always matches what's actually sitting in belt
-    /// slot 1.
-    ///
-    /// Never swaps AWAY from an already-equipped real weapon anymore
-    /// (2026-08-16 - see OrganizeBelt's own doc comment for the full
-    /// reasoning/Lucas's exact request and the invisible-weapon glitch
-    /// this is also the fix for). If nothing real is currently equipped,
-    /// this restores whatever's ALREADY sitting in the committed belt
-    /// slot 1 (OrganizeBelt keeps that fixed too) rather than recomputing
-    /// "best" from every owned item - only a genuinely empty slot 1 (never
-    /// armed at all) falls through to picking a brand new one.
+    /// Equips the survivor's best weapon as the displayed item for ordinary exploring/looting, so it isn't visibly holding a tool while a gun sits unused. Falls back to the best gathering tool if no real weapon is owned. Never swaps away from an already-equipped real weapon; restores whatever's already in the committed weapon slot otherwise.
     /// </summary>
     private void EquipBestWeaponForDisplay(Survivor survivor)
     {
@@ -6089,17 +4077,13 @@ public partial class LivingRust
             .Concat(npc.inventory.containerBelt.itemList)
             .ToList();
 
-        // Best weapon the survivor can actually USE right now (2026-09-21,
-        // Lucas's own live report: a bot kept using its bow while carrying a
-        // Thompson). A firearm with no ammo doesn't count.
+        // Best weapon the survivor can actually use right now; a firearm with no ammo doesn't count.
         Item bestUsableWeapon = FindBestByPriority(allItems.Where(item => IsWeaponUsableNow(npc, item)).ToList(), WeaponPriority, exclude: null);
         int bestUsableRank = bestUsableWeapon != null ? Array.IndexOf(WeaponPriority, bestUsableWeapon.info.shortname) : int.MaxValue;
 
         if (currentlyEquipped != null && Array.IndexOf(WeaponPriority, currentlyEquipped.info.shortname) >= 0)
         {
-            // Already holding a listed weapon: only carry on if nothing usable
-            // owned is actually better. (Used to return unconditionally, so a
-            // bot holding its bow never re-evaluated after picking up a gun.)
+            // Already holding a listed weapon: only carries on if a usable owned weapon is actually better.
             int currentRank = Array.IndexOf(WeaponPriority, currentlyEquipped.info.shortname);
 
             if (bestUsableWeapon == null || bestUsableRank >= currentRank)
@@ -6131,30 +4115,7 @@ public partial class LivingRust
             return;
         }
 
-        // Real root cause, found 2026-08-16 via weapon-refresh-diag: this
-        // used to check `!containerBelt.itemList.Contains(best)` - "is it
-        // ANYWHERE in the belt" - not its actual POSITION. A kit-given
-        // weapon that lands in some other belt slot (confirmed live: an
-        // AK sitting in slot 2 instead of slot 0) already satisfies
-        // Contains(), so the move into BeltWeaponSlot silently never ran -
-        // the weapon still equipped and displayed FINE at the time (
-        // UpdateActiveItem doesn't care what slot the item is in), but
-        // OrganizeBelt's own "is slot 0 already committed" check
-        // specifically looks for something AT position BeltWeaponSlot, so
-        // it kept seeing slot 0 as empty. The first later loot pickup that
-        // triggered OrganizeBelt then moved the ALREADY-ACTIVE weapon for
-        // real (a genuine position change, correctly triggering the
-        // refresh gate added earlier this session) - and doing that
-        // MoveToContainer+UpdateActiveItem+refresh sequence on a weapon
-        // that's already equipped and being carried mid-motion is what
-        // actually produced the visible invisible-weapon glitch. Checking
-        // the real position here, not just belt membership, stops the
-        // weapon from ever landing anywhere but slot 0 in the first place,
-        // so OrganizeBelt never finds a surprise to correct later.
-        // Checks parent AND position - position alone is only meaningful
-        // within an item's own current container (a main-inventory item at
-        // position 0 isn't "already in belt slot 1" just because the
-        // numbers match).
+        // Checks parent AND position, not just belt membership, so a weapon sitting in the wrong belt slot still gets moved into BeltWeaponSlot rather than OrganizeBelt finding a surprise later.
         bool alreadyInWeaponSlot = best.parent == npc.inventory.containerBelt && best.position == BeltWeaponSlot;
 
         if (!alreadyInWeaponSlot && !best.MoveToContainer(npc.inventory.containerBelt, BeltWeaponSlot))
@@ -6170,23 +4131,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Forces a fresh network snapshot of whatever's currently held, right
-    /// after UpdateActiveItem - 2026-08-16, real live bug (screenshot
-    /// evidence: a bot visibly in an aiming pose with no weapon model
-    /// attached, right after a weapon swap). Same root cause this whole
-    /// project's ModelState fixes already document repeatedly (see
-    /// StartSurvivorTrace's own SendModelState comment, or EquipBestWeaponForDisplay's
-    /// earlier OrganizeBelt "invisible hand" note) - these are connectionless
-    /// BasePlayers that never send a real PlayerTick RPC, so nothing else
-    /// ever diffs/broadcasts a state change the way a genuine connected
-    /// client's own tick processing normally would. UpdateActiveItem
-    /// correctly updates SERVER state (spawns/attaches the real held
-    /// entity), but apparently doesn't reliably push that entity's own
-    /// fresh network snapshot out to other observers on its own for a bot
-    /// that never ticks - this closes that same gap for the held entity
-    /// specifically, the same way force:true SendModelState already does
-    /// for sprinting/ducked/onLadder/etc. No-ops harmlessly if nothing's
-    /// currently held.
+    /// Forces a fresh network snapshot of whatever's currently held, right after UpdateActiveItem. Connectionless bots never send a real tick RPC, so nothing else broadcasts the state change on its own. No-ops if nothing is held.
     /// </summary>
     private void ForceRefreshHeldEntity(BasePlayer npc)
     {
@@ -6194,13 +4139,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Drops the starting rock once the survivor has a genuinely better
-    /// melee/gather tool (anything else in MeleeToolPriority) - Lucas's
-    /// own request, same "doesn't need it, drop it for real" framing as
-    /// DropUnneededLightSource's torch handling. Deliberately checks the
-    /// survivor's whole inventory for a better option, not just whatever's
-    /// currently equipped - a better tool sitting unequipped in the main
-    /// inventory still makes the rock redundant baggage.
+    /// Drops the starting rock once the survivor has a genuinely better melee/gather tool anywhere in inventory, not just currently equipped.
     /// </summary>
     private void DropRockIfUpgraded(Survivor survivor, BasePlayer npc)
     {
@@ -6220,17 +4159,7 @@ public partial class LivingRust
             return;
         }
 
-        // Real "don't strand yourself without a wood/stone fallback" gate
-        // (2026-09-01, Lucas's own explicit spec, simplified from an
-        // earlier nearby-resource-bootstrap version to a flat rule: "have
-        // bots keep their rock UNTIL they get a hatchet and a pickaxe (of
-        // any kind). then drop the rock, otherwise it will be stuck trying
-        // to gather resources"). The rock is the ONLY tool that can gather
-        // both wood AND stone at all - both HatchetFamily and PickaxeFamily
-        // entries sit in MeleeToolPriority above, so hasBetterTool alone
-        // used to go true (and drop the rock) the instant a survivor picked
-        // up just ONE of the two real gather tools, stranding a pickaxe-
-        // only survivor with no way left to chop wood at all.
+        // Keeps the rock until the survivor owns both a hatchet and a pickaxe, since the rock is the only tool that can gather both wood and stone.
         if (!HasAnyToolOfFamily(npc, HatchetFamily) || !HasAnyToolOfFamily(npc, PickaxeFamily))
         {
             return;
@@ -6245,19 +4174,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Damage types folded into a single overall "how good is this armor"
-    /// score - real per-item protection is per-DamageType
-    /// (ProtectionProperties.amounts, 28 entries, confirmed via
-    /// decompiling ProtectionProperties), not one scalar. Bullet/Slash/
-    /// Blunt cover the combat cases that actually matter for survivability
-    /// against players/animals; Cold is included since exposure is a
-    /// real, already-partially-scaffolded need (see
-    /// [[project-livingrust-roadmap]]'s Needs entry) even though nothing
-    /// acts on temperature yet. Deliberately NOT every DamageType
-    /// (Radiation, Explosion, etc.) - those are rare enough in this bot's
-    /// current combat scope (melee-only, container destruction) that
-    /// including them would bias the score toward armor pieces that are
-    /// actually a poor general pick right now.
+    /// Damage types folded into a single overall armor score. Bullet/Slash/Blunt cover the combat cases that matter for survivability; Cold is included for future exposure needs. Deliberately excludes rarer types like Radiation/Explosion.
     /// </summary>
     private static readonly DamageType[] ArmorEvaluationDamageTypes =
     {
@@ -6383,17 +4300,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Basic (burlap/hoodie/pants/balaclava/etc - the GetArmorTier
-    /// fallback) and Wood - genuinely cheap, low-value clothing/armor
-    /// Lucas explicitly wants deduplicated on sight, unlike Hazmat/
-    /// Roadsign/MetalPlate/TopTier spares (kept regardless of duplicates
-    /// - "more expensive [to craft], in game, literally," per Lucas's own
-    /// framing). Real live example that prompted this: a bot equipped a
-    /// mask.balaclava, then picked up a second one and just carried it as
-    /// dead weight - ShouldSkipInferiorArmor's own equal-tier-is-fine
-    /// rule (see its own doc comment) correctly keeps a genuine upgrade
-    /// reserve for expensive gear, but was never meant to defend a spare
-    /// balaclava.
+    /// Basic and Wood tier clothing/armor is cheap and low-value enough to be deduplicated on sight, unlike higher-tier spares which are worth keeping regardless of duplicates.
     /// </summary>
     private static bool IsLowTierArmor(string shortname)
     {
@@ -6401,20 +4308,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real per-item protection score, built from two layers: ArmorTier
-    /// dominates the comparison (a real tier gap always wins, per Lucas's
-    /// explicit ranking), and the raw weighted-damage-type score (Bullet
-    /// weighted heavily - see BulletProtectionWeight's own doc comment)
-    /// only ever breaks a tie WITHIN the same tier (e.g. two different
-    /// roadsign pieces, or ballistic vs heavy plate). The real raw score
-    /// never exceeds roughly 10 (four damage types, Bullet weighted up to
-    /// ~4x a 0-1 fraction), so multiplying tier by 100 keeps tiers as a
-    /// hard ceiling no same-tier stat difference could ever cross.
-    /// ItemModWearable.GetProtection already folds in condition (a broken
-    /// item drops to 25% protection, confirmed via decompiling
-    /// ItemModWearable.ConditionProtectionScale), so a damaged piece
-    /// correctly scores lower within its tier without any extra logic
-    /// here.
+    /// Per-item protection score built from two layers: ArmorTier dominates the comparison, and the weighted-damage-type score only breaks ties within the same tier. Item condition is already folded in by GetProtection.
     /// </summary>
     private float GetArmorProtectionScore(Item item)
     {
@@ -6437,28 +4331,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Evaluates every wearable currently sitting unworn in the survivor's
-    /// main inventory against whatever it would actually displace, and
-    /// equips it if it's a real upgrade - the survivor's own version of
-    /// "I'm wearing burlap but this roadsign chestplate in my bag is
-    /// clearly better, so I'll wear that instead" (Lucas's own framing).
-    ///
-    /// Real Rust clothing doesn't use a fixed enum slot (Head/Chest/Legs) -
-    /// what a piece can be worn WITH is governed by Wearable.occupationOver/
-    /// occupationUnder bitflags, exposed via ItemModWearable.CanExistWith
-    /// (confirmed via decompiling both). So "what would this replace" is
-    /// computed for real - every currently worn item this candidate
-    /// conflicts with - rather than assumed from a hardcoded slot name,
-    /// which would break the moment a genuinely new armor type (a helmet
-    /// that also covers HeadBack, say) didn't match this project's own
-    /// guess at Rust's slot layout.
-    ///
-    /// Equipping itself is just Item.MoveToContainer(containerWear) - the
-    /// same real call a client-driven wear action ultimately makes. Its
-    /// canAcceptItem hook (PlayerInventory.CanWearItem, canAdjustClothing:
-    /// true by default) already handles displacing whatever conflicts,
-    /// exactly like a real player dragging a new chestplate onto an
-    /// occupied slot - no manual unequip step needed here.
+    /// Evaluates every wearable sitting unworn in inventory against whatever it would actually displace, and equips it if it's a real upgrade. What a piece conflicts with is computed from CanExistWith rather than a hardcoded slot layout, since Rust armor doesn't use fixed slots.
     /// </summary>
     private void EvaluateAndUpgradeArmor(Survivor survivor)
     {
@@ -6471,13 +4344,7 @@ public partial class LivingRust
 
         EquipBestBackpack(survivor);
 
-        // Also scans containerBelt, not just containerMain - a live report
-        // caught real armor sitting unworn in a belt slot that this method
-        // never even considered as a candidate. Rust's own loot-transfer
-        // placement (PlayerInventory.GiveItem) can land a wearable
-        // directly on the belt if main happened to be fuller at that
-        // exact moment - nothing about where an item first lands should
-        // decide whether it's ever evaluated for wearing.
+        // Also scans containerBelt, not just containerMain, since a wearable can land directly on the belt if main was fuller at that moment.
         List<Item> candidates = npc.inventory.containerMain.itemList
             .Concat(npc.inventory.containerBelt.itemList)
             .Where(item => item.info.GetComponent<ItemModWearable>() != null && !IsBackpackItem(item))
@@ -6494,17 +4361,7 @@ public partial class LivingRust
             float candidateScore = GetArmorProtectionScore(candidate);
             float conflictingScore = conflicting.Sum(GetArmorProtectionScore);
 
-            // The score gate only makes sense when there's actually
-            // something worth comparing against - a live report caught a
-            // real bug here: mask.balaclava scores 0 across
-            // ArmorEvaluationDamageTypes (Bullet/Slash/Blunt/Cold aren't
-            // where a face covering's real protection lives), so the old
-            // unconditional "candidateScore <= 0f, skip" check silently
-            // refused to wear it even into a completely empty slot with
-            // nothing to lose by wearing it. A real player wears whatever
-            // they've got for an empty slot; only an occupied, conflicting
-            // slot needs a genuine improvement to justify displacing
-            // something already worn.
+            // Only requires a score improvement when something is actually being displaced; an empty slot is always worth filling regardless of score.
             if (conflicting.Count > 0 && candidateScore < conflictingScore + ArmorUpgradeMinimumScoreGain)
             {
                 continue;
@@ -6518,13 +4375,7 @@ public partial class LivingRust
 
                 VerbosePuts($"loot-task: '{survivor.Character.Alias}' equipped '{candidate.info.shortname}' (protection {candidateScore:F2} vs {conflictingScore:F2}) - replacing: {replacedNote}.");
 
-                // Real dead weight now that it's beaten - Lucas's own
-                // framing: "do I have this already? yes? throw it out."
-                // MoveToContainer's own swap logic already displaced these
-                // out of containerWear (into main, most likely) rather
-                // than deleting them - drop them for real instead of
-                // letting outclassed armor pile up as clutter. Still
-                // valid Item references at this point, just relocated.
+                // Drops the outclassed pieces for real instead of letting them pile up as clutter in main inventory.
                 foreach (Item displaced in conflicting)
                 {
                     Vector3 dropPosition = npc.transform.position + Vector3.up * 1f + npc.eyes.BodyForward() * 0.5f;
@@ -6537,19 +4388,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Declutters armor/clothing that's genuinely worse than what's
-    /// currently WORN - Lucas's own corrected framing: "a player with
-    /// multiple sets of better armour is good, not bad. Having 3 sets of
-    /// wood armour when the bot has metal plate is not good." Only ever
-    /// compares an unworn piece against what's actually on the body, not
-    /// against other unworn spares - owning several equal-or-better
-    /// backup sets is deliberate, not clutter, so this only ever drops a
-    /// piece that's strictly outclassed by something already worn (real
-    /// CanExistWith slot-occupation check, not a guessed taxonomy).
-    /// Separate pass from EvaluateAndUpgradeArmor's own upgrade-and-drop
-    /// above, since that one only reacts to a NEW candidate arriving -
-    /// this catches anything already sitting in inventory for any other
-    /// reason (e.g. armor owned from before this rule existed).
+    /// Declutters armor/clothing that's strictly outclassed by what's currently worn. Only compares against worn items, not other unworn spares, since owning equal-or-better backup sets is deliberate, not clutter.
     /// </summary>
     private void DropRedundantArmor(Survivor survivor, BasePlayer npc)
     {
@@ -6565,12 +4404,7 @@ public partial class LivingRust
             ItemModWearable wearable = item.info.GetComponent<ItemModWearable>();
             float score = GetArmorProtectionScore(item);
 
-            // Low-tier exact duplicate of something already worn - see
-            // IsLowTierArmor's own doc comment. Catches pre-existing
-            // duplicates (e.g. from before this rule existed, or a save
-            // restored from an older version) that ShouldSkipInferiorArmor
-            // now prevents going forward but never retroactively cleans
-            // up on its own.
+            // Low-tier exact duplicate of something already worn; see IsLowTierArmor's own doc comment.
             bool lowTierDuplicateOfWorn = IsLowTierArmor(item.info.shortname)
                 && worn.Any(wornItem => wornItem.info.shortname == item.info.shortname);
 
@@ -6602,51 +4436,17 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Solid layers a real wall/floor/rock would sit on - deliberately
-    /// narrower than NavigationManager's own ObstacleLayerMask (no Tree/
-    /// Vehicle/Ragdoll), since those would incorrectly block a legitimate
-    /// attack on a container standing near a fallen log or a corpse.
-    ///
-    /// Combat (LivingRust.Combat.cs) deliberately does NOT reuse this mask
-    /// for its own LOS check - see CombatLineOfSightBlockingMask below for
-    /// why the two need opposite Tree behaviour.
+    /// Solid layers a wall/floor/rock would sit on, deliberately narrower than NavigationManager's ObstacleLayerMask so a fallen log or corpse doesn't incorrectly block a container attack. Combat uses a separate mask below.
     /// </summary>
     private static readonly int LineOfSightBlockingMask = LayerMask.GetMask("Terrain", "World", "Construction");
 
     /// <summary>
-    /// Combat's own LOS mask (2026-08-13 live report) - this one DOES
-    /// include Tree, the opposite of LineOfSightBlockingMask's own choice
-    /// right above, and for the same reason in reverse: a real bullet gets
-    /// stopped by a tree trunk (BaseProjectile.ServerUse's own TraceAll
-    /// call uses a much broader mask that includes it), so a combat LOS
-    /// check that DOESN'T also treat a tree as blocking gives a false
-    /// "clear shot" the moment a player ducks behind one - confirmed live:
-    /// a player could kite a bot around a tree at 20m+ and bait it into
-    /// continuously firing (and burning ammo) at a target it could never
-    /// actually hit, since the plain container-LOS mask was never designed
-    /// to block on flora at all.
-    ///
-    /// Default added the same day (Lucas's own follow-up request) for
-    /// stone/metal/sulfur ore nodes - confirmed live via /lr.debug.scan
-    /// against a real metal-ore node: OreResourceEntity sits on layer 0
-    /// (Default), not a dedicated resource layer, so it needed the same
-    /// treatment as Tree for the identical reason (a real bullet stops on
-    /// it; the plain container-LOS mask never blocked on it either). The
-    /// big surrounding rock formation meshes ore nodes usually sit in/near
-    /// are already covered - confirmed via the same scan, those sit on
-    /// layer 16 (World), already present above.
+    /// Combat's own LOS mask, which includes Tree and Default unlike LineOfSightBlockingMask, since a bullet is stopped by tree trunks and ore nodes and combat LOS needs to account for that.
     /// </summary>
     private static readonly int CombatLineOfSightBlockingMask = LayerMask.GetMask("Terrain", "World", "Construction", "Tree", "Default");
 
     /// <summary>
-    /// Combat-specific sibling of HasLineOfSight(BasePlayer, BaseEntity) -
-    /// same Linecast-then-confirm-what-was-hit shape, but against
-    /// CombatLineOfSightBlockingMask instead so a tree trunk correctly
-    /// counts as blocking. Kept as a separate method (not just a shared
-    /// mask parameter) since the two callers' correct behaviour around
-    /// Tree is a genuine, deliberate difference, not an oversight either
-    /// way - keeping them visually distinct code paths makes that harder
-    /// to accidentally collapse back together later.
+    /// Combat-specific sibling of HasLineOfSight(BasePlayer, BaseEntity), using CombatLineOfSightBlockingMask so a tree trunk correctly counts as blocking.
     /// </summary>
     private bool HasCombatLineOfSight(BasePlayer npc, BaseCombatEntity target)
     {
@@ -6664,10 +4464,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Whether npc is actually close enough to container to loot/attack it
-    /// - see LootInteractionRange's own doc comment for why this exists as
-    /// a hard, independent check rather than trusting "arrival" or line of
-    /// sight alone.
+    /// Whether npc is actually close enough to container to loot/attack it. See LootInteractionRange's own doc comment for why this is checked independently of arrival or line of sight.
     /// </summary>
     private bool IsWithinLootRange(BasePlayer npc, BaseEntity container)
     {
@@ -6706,16 +4503,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Moves every item from a container into the survivor's inventory,
-    /// preferring main (MoveToContainer, which also preserves the
-    /// original slot position where possible) but falling back to
-    /// GiveItem - Rust's own general "put it wherever there's room"
-    /// placement, which can land in the belt - when main won't take it,
-    /// matching RestoreInventory's same two-step pattern. Only stops once
-    /// BOTH main and belt are full (IsInventoryFull), not just main -
-    /// the loop used to bail the moment main filled up even though the
-    /// belt still had room, silently dropping loot on the ground that
-    /// GiveItem could have placed.
+    /// Moves every item from a container into the survivor's inventory, preferring main but falling back to GiveItem when main won't take it. Only stops once both main and belt are full.
     /// </summary>
     private int TransferAllItems(ItemContainer from, PlayerInventory to, BasePlayer npc)
     {
@@ -6723,29 +4511,19 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// movedShortnames exists specifically so callers can log what was
-    /// actually picked up, not just how many stacks - a live report of
-    /// "why isn't a looted tool getting used" was impossible to diagnose
-    /// with only a count, since MeleeToolPriority's shortnames were never
-    /// verified against a live item database and a silent mismatch there
-    /// would look identical to "nothing better was ever looted at all."
+    /// movedShortnames lets callers log what was actually picked up, not just how many stacks, for diagnosing whether a specific item was ever looted.
     /// </summary>
     private int TransferAllItems(ItemContainer from, PlayerInventory to, BasePlayer npc, out List<string> movedShortnames)
     {
         int moved = 0;
         movedShortnames = new List<string>();
 
-        // Copy first - MoveToContainer mutates from.itemList as it goes,
-        // so iterating it directly would skip items.
+        // Copies first, since MoveToContainer mutates from.itemList as it goes.
         var items = new List<Item>(from.itemList);
 
         foreach (Item item in items)
         {
-            // continue, not break - a full inventory should only skip
-            // THIS item (unless it's high-priority enough to evict dead
-            // weight for - see EnsureRoomFor), not abandon every
-            // remaining item in the container, some of which might still
-            // be exactly the kind of upgrade worth making room for.
+            // continue, not break: a full inventory should only skip this item, not abandon the rest of the container's contents.
             if (!EnsureRoomFor(npc, item))
             {
                 continue;
@@ -6762,34 +4540,19 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Tool/weapon "families" where owning just ONE is genuinely enough -
-    /// Lucas's own explicit framing: a second pickaxe doesn't gather any
-    /// faster, a second hatchet doesn't chop any faster, it's pure
-    /// inventory clutter. Bows/crossbows get the same treatment (his own
-    /// explicit call-out) - unlike a real firearm, a spare bow isn't a
-    /// meaningfully better-equipped survivor the way a spare AK is. Every
-    /// other real weapon (shotguns, pistols, assault rifles, SMGs, ...) is
-    /// deliberately NOT covered by this - his own reasoning: "a bot won't
-    /// win a fight with 5 pickaxes, but 2 m249's and an ak... is a lot
-    /// better," real Rust logic where extra firearms are genuine
-    /// equipment upgrades (backups, ammo-type variety), not clutter.
+    /// Tool/weapon families where owning just one is genuinely enough, since a second pickaxe/hatchet/bow doesn't gather or perform any better and is pure clutter. Firearms are deliberately not covered, since spares there are genuine equipment upgrades.
     /// </summary>
     private static readonly string[] PickaxeFamily = { "pickaxe", "stone.pickaxe", "concretepickaxe", "diverpickaxe", "lumberjack.pickaxe", "icepick.salvaged" };
     private static readonly string[] HatchetFamily = { "hatchet", "stonehatchet", "concretehatchet", "diverhatchet", "lumberjack.hatchet", "frontier_hatchet", "axe.salvaged" };
     private static readonly string[] BowFamily = { "bow.compound", "bow.hunting", "crossbow", "crossbowbowless", "minicrossbow" };
 
     /// <summary>
-    /// Added 2026-08-09 alongside the pickaxe/hatchet/bow families above -
-    /// Lucas's own explicit follow-up naming maces specifically. mace and
-    /// mace.baseballbat are functionally the same melee role (a real
-    /// second one is exactly as redundant as a second hatchet).
+    /// mace and mace.baseballbat are functionally the same melee role, so a second one is as redundant as a second hatchet.
     /// </summary>
     private static readonly string[] MaceFamily = { "mace", "mace.baseballbat" };
 
     /// <summary>
-    /// Added 2026-08-10, Lucas's explicit request: bots were looting
-    /// spare rocks off other survivors' corpses/bags even while already
-    /// owning one - real dead weight, since a rock is the single worst
+    /// Bots avoid looting spare rocks off corpses/bags while already owning one, since a rock is the single worst
     /// tool in the game (the only reason a survivor ever holds one at all
     /// is GiveStartingKit's default before anything better turns up) and
     /// a second one adds nothing.
@@ -6919,114 +4682,36 @@ public partial class LivingRust
     };
 
     /// <summary>
-    /// Every real seed shortname shares this exact prefix (confirmed via
-    /// a full scan of the bundled item database: seed.hemp, seed.corn,
-    /// seed.potato, seed.pumpkin, every berry colour, seed.wheat,
-    /// seed.sunflower, seed.rose, seed.orchid, ...) - matched by prefix
-    /// rather than an exhaustive list so a future new seed type is
-    /// covered automatically, same reasoning RequiresDestructionToLoot's
-    /// own doc comment gives for its own substring matching.
+    /// Every real seed shortname shares this exact prefix, matched by prefix rather than an exhaustive list so a future new seed type is covered automatically.
     /// </summary>
     private const string SeedShortnamePrefix = "seed.";
 
     /// <summary>
-    /// Every real scientist-exclusive suit shortname confirmed/plausible
-    /// via the bundled AssetSceneManifest.json (Suit.Hazmat/Scientist/*,
-    /// Suit.HeavyScientist/*, Suit.OutbreakScientist/*) - "hazmatsuit_
-    /// scientist" itself confirmed live (a bot, AngryMiner2914, actually
-    /// looted and wore one off a scientist corpse). Lucas's own framing:
-    /// this genuinely isn't obtainable in real Rust at all - a real
-    /// player can never loot a scientist's own worn suit off its corpse,
-    /// it's NPC-exclusive gear. Matched by prefix since the confirmed
-    /// live case and every other scientist-suit variant in the asset
-    /// manifest (arctic/nvgm/naval/peacekeeper) share the "hazmatsuit_
-    /// scientist" prefix, with a second prefix for the heavy/outbreak
-    /// variants (different naming convention, "scientistsuit" rather
-    /// than "hazmatsuit_scientist").
+    /// Scientist-exclusive suit shortname prefixes. These suits aren't obtainable by a real player in Rust, since they're NPC-exclusive gear.
     /// </summary>
     private static readonly string[] ScientistExclusiveSuitPrefixes = { "hazmatsuit_scientist", "scientistsuit" };
 
     /// <summary>
-    /// Decorative/furniture/junk-tier items Lucas explicitly listed
-    /// 2026-08-10 as "all just dead weight that has no real application or
-    /// would be hard to implement a bot using" - deployable decor
-    /// (tables, rugs, BBQ, signs, picture frames, planters, spinning
-    /// wheel, water barrel), scrap-tier junk-pile clutter (bone fragments,
-    /// plant fiber, empty cans), and a batch of real but low-value/no-use
-    /// items (flashlight, flares, handcuffs, blood, boomerang, butcher
-    /// knife, eoka pistol, bone club) plus base-defense/barrier props
-    /// (window bars, shopfront, shutters, sandbag barricade, floor
-    /// spikes) that aren't meaningful without base-building existing yet
-    /// (see the Base building roadmap entry - none built). Exact
-    /// shortnames are best-effort (this project has no live item-
-    /// enumeration helper to cross-check an unfamiliar shortname against,
-    /// unlike the WeaponPriority/MeleeToolPriority lists which were built
-    /// from a full offline scan) - ValidateNeverLootShortnames below
-    /// checks every one against the real live item database at boot and
-    /// logs a WARNING for anything that doesn't resolve, same pattern as
-    /// ValidateWeaponPriority/ValidateMeleeToolPriority, so a wrong guess
-    /// here is caught on the next server start instead of silently doing
-    /// nothing forever.
+    /// Decorative/furniture/junk-tier items that are dead weight with no real use to a bot: deployable decor, scrap-tier clutter, low-value misc items, and base-defense props not yet meaningful without base-building. Validated against the live item database at boot by ValidateNeverLootShortnames below.
     /// </summary>
     private static readonly string[] JunkDecorationShortnames =
     {
-        // "Water Barrel" deliberately omitted - its asset exists in the
-        // bundle (LiquidBarrel/waterbarrel.item.prefab) but doesn't
-        // resolve to a live ItemDefinition (confirmed via
-        // ValidateNeverLootShortnames' own WARNING), suggesting it may be
-        // a legacy/unused asset in this Rust version, possibly superseded
-        // by the Water Catcher Small/Large items. Flagged for Lucas to
-        // confirm the real shortname next time a bot is near one, rather
-        // than guessing further.
         "table", "clantable", "rug.bear", "bbq", "spinner.wheel",
-        // can.tuna.empty/can.beans.empty (dot-separated, NOT the
-        // underscore-separated prefab filename "can_tuna_empty" - tried
-        // that first per usual convention, but it failed to resolve at
-        // boot while the dot-separated version confirmed clean).
-        // "electric.igniter" (real shortname confirmed live 2026-08-10 -
-        // GhostBoomer had one in inventory, cross-referenced against
-        // another bot's own loot-summary log line for the exact string;
-        // the earlier bare "igniter" guess was wrong).
         "bone.fragments", "plantfiber", "can.tuna.empty", "can.beans.empty", "electric.igniter",
-        // "fun.guitar" (real shortname confirmed live earlier this
-        // session via FeralBandit's own loot-summary log line).
         "fun.guitar",
         "flashlight.held", "flare", "handcuffs", "blood", "boomerang",
         "knife.butcher", "pistol.eoka", "bone.club",
         "wall.window.bars.wood", "shutter.wood.a", "barricade.sandbags", "barricade.stone", "spikes.floor", "spikes.trap",
         "sign.wooden.small", "sign.wooden.medium", "sign.wooden.large", "sign.wooden.huge",
-        // 2026-08-10 additions, real shortnames confirmed via AssetSceneManifest.json:
         "tunalight", "bucket.water",
-        // "mailbox" (deployable item shortname, confirmed via
-        // Bundles/items/mailbox.json - distinct from IsMailbox's own
-        // container-prefab exclusion, which stops bots looting FROM a
-        // placed mailbox; this stops them picking one UP as loot in the
-        // first place, e.g. off a corpse or out of a container).
+        // Distinct from IsMailbox's own container-prefab exclusion, which stops bots looting FROM a placed mailbox; this stops them picking one up as loot.
         "mailbox",
-        // "trap.bear" (real item shortname, confirmed via
-        // Bundles/items/trap.bear.json - NOT "beartrap", which is only the
-        // world-entity prefab filename and doesn't resolve as an item; the
-        // boot validator caught this guess wrong on the first try). Loot-
-        // only exclusion, deliberately NOT also a physical movement
-        // obstacle (Lucas's explicit correction - a placed bear trap in the
-        // world isn't something bots need to route around, just something
-        // they shouldn't pick up as loot).
+        // Loot-only exclusion, deliberately not also a physical movement obstacle.
         "trap.bear",
     };
 
     /// <summary>
-    /// Prefix-matched siblings of JunkDecorationShortnames, for real
-    /// families with several size/variant suffixes ("of any size"/"of any
-    /// kind" in Lucas's own phrasing) rather than one exact shortname:
-    /// sign posts (single/double/town/town.roof), picture frames
-    /// (landscape/portrait/tall/xl/xxl), planter boxes (small/large), any
-    /// rug (plain + bear - subsumes rug.bear above, redundant but
-    /// harmless), spears (wooden/stone), and shopfront (metal/wood).
-    /// Same "future variant covered automatically" reasoning
-    /// SeedShortnamePrefix's own doc comment gives - deliberately NOT
-    /// validated against the live item database the way the exact list
-    /// above is, since a prefix has no single "does this resolve" check
-    /// (same precedent as SeedShortnamePrefix/ScientistExclusiveSuitPrefixes).
+    /// Prefix-matched siblings of JunkDecorationShortnames, for item families with several size/variant suffixes rather than one exact shortname. Not validated against the live item database, since a prefix has no single resolve check.
     /// </summary>
     private static readonly string[] JunkDecorationPrefixes =
     {
@@ -7034,10 +4719,7 @@ public partial class LivingRust
     };
 
     /// <summary>
-    /// Checks every JunkDecorationShortnames entry against the real, live
-    /// item database at startup - see JunkDecorationShortnames' own doc
-    /// comment for why this list specifically needed it (best-effort
-    /// guesses, no offline scan backing them the way WeaponPriority had).
+    /// Checks every JunkDecorationShortnames entry against the live item database at startup, since this list is best-effort and unvalidated by an offline scan.
     /// </summary>
     private void ValidateNeverLootShortnames()
     {
@@ -7062,13 +4744,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Whether item is on the "never worth picking up" list - see
-    /// NeverLootShortnames/SeedShortnamePrefix/
-    /// ScientistExclusiveSuitPrefixes's own doc comments. Deliberately
-    /// independent of ownership (unlike ShouldSkipDuplicateItem) - these
-    /// aren't "fine once, redundant after," they're just never useful
-    /// (or, for the scientist suits, never legitimately obtainable at
-    /// all) to this bot right now.
+    /// Whether item is on the "never worth picking up" list. Independent of ownership, unlike ShouldSkipDuplicateItem, since these items are never useful regardless of what's already owned.
     /// </summary>
     private static bool IsNeverLootItem(string shortname)
     {
@@ -7081,17 +4757,11 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Whether npc should skip picking up shortname because it already
-    /// owns something from the same SingleOwnershipFamilies entry - see
-    /// that field's own doc comment. Checked against the survivor's whole
-    /// inventory (main + belt), not just what's currently equipped, since
-    /// a spare hatchet sitting unequipped in the bag is exactly as
-    /// redundant as one on the belt.
+    /// Whether npc should skip picking up shortname because it already owns something from the same SingleOwnershipFamilies entry. Checked against the whole inventory (main + belt), not just what's equipped.
     /// </summary>
     private bool ShouldSkipDuplicateItem(BasePlayer npc, string shortname)
     {
-        // A survivor with a ready firearm has no use for a bow or arrows
-        // (2026-09-21, Lucas's own spec).
+        // A survivor with a ready firearm has no use for a bow or arrows.
         if ((Array.IndexOf(NonCombatCapableRangedWeaponShortnames, shortname) >= 0 || shortname.StartsWith("arrow.", StringComparison.Ordinal))
             && HasReadyFirearm(npc))
         {
@@ -8110,6 +5780,14 @@ public partial class LivingRust
     /// </summary>
     private static bool ShouldDepositAtBase(Item item, BasePlayer npc)
     {
+        // Checked before any tier logic - if the rock ever lands in a tier
+        // other than Weapon it would otherwise fall through to the final
+        // "deposit everything else" return below.
+        if (item.info.shortname == "rock")
+        {
+            return false;
+        }
+
         LootPriorityTier tier = GetLootPriorityTier(item);
 
         if (tier == LootPriorityTier.AmmoOrExplosive || tier == LootPriorityTier.Medical)
@@ -8119,6 +5797,26 @@ public partial class LivingRust
 
         if (tier == LootPriorityTier.Weapon)
         {
+            // The starting rock never gets deposited (2026-09-24, Lucas's
+            // own live report: bots depositing rocks into their own
+            // chests). Rock is real ItemCategory.Weapon in Rust, so
+            // without this it hits the exact same "deposit unless it's my
+            // currently active item" rule below every real firearm/melee
+            // weapon does - but unlike a spare firearm (genuinely fine to
+            // bank since only one is ever needed at a time), a survivor's
+            // rock is its LAST-RESORT fallback tool/weapon, not a spare -
+            // it's only ever not "active" because the survivor is
+            // temporarily holding something else for an unrelated task,
+            // not because it owns a better melee option. DropRockIfUpgraded
+            // (PerformReorganizationCheck, called from every OnLootObtained)
+            // is the one real mechanism that should ever remove it - once a
+            // genuine upgrade exists, that drops it on the spot; this
+            // method should never bank it into storage in the meantime.
+            if (item.info.shortname == "rock")
+            {
+                return false;
+            }
+
             // A survivor's only bow stays with it (2026-09-21) - otherwise
             // every deposit trip stripped it (a bow isn't the "active" item
             // while a hatchet is in hand) and the survival-kit upkeep
@@ -8144,6 +5842,43 @@ public partial class LivingRust
             return false;
         }
 
+        return true;
+    }
+
+    /// <summary>
+    /// How many REAL firearms (WeaponGearScore-listed, excluding the bow/
+    /// crossbow family - same real-firearm-vs-bow distinction
+    /// ShouldDepositAtBase's own bow carve-out already draws) a survivor is
+    /// currently carrying across main+belt (2026-09-23). Backs
+    /// TryPursueSpareFirearmDeposit below - counts everything regardless of
+    /// which one is actively held, since the point is "how many guns does
+    /// this survivor own right now," not just what's in its hands.
+    /// </summary>
+    private static int CountRealFirearms(BasePlayer npc)
+    {
+        return npc.inventory.containerMain.itemList
+            .Concat(npc.inventory.containerBelt.itemList)
+            .Count(item => WeaponGearScore.ContainsKey(item.info.shortname)
+                && Array.IndexOf(NonCombatCapableRangedWeaponShortnames, item.info.shortname) < 0);
+    }
+
+    /// <summary>
+    /// See this method's own call site in ContinueLootTask for the full
+    /// reasoning (2026-09-23 "don't hoard spare firearms" ask). Only ever
+    /// triggers a trip once a real base exists - ShouldDepositAtBase does
+    /// the actual work of deciding which specific firearm stays (the active
+    /// one) versus gets deposited, this just decides WHEN that trip should
+    /// happen.
+    /// </summary>
+    private bool TryPursueSpareFirearmDeposit(Survivor survivor, BasePlayer npc, LootTaskState state)
+    {
+        if (survivor.Character.Home == null || CountRealFirearms(npc) < 2)
+        {
+            return false;
+        }
+
+        Puts($"loot-task: '{survivor.Character.Alias}' is carrying a spare firearm - heading home to deposit it.");
+        GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
         return true;
     }
 
@@ -8360,6 +6095,36 @@ public partial class LivingRust
         }
 
         DepositIntoNext(0);
+    }
+
+    /// <summary>
+    /// Tier-upgrade pity grant (2026-09-24, Lucas's own explicit spec) -
+    /// creates amount of shortname and drops it straight into the first
+    /// owned box with room, since the survivor is already standing at home
+    /// for this check (TryPursueTierUpgrade's own calling context). Falls
+    /// back to a ground drop at home if every owned box is genuinely full,
+    /// same last-resort WithdrawUpToAmount's own split-remainder handling
+    /// uses rather than silently discarding the item.
+    /// </summary>
+    private void GrantItemIntoOwnedBoxes(List<StorageContainer> boxes, string shortname, int amount, Vector3 fallbackDropPosition)
+    {
+        Item item = ItemManager.CreateByName(shortname, amount);
+
+        if (item == null)
+        {
+            Puts($"WARNING: tier-upgrade pity grant couldn't create '{shortname}' - unknown shortname?");
+            return;
+        }
+
+        foreach (StorageContainer box in boxes)
+        {
+            if (box != null && !box.IsDestroyed && box.inventory != null && item.MoveToContainer(box.inventory))
+            {
+                return;
+            }
+        }
+
+        item.Drop(fallbackDropPosition, Vector3.zero);
     }
 
     /// <summary>
@@ -8595,10 +6360,7 @@ public partial class LivingRust
                 }
             }
 
-            if (outputCollected > 0)
-            {
-                VerbosePuts($"home-storage: '{survivor.Character.Alias}' collected {outputCollected} smelted item stack(s) from its furnace.");
-            }
+            Puts($"home-storage: '{survivor.Character.Alias}' visited its furnace - collected {outputCollected} smelted item stack(s), {furnace.inventory.itemList.Count} item(s) still inside.");
 
             int totalWood = boxes.Where(b => b != null && !b.IsDestroyed && b.inventory != null)
                 .SelectMany(b => b.inventory.itemList)
@@ -8611,6 +6373,7 @@ public partial class LivingRust
 
             if (totalWood < HomeFurnaceWoodTrigger || !hasOre)
             {
+                Puts($"home-storage: '{survivor.Character.Alias}' skipped refilling its furnace (stored wood {totalWood}/{HomeFurnaceWoodTrigger}, has ore: {hasOre}).");
                 onComplete?.Invoke();
                 return;
             }
@@ -8645,7 +6408,7 @@ public partial class LivingRust
                 furnace.StartCooking();
             }
 
-            VerbosePuts($"home-storage: '{survivor.Character.Alias}' filled its furnace with {woodMoved}x wood and {oreMoved} ore ({oreStacksMoved}/{furnace.inputSlots} ore slot(s)), IsOn={furnace.IsOn()}.");
+            Puts($"home-storage: '{survivor.Character.Alias}' filled its furnace with {woodMoved}x wood and {oreMoved} ore ({oreStacksMoved}/{furnace.inputSlots} ore slot(s)), IsOn={furnace.IsOn()}.");
             onComplete?.Invoke();
         },
         onFailed: onComplete);
@@ -8981,6 +6744,11 @@ public partial class LivingRust
         {
             GhostDepositIntoOwnedCupboard(survivor, cupboardMoved =>
             {
+                if (cupboardMoved > 0)
+                {
+                    survivor.Character.HasDepositedInitialLoot = true;
+                }
+
                 VerbosePuts($"home-storage: '{survivor.Character.Alias}' deposited {cupboardMoved} item stack(s) into its own tool cupboard.");
 
                 // Re-reads survivor.Player fresh via the closure (not the
@@ -8991,6 +6759,11 @@ public partial class LivingRust
                 // decision.
                 GhostDepositIntoOwnedBoxes(survivor, item => ShouldDepositAtBase(item, survivor.Player), deposited =>
                 {
+                    if (deposited > 0)
+                    {
+                        survivor.Character.HasDepositedInitialLoot = true;
+                    }
+
                     VerbosePuts($"home-storage: '{survivor.Character.Alias}' deposited {deposited} item stack(s) into its own base storage.");
 
                     TryFillOwnedFurnaces(survivor, () =>
@@ -9033,7 +6806,15 @@ public partial class LivingRust
                             // separate replay already closes the door via
                             // its own AdvanceBuildReplay completion), so
                             // this wrapper is a no-op for that case.
-                            TryPursueTierUpgrade(survivor, () => ExitHomeIfInside(survivor, home, onComplete));
+                            BasePlayer keycardCheckNpc = survivor.Player;
+
+                            if (keycardCheckNpc != null && !keycardCheckNpc.IsDestroyed)
+                            {
+                                TryWithdrawBestKeycardFromStorage(survivor, keycardCheckNpc, home);
+                                TryPlaceAdditionalStorageBoxAtHome(survivor, keycardCheckNpc);
+                            }
+
+                            TryPursueTierUpgrade(survivor, () => TeleportOutsideHomeIfInside(survivor, home, onComplete));
                                 });
                             });
                         });
@@ -9205,6 +6986,11 @@ public partial class LivingRust
     /// reassigns to the new one on build completion (ReplayBuildTrace's
     /// own existing behavior, unchanged).
     /// </summary>
+    // Consecutive-failure pity counter, keyed per survivor (2026-09-24,
+    // Lucas's own explicit spec). See TryPursueTierUpgrade's own doc
+    // comment just below for the full mechanism.
+    private readonly Dictionary<Guid, int> _tierUpgradeStruggleCount = new();
+
     private void TryPursueTierUpgrade(Survivor survivor, Action onComplete)
     {
         HomeBase home = survivor.Character.Home;
@@ -9241,32 +7027,94 @@ public partial class LivingRust
         }
 
         string designPath = designs[UnityEngine.Random.Range(0, designs.Length)];
-        Dictionary<string, int> cost = CalculateTraceResourceRequirements(designPath, freeFirstTwoDoorsAndLocks: true);
+
+        // Real "no more free lunch after the first base" fix (2026-09-23,
+        // Lucas's own explicit ask: "subsequent base tiers after the
+        // initial build require legitimate resources... the bots should
+        // already have X amount of metal fragments, resources etc to build
+        // said base tier OR at a minimum be working towards it"). This
+        // function is reached for EVERY tier upgrade past the first base
+        // (tier0->tier1 included, not just the tier2+ IsTierUnlocked-gated
+        // ones) - previously passed freeStarterEssentials: true here too,
+        // which incorrectly gave every upgrade the same free door/lock/
+        // furnace treatment the FIRST base alone is meant to get
+        // (CalculateTraceResourceRequirements' own doc comment). Real
+        // affordability (canAfford below, against actual base storage) is
+        // what already implements "or at a minimum be working towards it" -
+        // a survivor short on the genuine cost simply doesn't upgrade yet
+        // and keeps farming/looting normally until it can.
+        Dictionary<string, int> cost = CalculateTraceResourceRequirements(designPath);
         List<StorageContainer> boxes = FindOwnedStorageBoxesNear(npc, home.Position, HomeStorageSearchRadius);
 
-        bool canAfford = cost.Count > 0 && cost.All(requirement =>
+        Dictionary<string, int> shortfalls = new();
+
+        foreach (KeyValuePair<string, int> requirement in cost)
         {
             int itemId = ItemManager.FindItemDefinition(requirement.Key)?.itemid ?? 0;
 
-            if (itemId == 0)
+            int have = itemId != 0
+                ? boxes.Where(b => b != null && !b.IsDestroyed && b.inventory != null)
+                    .SelectMany(b => b.inventory.itemList)
+                    .Where(i => i.info.itemid == itemId)
+                    .Sum(i => i.amount)
+                : 0;
+
+            if (have < requirement.Value)
             {
-                return false;
+                shortfalls[requirement.Key] = requirement.Value - have;
             }
+        }
 
-            int have = boxes.Where(b => b != null && !b.IsDestroyed && b.inventory != null)
-                .SelectMany(b => b.inventory.itemList)
-                .Where(i => i.info.itemid == itemId)
-                .Sum(i => i.amount);
-
-            return have >= requirement.Value;
-        });
+        bool canAfford = cost.Count > 0 && shortfalls.Count == 0;
 
         if (!canAfford)
         {
+            // Real "pity" catch-up (2026-09-24, Lucas's own explicit spec,
+            // walking back an earlier same-day active-fetch attempt he
+            // decided was too aggressive a priority). Otherwise this stays
+            // purely passive - a survivor never goes out of its way to
+            // gather toward the next tier, it just keeps re-checking
+            // affordability opportunistically on whatever deposit trip
+            // happens next, same as before this whole tier-upgrade feature
+            // existed. Once a survivor has genuinely failed this real
+            // affordability check 10 times in a row, it starts getting
+            // handed its biggest shortfall ingredient, fully covered,
+            // deposited straight into its own boxes (it's already home for
+            // this check) rather than anything carried out and fetched. An
+            // 11th straight failure covers two ingredients, a 12th covers
+            // three, and so on - a survivor stuck a long time converges on
+            // the upgrade fast instead of staying stuck indefinitely.
+            Guid characterId = survivor.Character.Id;
+
+            int struggleCount = _tierUpgradeStruggleCount.TryGetValue(characterId, out int existingStruggleCount)
+                ? existingStruggleCount + 1
+                : 1;
+            _tierUpgradeStruggleCount[characterId] = struggleCount;
+
+            if (struggleCount >= 10)
+            {
+                int grantTypeCount = Math.Min(shortfalls.Count, struggleCount - 9);
+
+                List<string> grantOrder = shortfalls
+                    .OrderByDescending(kvp => kvp.Value)
+                    .Select(kvp => kvp.Key)
+                    .Take(grantTypeCount)
+                    .ToList();
+
+                foreach (string shortname in grantOrder)
+                {
+                    GrantItemIntoOwnedBoxes(boxes, shortname, shortfalls[shortname], home.Position);
+                }
+
+                string grantSummary = string.Join(", ", grantOrder.Select(s => $"{shortfalls[s]}x {s}"));
+                Puts($"tier-upgrade: '{survivor.Character.Alias}' has failed the affordability check for '{nextTierFolder}/{Path.GetFileNameWithoutExtension(designPath)}' {struggleCount} times in a row - granting {grantSummary} straight into storage to help it catch up.");
+            }
+
             onComplete?.Invoke();
             return;
         }
 
+        _tierUpgradeStruggleCount.Remove(survivor.Character.Id);
         Puts($"tier-upgrade: '{survivor.Character.Alias}' has enough stored for '{nextTierFolder}/{Path.GetFileNameWithoutExtension(designPath)}' - withdrawing and starting the upgrade.");
 
         foreach (KeyValuePair<string, int> requirement in cost)
@@ -9382,6 +7230,78 @@ public partial class LivingRust
     /// caller's own onComplete is exactly "now go decide what to do
     /// next," same as if nothing needed leaving at all.
     /// </summary>
+    // How far outside HomeCrossingRadius a random teleport-exit point can
+    // land (2026-09-27, Lucas's own explicit ask: "don't loiter inside
+    // their base constantly opening/closing doors... teleport randomly
+    // outside their base and continue on"). Deliberately still fairly
+    // close - this is meant to skip the door-walk animation/pathing, not
+    // relocate the survivor across the map.
+    private const float TeleportOutsideHomeExtraRange = 15f;
+    private const int TeleportOutsideHomeMaxAttempts = 8;
+
+    /// <summary>
+    /// Replaces ExitHomeIfInside at the tail of the real "return to base,
+    /// deposit, refuel furnaces" trip (GhostReturnHomeAndDeposit's own
+    /// call chain) - once those actual duties are done, a survivor has no
+    /// reason left to be standing inside its base at all, so this skips
+    /// the hardcoded door-route walk entirely and just relocates it
+    /// straight to a random valid point just outside HomeCrossingRadius
+    /// (BasePlayer.Teleport, same real API this project's own debug
+    /// teleport commands already use). Every candidate is height-snapped,
+    /// checked against water level, and validated on real navmesh
+    /// (SnapApproachPointToNavMesh) the same way any other real destination
+    /// in this project is - a candidate that still resolves back inside
+    /// HomeInteriorRadius after snapping (e.g. the navmesh snap pulled it
+    /// back through a wall) is rejected and re-rolled. Falls back to the
+    /// original door-walk exit (ExitHomeIfInside) if no valid point is
+    /// found after TeleportOutsideHomeMaxAttempts - a survivor should never
+    /// end up permanently stuck inside just because this shortcut failed.
+    /// </summary>
+    private void TeleportOutsideHomeIfInside(Survivor survivor, HomeBase home, Action onComplete)
+    {
+        BasePlayer npc = survivor.Player;
+
+        if (home == null || npc == null || npc.IsDestroyed)
+        {
+            onComplete?.Invoke();
+            return;
+        }
+
+        float thresholdSqr = HomeInteriorRadius * HomeInteriorRadius;
+
+        if ((npc.transform.position - home.Position).sqrMagnitude < thresholdSqr)
+        {
+            for (int attempt = 0; attempt < TeleportOutsideHomeMaxAttempts; attempt++)
+            {
+                float angle = UnityEngine.Random.Range(0f, 360f) * Mathf.Deg2Rad;
+                float distance = UnityEngine.Random.Range(HomeCrossingRadius, HomeCrossingRadius + TeleportOutsideHomeExtraRange);
+                Vector3 candidate = home.Position + new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
+                candidate.y = TerrainMeta.HeightMap != null ? TerrainMeta.HeightMap.GetHeight(candidate) : candidate.y;
+
+                if (WaterLevel.GetWaterLevel(candidate, waves: false) > candidate.y + 0.5f)
+                {
+                    continue;
+                }
+
+                Vector3 snapped = SnapApproachPointToNavMesh(npc, candidate);
+
+                if ((snapped - home.Position).sqrMagnitude < thresholdSqr)
+                {
+                    continue;
+                }
+
+                npc.Teleport(snapped);
+                VerbosePuts($"home-exit: '{survivor.Character.Alias}' teleported outside its base to {snapped} instead of walking the door route out.");
+                onComplete?.Invoke();
+                return;
+            }
+
+            Puts($"home-exit: WARNING - '{survivor.Character.Alias}' couldn't find a valid teleport-exit point after {TeleportOutsideHomeMaxAttempts} attempts - falling back to the normal door-walk exit.");
+        }
+
+        ExitHomeIfInside(survivor, home, onComplete);
+    }
+
     private void ExitHomeIfInside(Survivor survivor, HomeBase home, Action onCompleteRaw)
     {
         BasePlayer npc = survivor.Player;
@@ -10773,6 +8693,95 @@ public partial class LivingRust
     /// is a full relative path (TraceDirectory/folder/file.csv), ready to
     /// pass straight to TryLoadTraceWaypoints.
     /// </summary>
+    // Real ghost-route exclusivity (2026-09-24, Lucas's own explicit ask:
+    // "multiple bots can loot the same monument simultaneously but only 1
+    // bot is able to do a ghostroute" - normal ambient/opportunistic
+    // looting at a monument stays completely unrestricted, this only gates
+    // the special scripted route). Keyed by monument NAME, same
+    // established (if imprecise across multiple same-named instances)
+    // convention _monumentOccupants already uses, for consistency rather
+    // than introducing a second keying scheme. Time-expiring rather than
+    // requiring an explicit release on every real exit path (success,
+    // failure, death, watchdog rescue) - simpler and more robust than
+    // trying to wire cleanup into all of them; GhostRouteSlotLifetimeSeconds
+    // is generous enough to cover a real multi-stop route, short enough
+    // that a stuck/killed bot doesn't lock a monument out for long.
+    // Per-ROUTE exclusivity (2026-09-27, Lucas's own revision of the above):
+    // every bot at a monument can run a ghost route, but each individual
+    // route file is held by at most one bot at a time (an in-progress claim,
+    // time-expiring for the same robustness reason), and once a route is
+    // completed it is exhausted for GhostRouteExhaustSeconds before anyone
+    // can run that same route again. A bot that finds every route of its
+    // monument claimed/exhausted falls back to ordinary natural looting.
+    private readonly Dictionary<string, (Guid CharacterId, float ExpiresAt)> _ghostRouteClaims = new();
+    private readonly Dictionary<string, float> _ghostRouteExhaustedUntil = new();
+    private const float GhostRouteSlotLifetimeSeconds = 300f;
+    private const float GhostRouteExhaustSeconds = 600f;
+
+    private bool TryClaimGhostRouteForMonument(string monumentName, Guid characterId, out string traceFilePath)
+    {
+        traceFilePath = null;
+
+        if (string.IsNullOrEmpty(monumentName))
+        {
+            return false;
+        }
+
+        float now = UnityEngine.Time.realtimeSinceStartup;
+
+        foreach (KeyValuePair<string, string> entry in MonumentGhostRouteFolders)
+        {
+            if (monumentName.IndexOf(entry.Key, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                continue;
+            }
+
+            string folderPath = $"{TraceDirectory}/{entry.Value}";
+
+            if (!Directory.Exists(folderPath))
+            {
+                return false;
+            }
+
+            List<string> available = new();
+
+            foreach (string candidate in Directory.GetFiles(folderPath, "*.csv"))
+            {
+                string route = candidate.Replace('\\', '/');
+
+                if (_ghostRouteExhaustedUntil.TryGetValue(route, out float exhaustedUntil) && exhaustedUntil > now)
+                {
+                    continue;
+                }
+
+                if (_ghostRouteClaims.TryGetValue(route, out (Guid CharacterId, float ExpiresAt) claim)
+                    && claim.ExpiresAt > now && claim.CharacterId != characterId)
+                {
+                    continue;
+                }
+
+                available.Add(route);
+            }
+
+            if (available.Count == 0)
+            {
+                return false;
+            }
+
+            traceFilePath = available[UnityEngine.Random.Range(0, available.Count)];
+            _ghostRouteClaims[traceFilePath] = (characterId, now + GhostRouteSlotLifetimeSeconds);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void CompleteGhostRoute(string traceFilePath)
+    {
+        _ghostRouteClaims.Remove(traceFilePath);
+        _ghostRouteExhaustedUntil[traceFilePath] = UnityEngine.Time.realtimeSinceStartup + GhostRouteExhaustSeconds;
+    }
+
     private bool TryGetGhostRouteForMonument(string monumentName, out string traceFilePath)
     {
         traceFilePath = null;

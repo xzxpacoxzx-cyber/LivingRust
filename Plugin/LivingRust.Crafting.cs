@@ -8,46 +8,9 @@ using UnityEngine;
 namespace Carbon.Plugins;
 
 /// <summary>
-/// Real crafting (2026-08-28) - the first slice of "resource gathering ->
-/// crafting -> base building" (Lucas's own explicit sequencing). Scoped
-/// deliberately narrow per his own framing: a short, explicit list of
-/// specific goals ("I need a sleeping bag = 30 cloth", "I need arrows, I
-/// need wood and stone"), not a general "craft anything affordable"
-/// scorer - base building (foundations/tool cupboard) is its own later
-/// phase, since it needs real construction/placement mechanics nothing
-/// here touches yet (sleeping bag placement below is the one deliberate
-/// exception - narrow enough in scope to build now rather than waiting).
-///
-/// Reuses Rust's own real crafting pipeline directly rather than hand-
-/// rolling ingredient consumption/item creation - same "call the real
-/// game method" approach this project always uses (BaseMelee.DoAttackShared
-/// for gathering, ResourceDispenser for GiveResourceFromItem, Deployer.
-/// DoDeploy_Regular for placement, etc). Confirmed via decompile:
-/// BasePlayer.inventory.crafting is a real, already-initialized
-/// ItemCrafter (PlayerInventory wires it to containerMain+containerBelt
-/// on Init), and ItemCrafter.CanCraft/CraftItem are the exact same public
-/// methods a real player's own craft-panel click reaches.
-///
-/// BUT ItemCrafter.ServerUpdate - the real method that actually advances
-/// the queue and finishes a craft - only ever gets called from
-/// BasePlayer.InventoryUpdate, which is gated `if (IsConnected &&
-/// !IsDead())` (confirmed via decompile). Every survivor in this project
-/// is permanently IsConnected == false, so a real player's queued craft
-/// would just sit in ItemCrafter.queue forever, never finishing, on its
-/// own - live-confirmed 2026-08-28 ('2ColdRock' started crafting a
-/// sleeping bag, logged nothing else for 90+ seconds, no error, just
-/// silently stuck). StartCraftQueueDriver below is the fix - the same
-/// "the client-only path doesn't reach a disconnected NPC, so drive the
-/// real method manually" pattern this project already uses everywhere
-/// else (damage effects, attack cooldowns, etc), just applied to crafting
-/// specifically.
-///
-/// Exact ingredient amounts are baked prefab data, not present in the
-/// decompiled source at all - confirmed live instead via the new
-/// /lr.debug.recipe command (LivingRust.Debug.cs):
-///   arrow.wooden: 25x wood, 10x stones -> 2x arrow.wooden (tier 0, 3.0s)
-///   sleepingbag:  30x cloth            -> 1x sleepingbag  (tier 0, 30.0s)
-/// Both tier 0 - no real Workbench needed for either goal in this phase.
+/// Handles crafting goals: primitive starter items (tools, sleeping bag, bow, arrows, bandages)
+/// and basic base-building materials. Uses Rust's own crafting pipeline (ItemCrafter) directly,
+/// and drives the craft queue manually since disconnected NPCs never trigger its normal update path.
 /// </summary>
 public partial class LivingRust
 {
@@ -55,143 +18,58 @@ public partial class LivingRust
     private const string ArrowShortname = "arrow.wooden";
     private const string ClothShortname = "cloth";
 
-    // Real per-goal targets (2026-08-28, Lucas's own explicit numbers).
-    // Arrows: "craft 15 stacks and that's it (max). If it runs out of
-    // arrows, it can craft up to 15 stacks again" - 15 real recipe repeats
-    // (ItemCrafter's own "amount", NOT the item's inventory stack size) =
-    // 15 * 2 = 30 arrows, consuming 15 * 25 = 375 wood and 15 * 10 = 150
-    // stone, matching his own worked example exactly. Only re-triggers
-    // once the survivor's stock hits zero (ArrowRecraftThreshold), not a
-    // rolling top-up - a deliberate change from this system's original
-    // "top up whenever below 60" design.
+    // Arrow crafting: up to 15 batches per craft, retriggers once the survivor's stock hits zero.
     private const int ArrowMaxBatches = 15;
     private const int ArrowRecraftThreshold = 0;
 
-    // Bandage: real recipe confirmed via the recipe dump (LivingRust/
-    // crafting_recipes.csv) - 4x cloth -> 1x bandage, tier 0, 5.0s. 5
-    // batches = 20 cloth (2026-09-01, Lucas's own explicit split of the
-    // primitive checklist's "50 cloth" total: "30 to make a sleeping bag,
-    // 20 to make some bandages"). Same recraft-when-empty pattern as
-    // arrows, not a one-off - bandages get consumed healing, same as
-    // arrows get consumed shooting. BandageShortname itself already
-    // exists (LivingRust.Looting.cs) - reused, not redeclared.
+    // Bandage crafting: 4x cloth -> 1x bandage, up to 5 batches, retriggers once stock hits zero.
     private const int BandageMaxBatches = 5;
     private const int BandageRecraftThreshold = 0;
 
-    // Sleeping bag: own exactly 1, ever, per life - crafted once then
-    // immediately placed (DeploySleepingBagAndAssign below), so the
-    // inventory count returns to 0 the moment it's placed. Re-triggering
-    // off inventory count alone would then craft a second one forever;
-    // _hasPlacedSleepingBag (below) is the real "already done this" gate
-    // instead.
+    // Sleeping bag: owned exactly once per life, crafted then immediately placed.
     private const int SleepingBagTargetBatches = 1;
 
-    // Real recipe (2026-08-28, Lucas's own explicit numbers - not re-
-    // confirmed via /lr.debug.recipe this time, unlike arrow.wooden/
-    // sleepingbag, since he already gave the exact figures directly):
-    // 200x wood, 50x cloth -> 1x bow.hunting. Own exactly 1 - unlike the
-    // sleeping bag, a bow never leaves inventory once crafted (nothing
-    // here places or consumes it), so a plain inventory-count check is
-    // enough of a gate, no separate "already done this" set needed.
-    // Checked BEFORE arrows (Lucas's own explicit sequencing: "craft a
-    // bow first, then arrows afterwards" - arrows are useless without one)
-    // - already in this project's own real WeaponPriority list
-    // (LivingRust.Looting.cs), so the existing equip-best-weapon logic
-    // picks it up automatically once it's actually in inventory.
+    // Bow: crafted once per life (200x wood, 50x cloth), checked before arrows since arrows are
+    // useless without one.
     private const string BowShortname = "bow.hunting";
     private const int BowTargetBatches = 1;
 
-    // Real confirmed prefab names for the wood/stone surface-pile
-    // collectibles (GetCollectibleDivertRadius's own doc comment,
-    // LivingRust.Looting.cs - "Wood-Collectable"/"Stone-Collectable",
-    // confirmed via AssetSceneManifest.json). Checked FIRST for a missing
-    // wood/stone ingredient (2026-08-28, Lucas's own explicit spec: "go
-    // find enough stone and wood collectable entities OR if none are
-    // found in a 50m radius, have them farm a tree and a stone node") -
-    // a surface pile is a much lighter/faster top-up than committing to a
-    // full tree/ore node, so it's worth preferring when one's actually
-    // nearby.
+    // Prefab name substrings for the wood/stone surface-pile collectibles, checked first when an
+    // ingredient is missing since they're a faster top-up than a full tree/ore node.
     private const string WoodCollectablePrefabSubstring = "wood-collectable";
     private const string StoneCollectablePrefabSubstring = "stone-collectable";
 
-    // Search range for both the collectible-pile search above and the
-    // tree/ore fallback below - widened from the original 50m to 200m
-    // (2026-09-01, live-confirmed bots getting stuck unable to find any
-    // stone within the old 50m at all, piling up wood indefinitely while
-    // waiting), then pulled back to 100m same session once the inland-roll
-    // dispersal fix (RollHomeSiteStrategyIfFreshLife, LivingRust.
-    // HomeSiteStrategy.cs) landed and 200m's real Physics.OverlapSphere
-    // cost (16x a 50m check) became a real suspect in reported server-wide
-    // slowness at 300 bots - a middle ground pending confirmation either
-    // way.
+    // Search radius for both the collectible-pile search and the tree/ore fallback.
     private const float CraftIngredientSearchRadius = 100f;
 
     private readonly HashSet<Guid> _hasPlacedSleepingBag = new();
     private readonly Dictionary<Guid, Timer> _pendingSleepingBagDeployTimers = new();
 
-    // Real spawn-time "what do I want to do first" priority (2026-08-28
-    // original ask, made UNCONDITIONAL 2026-09-01 - Lucas's own explicit
-    // correction: "the primitive checklist should be unconditional, it
-    // happens regardless. THEN the bot rolls for its normal task sheet...
-    // that way the bot is set up for success" - a fresh spawn genuinely
-    // only has ~50-60 HP and a rock, so skipping this checklist half the
-    // time was never actually the right default). There's no real tiered
-    // task ladder in this project to hook into - TaskType (LivingRust/
-    // Models/TaskType.cs) is a flat enum (None/LootForResources/Recycling)
-    // that a lot of other systems already gate on (bot-onsight-summary's
-    // own looter filter, among others), and the old AI/GoalType.cs
-    // scaffold is genuinely dead code (zero references from anywhere in
-    // Plugin/). Rather than risk breaking those existing gates with a
-    // competing TaskType, a survivor pursuing this checklist stays
-    // TaskType.LootForResources the whole time - this is just a priority
-    // REORDERING within that same task (checked at the top of
-    // ContinueLootTask, LivingRust.Looting.cs), not a separate one.
+    // Tracks whether a survivor has rolled its once-per-life primitive starter checklist, and
+    // whether it is currently pursuing that checklist. This is a priority reordering within the
+    // normal LootForResources task, not a separate task type.
     private readonly HashSet<Guid> _hasRolledPrimitiveGoal = new();
     private readonly HashSet<Guid> _pursuingPrimitiveGoals = new();
 
-    // Real "retry the checklist later, from a different spot" scheduling
-    // (2026-09-01) - set when a 15-minute checklist attempt times out
-    // (ContinueLootTask, LivingRust.Looting.cs), consulted at the top of
-    // that same function to re-enter _pursuingPrimitiveGoals once the
-    // delay elapses. Absent for a survivor that's never timed out, or
-    // whose retry has already fired.
+    // Tracks when a timed-out checklist attempt should be retried from a different spot.
     private readonly Dictionary<Guid, float> _primitiveGoalRetryTime = new();
 
     /// <summary>
-    /// Called from StartLootForResourcesTask (LivingRust.Looting.cs) -
-    /// that function is the single real entry point every "resume
-    /// looting" call site in the project already funnels through
-    /// (recycling finished, a monument route completing, EndCombat/
-    /// EndFlee resuming, respawn, ...), NOT a spawn-only hook, so the
-    /// actual once-per-life gating happens here via
-    /// _hasRolledPrimitiveGoal rather than needing a bespoke spawn call
-    /// site. _hasRolledPrimitiveGoal/_pursuingPrimitiveGoals both clear on
-    /// death (LivingRust.Hooks.cs) so every new life gets this checklist
-    /// again. Name kept ("Roll...") despite no longer actually rolling
-    /// anything, to avoid a churny rename across every caller/doc comment
-    /// that already refers to it.
+    /// Called from StartLootForResourcesTask, the single entry point every "resume looting" call
+    /// site funnels through. Once-per-life gating happens here via _hasRolledPrimitiveGoal, which
+    /// clears on death so every new life gets the checklist again.
     /// </summary>
-    // Real "already progressed, don't redo the primitive checklist"
-    // threshold (2026-09-01, Lucas's own explicit example number) - checked
-    // alongside "already owns a stone/metal-tier gather tool" and "already
-    // has a base" (ShouldSkipPrimitiveChecklist below). Lucas's own
-    // explicit reasoning: this matters most right after a plugin reload -
-    // _hasRolledPrimitiveGoal itself resets on every reload (in-memory
-    // only, not part of the persisted survivor roster), so without this
-    // check every already-equipped, already-based survivor still alive
-    // across a reload would otherwise get funneled straight back into
-    // "craft a sleeping bag/bow/arrows from scratch" the next time its task
-    // loop ticks, even though it's genuinely done with that phase of life.
+    // Gear score above which the primitive checklist is skipped, mainly relevant right after a
+    // plugin reload since the roll-tracking sets are in-memory only.
     private const float SkipPrimitiveChecklistGearScoreThreshold = 30f;
 
     /// <summary>
-    /// Real "does this survivor still need the from-scratch checklist at
-    /// all" check (2026-09-01) - true (skip it) if ANY of: already has a
-    /// base, GearScore already at/above SkipPrimitiveChecklistGearScoreThreshold,
-    /// or already owns a real stone/metal-tier gather tool (the whole
-    /// PickaxeFamily/HatchetFamily, LivingRust.Looting.cs - not just the
-    /// stone tier specifically, so a survivor that's already found a real
-    /// metal hatchet doesn't get sent to craft a redundant stone one).
+    /// Checks whether a survivor still needs the from-scratch checklist: skipped if it already
+    /// has a base, its gear score is high enough, or it already owns both a pickaxe-family and a
+    /// hatchet-family tool. Requires BOTH families, not either one - the checklist's own job covers
+    /// sleeping bag, bandages, and a bow/arrows too, not just gather tools, so owning only one tool
+    /// (e.g. a looted pickaxe with no hatchet) should still run the checklist to pick up everything
+    /// else, not skip the whole thing.
     /// </summary>
     private bool ShouldSkipPrimitiveChecklist(Survivor survivor, BasePlayer npc)
     {
@@ -205,7 +83,7 @@ public partial class LivingRust
             return true;
         }
 
-        return HasAnyToolOfFamily(npc, PickaxeFamily) || HasAnyToolOfFamily(npc, HatchetFamily);
+        return HasAnyToolOfFamily(npc, PickaxeFamily) && HasAnyToolOfFamily(npc, HatchetFamily);
     }
 
     private void RollPrimitiveGoalIfFreshLife(Survivor survivor)
@@ -225,12 +103,8 @@ public partial class LivingRust
         {
             VerbosePuts($"craft-task: '{survivor.Character.Alias}' already has a base/real gather tool/GearScore {SkipPrimitiveChecklistGearScoreThreshold:F0}+ - skipping the primitive starter checklist this life.");
 
-            // Real "next step is base building" (2026-09-01, Lucas's own
-            // explicit spec: "if the bot manages to hit the checklist its
-            // next step is base building... that is the importance of
-            // getting the base down"). A skipped checklist counts as
-            // already "hit" for this purpose - goes straight to gathering
-            // for a base if it doesn't already have one.
+            // A skipped checklist still counts as done, so it goes straight to base-gathering
+            // if it doesn't already have one.
             if (survivor.Character.Home == null)
             {
                 _pursuingBaseGatherGoal.Add(characterId);
@@ -240,33 +114,18 @@ public partial class LivingRust
         }
 
         _pursuingPrimitiveGoals.Add(characterId);
-        Puts($"craft-task: '{survivor.Character.Alias}' is prioritizing its primitive starter checklist (stone tools, sleeping bag, bandages, bow, arrows) this life.");
+        VerbosePuts($"craft-task: '{survivor.Character.Alias}' is prioritizing its primitive starter checklist (stone tools, sleeping bag, bandages, bow, arrows) this life.");
     }
 
-    // 1s cadence is far coarser than the real 0.1s InvokeRepeating this
-    // replaces (see this file's own doc comment), but ItemCrafter.
-    // ServerUpdate's own completion check is wall-clock based (endTime vs
-    // UnityEngine.Time.realtimeSinceStartup, confirmed via decompile), not
-    // dependent on the delta parameter accumulating anything - calling it
-    // once a second still finishes a craft within ~1s of its real craft
-    // time, plenty precise for a background NPC nobody's watching a
-    // progress bar for.
+    // 1s tick interval; ItemCrafter's completion check is wall-clock based so this stays precise
+    // enough for a background NPC.
     private const float CraftQueueDriverIntervalSeconds = 1f;
 
     private Timer _craftQueueDriverTimer;
 
     /// <summary>
-    /// Started from OnServerInitialized (LivingRust.Main.cs), stopped from
-    /// Unload - same lifecycle every other engine-wide timer in this
-    /// project already follows (see StartOnSightDetection's own doc
-    /// comment, LivingRust.Combat.cs). Manually drives every survivor's
-    /// real ItemCrafter.queue forward - see this file's own top doc
-    /// comment for why that's necessary at all (BasePlayer.InventoryUpdate,
-    /// the real caller, is gated on IsConnected, which is never true for
-    /// these NPCs). Skips any survivor with an empty queue - CanCraft/
-    /// CraftItem calls above only ever add work here when there's
-    /// actually something to finish, so this is a cheap no-op the vast
-    /// majority of ticks.
+    /// Started from OnServerInitialized, stopped from Unload. Manually drives every survivor's
+    /// ItemCrafter queue forward, since disconnected NPCs never trigger the normal update path.
     /// </summary>
     private void StartCraftQueueDriver()
     {
@@ -301,21 +160,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real "did this survivor actually finish its primitive checklist"
-    /// check (2026-08-28) - called from ContinueLootTask's own primitive-
-    /// goal branch (LivingRust.Looting.cs) instead of just trusting
-    /// TryStartCraftingFallback's own true/false return there. Those two
-    /// are NOT the same thing: false can mean "every goal is genuinely
-    /// satisfied" OR "an ingredient just isn't reachable from here right
-    /// now" (TryGatherCraftIngredient's own new diagnostic covers that
-    /// case) - live bug found conflating them: 'ToxicRenegade'/
-    /// '5DeadTorch' both got permanently kicked out of primitive-goal
-    /// priority the moment a local search came up empty even once, having
-    /// completed none of the actual checklist. Arrows deliberately checked
-    /// as "owns more than zero," not the full 15-batch target - arrows are
-    /// an ongoing consumable top-up (TryPursueArrowGoal keeps recrafting
-    /// whenever they hit zero for the rest of this life regardless), not a
-    /// one-time completion state the way the other four are.
+    /// Checks whether a survivor has finished its primitive checklist: sleeping bag placed, bow
+    /// owned, and arrows/bandages/stone tools owned. Arrows and bandages only need to be above
+    /// zero, since they are ongoing consumables rather than one-time goals.
     /// </summary>
     private bool HasCompletedPrimitiveGoals(Survivor survivor, BasePlayer npc)
     {
@@ -338,10 +185,7 @@ public partial class LivingRust
             return false;
         }
 
-        // Same "owns more than zero" check as arrows (2026-09-01) -
-        // bandages are the same kind of ongoing consumable top-up
-        // (TryPursueBandageGoal keeps recrafting whenever they hit zero),
-        // not a one-time completion state.
+        // Same "owns more than zero" check as arrows: bandages are an ongoing consumable too.
         ItemDefinition bandageDef = ItemManager.FindItemDefinition(BandageShortname);
 
         if (bandageDef == null || npc.inventory.GetAmount(bandageDef.itemid) <= 0)
@@ -367,42 +211,14 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Checked from ContinueLootTask's own "found nothing at all nearby"
-    /// branch, right before TryStartResourceGatheringFallback - crafting
-    /// is effectively free (instant, zero movement) whenever the survivor
-    /// already holds enough raw material, so it's worth deciding before
-    /// ever walking anywhere for more. Priority order matches Lucas's own
-    /// examples/explicit sequencing: sleeping bag (a one-off safety net),
-    /// then bow (a one-off weapon), then arrows (an ongoing consumable
-    /// top-up, useless without the bow already owned). Returns whether
-    /// this cycle actually started something (a craft, a placement wait,
-    /// or a gather-the-missing-ingredient walk), same true/false contract
-    /// TryStartResourceGatheringFallback already uses.
+    /// Checked from ContinueLootTask before falling back to resource gathering, since crafting is
+    /// free when the survivor already holds enough material. Tries the sleeping bag, then bow,
+    /// then arrows, in priority order.
     /// </summary>
     private bool TryStartCraftingFallback(Survivor survivor, BasePlayer npc, LootTaskState state)
     {
-        // Real "only ever one real craft in flight at a time" guard
-        // (2026-08-28, live bug found: 'QuietReaper' queued FOUR separate
-        // crafts back-to-back within ~90s - stonehatchet, then arrows,
-        // then bow, then stonepickaxe - because each goal's own "already
-        // mid-craft" branch stopped claiming the cycle (the earlier same-
-        // day fix for "bots shouldn't stand still while crafting"), which
-        // let the NEXT goal down the priority list start ITS OWN craft
-        // immediately rather than waiting. ItemCrafter.queue processes
-        // strictly one task at a time though - it doesn't run several
-        // crafts in parallel just because several are queued - so each
-        // later item ends up waiting behind everything queued ahead of
-        // it, and every one of the four ended up blowing through its own
-        // wait-timer's timeout (each only ever sized for that ONE item's
-        // real craft time, never "everything else queued ahead of it,
-        // plus its own time"). The actual fix isn't bigger timeouts - it's
-        // never letting more than one real craft queue up at all. This
-        // still fully satisfies "don't stand still while crafting": the
-        // bot falls through to normal looting/gathering below exactly
-        // like before, it just won't ALSO start a second, unrelated craft
-        // on top while the first is still in flight - it'll pick the next
-        // goal back up automatically once its own wait-timer notices the
-        // queue actually emptied.
+        // Only one real craft may be in flight at a time; if the queue is already busy, wait for
+        // it rather than stacking a second craft on top.
         ItemCrafter activeCrafter = npc.inventory?.crafting;
 
         if (activeCrafter != null && activeCrafter.queue.Count > 0)
@@ -410,28 +226,9 @@ public partial class LivingRust
             return false;
         }
 
-        // Real two-pass "any order, materials-driven" checklist (2026-09-01,
-        // Lucas's own explicit correction: "have it so any of those
-        // primitive checklists can be done in any order - not specific,
-        // just as the bot gains the required materials it can craft
-        // whichever"). Pass 1 below checks every not-yet-completed goal
-        // with allowGather:false - each Try* function still does its own
-        // real CanCraft check, but is stopped from walking off to gather a
-        // MISSING ingredient, so this pass only ever claims the cycle for
-        // a goal the survivor can craft RIGHT NOW with whatever it's
-        // already carrying (e.g. hemp/wood/stone picked up incidentally
-        // while working toward a different goal, or looted from a
-        // container along the way - see ReactiveLootCategories' own doc
-        // comment for that passive accumulation). Whichever goal happens
-        // to be ready first in this fixed loop order gets crafted, but
-        // that order no longer determines crafting order in practice -
-        // it's just iteration order over a set that's usually either empty
-        // or has exactly one member ready at a time. Pass 2 only runs if
-        // NOTHING was immediately craftable - ingredient GATHERING still
-        // needs to commit to one specific target per cycle (can't walk two
-        // directions at once), so it falls back to the same fixed order as
-        // before purely as a tie-breaker for what to go gather toward, not
-        // as a crafting priority.
+        // Two-pass materials-driven checklist: pass 1 only crafts goals that are already
+        // affordable with what's on hand (allowGather:false), so goals can complete in any order.
+        // Pass 2 falls back to gathering the missing ingredient for the first goal in priority order.
         if (TryPursueOneOffToolGoal(survivor, npc, state, StoneHatchetShortname, "stone hatchet", allowGather: false)) return true;
         if (TryPursueOneOffToolGoal(survivor, npc, state, StonePickaxeShortname, "stone pickaxe", allowGather: false)) return true;
         if (TryPursueSleepingBagGoal(survivor, npc, state, allowGather: false)) return true;
@@ -446,34 +243,9 @@ public partial class LivingRust
         if (TryPursueBowGoal(survivor, npc, state)) return true;
         if (TryPursueArrowGoal(survivor, npc, state)) return true;
 
-        // Basic base-building materials (2026-08-28, Lucas's own explicit
-        // list - "other basic items required to craft before going onto
-        // base building") - a distinct tier from the primitive starter
-        // checklist above: NOT part of _pursuingPrimitiveGoals/
-        // HasCompletedPrimitiveGoals (that roll-based priority only ever
-        // covered the bag/bow/arrows/stone-tools survival kit, checked
-        // BEFORE normal looting for a rolled survivor), these are checked
-        // here in the same low-priority "nothing else to do" tier arrows/
-        // stone tools already sat in before the roll existed - every
-        // survivor opportunistically works toward them, rolled or not.
-        // Real recipes confirmed live via /lr.debug.recipe, 2026-08-28
-        // (Lucas's own numbers, not guessed):
-        //   door.hinged.wood: 300x wood                       (tier 0, 30s)
-        //   lock.code:        100x metal.fragments             (tier 0, 30s)
-        //   door.hinged.metal:150x metal.fragments             (tier 0, 30s)
-        //   cupboard.tool:    1000x wood                       (tier 0, 30s)
-        //   box.wooden.large: 250x wood, 50x metal.fragments   (tier 0, 30s)
-        //   workbench1:       500x wood, 100x metal.fragments  (tier 0, 30s)
-        // metal.fragments has no active gathering source at all in this
-        // project yet (no furnace/smelting system exists to turn mined
-        // metal.ore into it, and unlike wood/stone/cloth there's no
-        // surface collectible that yields it directly) - TryGatherCraftIngredient's
-        // switch has no case for it, so it falls through to the same
-        // "no source found" diagnostic every other unhandled ingredient
-        // already gets. These four items will only ever get crafted once
-        // a survivor has passively accumulated enough fragments from
-        // normal container looting - a real, honest limitation until a
-        // furnace goal exists, not a bug.
+        // Basic base-building materials, a lower-priority tier opportunistically pursued by every
+        // survivor regardless of checklist status. metal.fragments has no active gathering source,
+        // so these items only get crafted once enough fragments are passively looted.
         if (TryPursueOneOffToolGoal(survivor, npc, state, CodeLockShortname, "code lock"))
         {
             return true;
@@ -519,14 +291,8 @@ public partial class LivingRust
     private const int OneOffCraftWaitMaxTicks = 60;
 
     /// <summary>
-    /// Generic "own exactly one of this, craft it if affordable, gather
-    /// whatever's missing if not, wait for the real queue to finish, then
-    /// resume" shape - reused for both stone tools rather than copy-
-    /// pasting TryPursueBowGoal's own bespoke version a third/fourth time.
-    /// TryPursueBowGoal/TryPursueSleepingBagGoal are deliberately left as
-    /// their own bespoke functions rather than retrofitted onto this - both
-    /// were already live-tested working before this was written, not worth
-    /// the risk of a refactor touching proven code for two more callers.
+    /// Generic "own exactly one of this" goal: crafts it if affordable, gathers a missing
+    /// ingredient if not, and waits for the queue to finish. Used by both stone tools.
     /// </summary>
     private bool TryPursueOneOffToolGoal(Survivor survivor, BasePlayer npc, LootTaskState state, string shortname, string logLabel, bool allowGather = true)
     {
@@ -546,15 +312,8 @@ public partial class LivingRust
 
         (Guid, string) key = (survivor.Character.Id, shortname);
 
-        // Already mid-craft - does NOT claim this cycle (2026-08-28,
-        // Lucas's own explicit request: bots shouldn't just stand still
-        // for the whole real craft time, an easy target out in the open).
-        // Crafting is a background/inventory mechanic in real Rust, not a
-        // channeled ability - StartCraftQueueDriver ticks the real queue
-        // forward regardless of what the survivor is doing, so there's no
-        // real reason to freeze the task loop while it finishes. The wait
-        // timer below still runs in the background purely to catch
-        // completion for whatever needs a follow-up action once it lands.
+        // Already mid-craft: doesn't claim this cycle, so the survivor keeps acting rather than
+        // standing still while the craft finishes in the background.
         if (crafter.queue.Any(task => !task.cancelled && task.blueprint == bp))
         {
             if (!_pendingOneOffCraftTimers.ContainsKey(key))
@@ -613,15 +372,8 @@ public partial class LivingRust
                 pollTimer.Destroy();
                 _pendingOneOffCraftTimers.Remove(key);
 
-                // Real "drop the rock now that a stone tool exists" fix
-                // (2026-09-01, Lucas's own explicit ask) - this shared
-                // completion path covers every one-off tool goal
-                // (stonehatchet/stone.pickaxe included), and unlike
-                // OnLootObtained (container loot only), nothing here was
-                // previously running DropRockIfUpgraded/EquipBestWeaponForDisplay/
-                // etc after a genuine craft landed. Harmless no-op for the
-                // non-tool one-off goals (doors/cupboard/box/workbench)
-                // sharing this same function.
+                // Drops the rock now that a stone tool exists, or otherwise reorganizes gear after
+                // a craft lands. Harmless no-op for the non-tool one-off goals sharing this function.
                 RunLootHookSafely(survivor, nameof(PerformReorganizationCheck), () => PerformReorganizationCheck(survivor, npc));
 
                 ContinueLootTask(survivor, state, forceLocalScan: true);
@@ -658,14 +410,8 @@ public partial class LivingRust
             return false;
         }
 
-        // Already holding a finished bag (crafted this cycle or an
-        // earlier one that hasn't been placed yet, e.g. CanBuild failed
-        // last try) - nothing new to start, just make sure a deploy is
-        // actually pending for it. Doesn't claim this cycle (2026-08-28,
-        // Lucas's own explicit request: bots shouldn't stand still while
-        // crafting/waiting) - the watcher below will place it wherever
-        // the survivor happens to be the moment CanBuild allows it,
-        // whatever else it's doing in the meantime.
+        // Already holding a finished bag (crafted but not yet placed, e.g. CanBuild failed last
+        // try) - just make sure a deploy watcher is pending for it, without claiming this cycle.
         if (npc.inventory.GetAmount(bagDef.itemid) > 0)
         {
             if (!_pendingSleepingBagDeployTimers.ContainsKey(characterId))
@@ -676,10 +422,7 @@ public partial class LivingRust
             return false;
         }
 
-        // Already mid-craft (real ItemCrafter queue, driven forward by
-        // StartCraftQueueDriver above) - just wait for it, don't issue a
-        // second CraftItem on top, and don't claim this cycle either -
-        // same reasoning as the held-but-undeployed branch above.
+        // Already mid-craft: just wait for it rather than issuing a second craft.
         if (crafter.queue.Any(task => !task.cancelled && task.blueprint == bp))
         {
             if (!_pendingSleepingBagDeployTimers.ContainsKey(characterId))
@@ -710,10 +453,7 @@ public partial class LivingRust
         return allowGather && TryGatherCraftIngredient(survivor, npc, state, missing.itemDef.shortname);
     }
 
-    // Real 30s craft time (confirmed live via /lr.debug.recipe) plus a
-    // generous buffer - safety cap only, so a survivor that dies or has
-    // its bag item drop/despawn mid-wait for some unrelated reason
-    // doesn't leave an orphaned poll running forever.
+    // Safety cap so an orphaned poll doesn't run forever if the bag item drops or despawns mid-wait.
     private const int SleepingBagDeployWaitMaxTicks = 45;
 
     private void WaitForSleepingBagThenDeploy(Survivor survivor, ItemDefinition bagDef, LootTaskState state)
@@ -752,13 +492,7 @@ public partial class LivingRust
                 pollTimer.Destroy();
                 _pendingSleepingBagDeployTimers.Remove(characterId);
 
-                // Real safety-net diagnostic (2026-08-28) - the original
-                // version of this timeout was silent, which is exactly
-                // what made the StartCraftQueueDriver bug (this file's own
-                // top doc comment) so hard to notice live: '2ColdRock'
-                // just went quiet for 90+ seconds with zero indication
-                // anything had gone wrong. If this ever fires again for a
-                // genuinely different reason, it should be loud about it.
+                // Logs loudly rather than failing silently, so a stuck wait is easy to notice.
                 Puts($"craft-task: '{survivor.Character.Alias}' gave up waiting for its sleeping bag craft to finish after {SleepingBagDeployWaitMaxTicks}s - resuming normally.");
                 ContinueLootTask(survivor, state, forceLocalScan: true);
             }
@@ -768,18 +502,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real placement (2026-08-28) - mirrors Deployer.DoDeploy_Regular
-    /// (confirmed via decompile) directly server-side rather than going
-    /// through its real RPC path (DoDeploy reads a client-supplied aim
-    /// Ray - meaningless for a disconnected survivor with no camera).
-    /// Places flat at the survivor's own current ground-snapped position
-    /// facing its current body direction, the closest sane equivalent to
-    /// "a real player aims roughly forward and clicks." SetDeployedBy is
-    /// the exact same SendMessage a real deploy uses - confirmed via
-    /// decompile (SleepingBag.SetDeployedBy sets deployerUserID then
-    /// AddBagForPlayer registers it in the real per-player bag list),
-    /// which is also exactly what the real respawn-point selection reads -
-    /// no separate "assign" step needed, placement IS the assignment.
+    /// Places a sleeping bag at the survivor's current ground-snapped position, mirroring the
+    /// game's deploy logic server-side. Placement also assigns it as the survivor's respawn point.
     /// </summary>
     private void DeploySleepingBagAndAssign(Survivor survivor, ItemDefinition bagDef, LootTaskState state)
     {
@@ -790,14 +514,8 @@ public partial class LivingRust
             return;
         }
 
-        // Every return path below resumes the survivor's normal loop -
-        // WaitForSleepingBagThenDeploy's own call into this function was
-        // the last thing keeping it busy, so without this it would just
-        // sit idle indefinitely on any failure/retry path (a real bug
-        // caught in the same live trace as the ItemCrafter.ServerUpdate
-        // fix this file's own top doc comment describes - a survivor
-        // stuck silent for 90+ seconds turned out to be two separate
-        // issues, not one).
+        // Every return path below resumes the survivor's normal loop, since this call was the
+        // last thing keeping it busy and it would otherwise sit idle on any failure/retry path.
         Item bagItem = npc.inventory.FindItemByItemID(bagDef.itemid);
 
         if (bagItem == null)
@@ -831,10 +549,7 @@ public partial class LivingRust
         Vector3 position = npc.transform.position;
         position.y = groundHeight;
 
-        // Same real formula Deployer.GetDeployedRotation uses (confirmed
-        // via decompile) - forward is the surface normal (flat ground =
-        // Vector3.up), placeDir hints the facing via the "upwards"
-        // parameter.
+        // Forward is the surface normal (flat ground = Vector3.up); placeDir hints the facing.
         Quaternion rotation = Quaternion.LookRotation(Vector3.up, npc.eyes.BodyForward()) * Quaternion.Euler(90f, 0f, 0f);
 
         BaseEntity bagEntity = GameManager.server.CreateEntity(modDeployable.entityPrefab.resourcePath, position, rotation);
@@ -878,10 +593,7 @@ public partial class LivingRust
             return false;
         }
 
-        // Already mid-craft - doesn't claim this cycle (2026-08-28, Lucas's
-        // own explicit request: bots shouldn't stand still while
-        // crafting), same reasoning TryPursueOneOffToolGoal's own doc
-        // comment gives.
+        // Already mid-craft: doesn't claim this cycle so the survivor keeps acting while it finishes.
         if (crafter.queue.Any(task => !task.cancelled && task.blueprint == bp))
         {
             if (!_pendingBowCraftTimers.ContainsKey(characterId))
@@ -912,10 +624,7 @@ public partial class LivingRust
         return allowGather && TryGatherCraftIngredient(survivor, npc, state, missing.itemDef.shortname);
     }
 
-    // Safety cap only, same reasoning as SleepingBagDeployWaitMaxTicks/
-    // ArrowCraftWaitMaxTicks - generous rather than exact since a real
-    // craft time wasn't re-queried live for this one (Lucas gave the
-    // ingredient numbers directly).
+    // Safety cap only, generous rather than exact.
     private const int BowCraftWaitMaxTicks = 60;
 
     private void WaitForBowCraftThenContinue(Survivor survivor, LootTaskState state)
@@ -982,20 +691,8 @@ public partial class LivingRust
             return false;
         }
 
-        // Already mid-craft (real ItemCrafter queue, driven forward by
-        // StartCraftQueueDriver above) - let it finish rather than
-        // stacking a second run on top. Makes sure a resume waiter is
-        // actually running - real live bug (2026-08-28, 'ShadyCoyote'):
-        // the original version of this branch just returned false with
-        // nothing waiting on the craft at all, so once CraftItem below was
-        // called the survivor's whole task loop went dead until something
-        // unrelated (death, combat) happened to wake it back up - the
-        // finished arrows just sat unused in inventory forever, same root
-        // problem WaitForSleepingBagThenDeploy already solves for the bag
-        // goal. Doesn't claim this cycle though (2026-08-28, later same
-        // day - Lucas's own explicit follow-up: bots shouldn't stand
-        // still while crafting) - the waiter running in the background is
-        // enough of a safety net now, no need to also block here.
+        // Already mid-craft: let it finish rather than stacking a second run, and make sure a
+        // resume waiter is running so the finished arrows don't just sit unused in inventory.
         if (crafter.queue.Any(task => !task.cancelled && task.blueprint == bp))
         {
             if (!_pendingArrowCraftTimers.ContainsKey(characterId))
@@ -1030,9 +727,7 @@ public partial class LivingRust
         return allowGather && TryGatherCraftIngredient(survivor, npc, state, missing.itemDef.shortname);
     }
 
-    // Real max craft time (ArrowMaxBatches * arrow.wooden's own 3.0s,
-    // confirmed live via /lr.debug.recipe = 45s) plus a generous buffer -
-    // safety cap only, same reasoning as SleepingBagDeployWaitMaxTicks.
+    // Safety cap covering the max craft time plus a generous buffer.
     private const int ArrowCraftWaitMaxTicks = 70;
 
     private void WaitForArrowCraftThenContinue(Survivor survivor, LootTaskState state)
@@ -1080,12 +775,8 @@ public partial class LivingRust
         _pendingArrowCraftTimers[characterId] = pollTimer;
     }
 
-    // Largest batch count (up to maxBatches) the survivor can actually
-    // afford right now (2026-09-21, live report: a bot held a bow and had
-    // materials for arrows but never made any). The arrow/bandage goals used
-    // to demand the FULL batch count's worth of ingredients or craft
-    // nothing at all, so a survivor with enough for a few batches sat
-    // arrowless while it went off to gather more. 0 = can't afford even one.
+    // Largest batch count (up to maxBatches) the survivor can afford right now, so a partial
+    // stock of ingredients still crafts something rather than nothing. 0 = can't afford even one.
     private static int GetAffordableBatches(ItemCrafter crafter, ItemBlueprint bp, int maxBatches)
     {
         for (int batches = maxBatches; batches >= 1; batches--)
@@ -1101,42 +792,15 @@ public partial class LivingRust
 
     private readonly Dictionary<Guid, Timer> _pendingBandageCraftTimers = new();
 
-    // Real "should want to be at 100 health all the time" bandage-supply
-    // gate (2026-09-07, Lucas's own explicit spec) - see
-    // TryPursueBandageSupplyIfHurt's own doc comment.
+    // Health threshold below which a survivor with no heal item pursues a bandage restock.
     private const float HurtBandageSupplyHealthThreshold = 80f;
 
     /// <summary>
-    /// Real post-checklist bandage restock (2026-09-07, Lucas's own
-    /// explicit follow-up after a live trace found 90%+ of deaths were
-    /// bleeding out with no attacker attached - see OnPlayerDeath's own
-    /// UNRECORDED-damage doc comment, LivingRust.Hooks.cs). TryPursueBandageGoal
-    /// itself already existed and already does exactly the right thing
-    /// (recraft-when-low, gather cloth if needed) - its only real gap was
-    /// that its ONLY caller was TryStartCraftingFallback, reachable purely
-    /// during the primitive-checklist phase (_pursuingPrimitiveGoals).
-    /// Once a survivor finishes/skips the checklist, it never restocked
-    /// bandages again for the rest of that life, no matter how hurt it
-    /// got. This is the same real goal, just reachable from ContinueLootTask's
-    /// own universal per-cycle priority chain (checked regardless of
-    /// checklist/base-gather/normal-looting phase) and specifically gated
-    /// on actually being hurt with nothing left to heal with - "passively
-    /// set, not forcefully done," Lucas's own framing: a survivor at full
-    /// health, or one that's hurt but still has a real syringe/bandage on
-    /// hand (which the new unconditional TryUseMedicalItemIfHurt call
-    /// already owns actually USING), has nothing to claim here at all.
+    /// Restocks bandages for a survivor that is hurt and has nothing left to heal with, reachable
+    /// from ContinueLootTask's universal priority chain regardless of task phase.
     /// </summary>
-    // Real survival-kit upkeep (2026-09-21, Lucas's own explicit spec: a
-    // bot with a bow, arrows and bandages should be able to fend for
-    // itself against animals, scientists and other bots - and a bot that
-    // ALREADY carries a real firearm with ammo shouldn't want a bow at
-    // all, this is the bare minimum for primitive-level survivors). Runs
-    // from ContinueLootTask's universal priority chain (after the
-    // checklist, which owns all of this itself while it's active), so it
-    // claims the cycle - crafting or fetching cloth/wood - until the kit is
-    // complete, which is what actually gates roaming/looting. Every goal
-    // it calls already backs off (cooldowns, "no source nearby") when the
-    // ingredients genuinely can't be found, so it can't trap a survivor.
+    // Keeps a bow/arrow/bandage survival kit topped up for primitive-level survivors that don't
+    // already carry a firearm. Claims the cycle until the kit is complete.
     private const int SurvivalKitMinBandages = 3;
     private const int SurvivalKitMinArrows = 10;
 
@@ -1147,13 +811,8 @@ public partial class LivingRust
             return false;
         }
 
-        // Counts EVERY heal item it would actually use (syringes, medkits,
-        // bandages - CombatHealItemPriority), not just bandages: a geared
-        // survivor carrying syringes has a real healing supply already and
-        // shouldn't go crafting bandages. This only ever runs from
-        // ContinueLootTask, which returns immediately while a fight is
-        // active (_activeCombat), so it can't pull anyone out of combat -
-        // it's just what a survivor reaches for once a fight has ended.
+        // Counts every heal item the survivor would actually use, not just bandages, so a
+        // survivor already carrying syringes doesn't go crafting bandages too.
         int healSupply = 0;
 
         foreach (string healShortname in CombatHealItemPriority)
@@ -1208,10 +867,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Real bandage goal (2026-09-01, part of the primitive checklist's
-    /// explicit cloth split - "20 to make some bandages") - same shape as
-    /// TryPursueArrowGoal (recraft-when-empty batch goal, not a one-off),
-    /// since bandages get consumed the same ongoing way arrows do.
+    /// Bandage crafting goal, same recraft-when-empty batch shape as TryPursueArrowGoal since
+    /// bandages are consumed the same ongoing way.
     /// </summary>
     private bool TryPursueBandageGoal(Survivor survivor, BasePlayer npc, LootTaskState state, bool allowGather = true, int recraftThreshold = BandageRecraftThreshold)
     {
@@ -1264,9 +921,7 @@ public partial class LivingRust
         return allowGather && TryGatherCraftIngredient(survivor, npc, state, missing.itemDef.shortname);
     }
 
-    // Real max craft time (BandageMaxBatches * bandage's own 5.0s = 25s)
-    // plus a generous buffer - safety cap only, same reasoning as
-    // ArrowCraftWaitMaxTicks.
+    // Safety cap covering the max craft time plus a generous buffer.
     private const int BandageCraftWaitMaxTicks = 45;
 
     private void WaitForBandageCraftThenContinue(Survivor survivor, LootTaskState state)
@@ -1315,38 +970,14 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Dispatches a real gather trip for one specific missing recipe
-    /// ingredient. Wood/stone check a real surface-pile collectible
-    /// within CraftIngredientSearchRadius first (Lucas's own explicit
-    /// spec, 2026-08-28: "go find enough stone and wood collectable
-    /// entities OR if none are found in a 50m radius, have them farm a
-    /// tree and a stone node"), falling back to the exact same active
-    /// tree/ore gathering (GatherTreeAndContinue/GatherOreAndContinue,
-    /// LivingRust.ResourceGathering.cs) the general resource fallback
-    /// uses. Cloth uses a new hemp-collectible detour - Rust's own real
-    /// source for it (confirmed live this session: a hemp collectible's
-    /// DoPickup already yields "cloth" alongside "seed.hemp").
-    /// Deliberately bypasses the sticky tree-vs-ore gather-type lock
-    /// (TryStartResourceGatheringFallback's own _resourceGatherTypeLock) -
-    /// that lock exists to stop the GENERIC fallback from randomly mixing
-    /// resource types, but a specific recipe needing wood one cycle and
-    /// stone the next is a real, deliberate reason to switch, not mixing.
+    /// Dispatches a gather trip for one missing recipe ingredient. Wood/stone check a nearby
+    /// surface-pile collectible first, falling back to normal tree/ore gathering. Cloth uses a
+    /// hemp-collectible detour. Bypasses the sticky tree-vs-ore gather-type lock since a specific
+    /// recipe's ingredient need is a deliberate reason to switch resource type.
     /// </summary>
-    // Real per-ingredient skip-ahead (2026-09-01, Lucas's own explicit
-    // ask: "#2 could be a good fix" - see TryStartCraftingFallback's own
-    // doc comment for the full "stuck retrying the same blocked
-    // ingredient every single cycle" problem this solves). Once a real
-    // search for a specific ingredient genuinely finds nothing, that
-    // EXACT (survivor, ingredient) pair is cooled down for
-    // IngredientSearchCooldownSeconds - every goal that needs it (stone
-    // hatchet AND stone pickaxe both need stones, for example) fails fast
-    // without repeating the same real search, letting the checklist's own
-    // sequential fallback chain reach bow/bandage/sleeping bag - whatever
-    // doesn't need the blocked ingredient - instead of burning the whole
-    // cycle stuck on the first thing in priority order. Cleared the
-    // instant a search actually succeeds, so a genuinely resolved shortage
-    // (the survivor wandered somewhere better) isn't held back by a stale
-    // cooldown.
+    // Once a search for a specific ingredient finds nothing, that (survivor, ingredient) pair is
+    // cooled down so other goals needing it fail fast instead of repeating the same search, and
+    // the checklist can move on to a goal that doesn't need the blocked ingredient.
     private const float IngredientSearchCooldownSeconds = 120f;
 
     private readonly Dictionary<(Guid CharacterId, string Ingredient), float> _ingredientSearchCooldownUntil = new();
@@ -1362,50 +993,27 @@ public partial class LivingRust
 
         bool found = ingredientShortname switch
         {
-            // HasEnoughWoodAlready gate (2026-09-19, LivingRust.Looting.cs) -
-            // live report: 'GrimMarauder' repeatedly hit this exact "needs
-            // more wood to craft - heading to a nearby tree" branch, a real
-            // contributor (alongside the two other now-capped sources) to
-            // it carrying 7000 wood with no base even started. The
-            // checklist's own real wood needs (sleeping bag/bow/arrows) are
-            // modest - a survivor already sitting on plenty shouldn't
-            // commit to a whole extra tree just because ONE specific
-            // recipe step's own narrow check ran short. Collectible pickup
-            // stays uncapped (a small ground pile, not a full-node
-            // commitment).
+            // Caps committing to a full tree once the survivor already has enough wood for the
+            // checklist's modest needs; collectible pickup stays uncapped since it's much lighter.
             WoodShortname => TryGatherViaCollectible(survivor, npc, state, WoodCollectablePrefabSubstring, "wood")
                 || (!HasEnoughWoodAlready(survivor, npc) && TryGatherViaTree(survivor, npc, state)),
             StoneShortname => TryGatherViaCollectible(survivor, npc, state, StoneCollectablePrefabSubstring, "stone")
                 || TryGatherViaOre(survivor, npc, state),
+            "metal.fragments" => TryGatherViaOre(survivor, npc, state, preferredYieldShortname: "metal.ore"),
             ClothShortname => TryGatherViaCollectible(survivor, npc, state, HempCollectablePrefabSubstring, "cloth")
                 || TryPursueAnimalHuntForCloth(survivor, npc, state),
 
-            // Real "full scan of all ores" addition (2026-09-01, Lucas's
-            // own explicit ask, alongside the search-radius widening
-            // above) - metal.ore/sulfur.ore previously had NO case here at
-            // all (fell straight to the false default), unlike stones.
-            // Reuses the exact same TryGatherViaOre "find nearest real ore
-            // node, gather whatever it yields" mechanism stones already
-            // uses - this project doesn't discriminate by node type
-            // (stone/sulfur/metal deposits all look the same to
-            // TryFindNearestOreResourceEntity), which is already how the
-            // existing stone case has always behaved, not a new risk.
-            "metal.ore" => TryGatherViaOre(survivor, npc, state),
-            "sulfur.ore" => TryGatherViaOre(survivor, npc, state),
+            // Mines the matching ore node for metal/sulfur ore.
+            "metal.ore" => TryGatherViaOre(survivor, npc, state, preferredYieldShortname: "metal.ore"),
+            "sulfur.ore" => TryGatherViaOre(survivor, npc, state, preferredYieldShortname: "sulfur.ore"),
+            // Refined sulfur is a furnace output, not minable directly - redirects to raw ore,
+            // which the existing furnace cycle then smelts.
+            "sulfur" => TryGatherViaOre(survivor, npc, state, preferredYieldShortname: "sulfur.ore"),
 
             _ => false,
         };
 
-        // Real diagnostic (2026-08-28, live bug found: 'ToxicRenegade'/
-        // '5DeadTorch' both got silently kicked out of primitive-goal
-        // priority the first time an ingredient genuinely wasn't reachable
-        // nearby, with zero log trace explaining why - this exhaustion
-        // case was completely silent before). Not itself a failure worth
-        // fixing here - a real map position can genuinely have no hemp/
-        // wood/stone within CraftIngredientSearchRadius, same as any other
-        // "nothing found nearby" case elsewhere in this project - but it
-        // needs to be visible, and (see ContinueLootTask's own updated
-        // primitive-goal check, LivingRust.Looting.cs) must NOT be
+        // Logs and cools down when no source is found nearby, so this case is visible and isn't
         // confused with "goal complete."
         if (!found)
         {
@@ -1478,9 +1086,42 @@ public partial class LivingRust
         return true;
     }
 
-    private bool TryGatherViaOre(Survivor survivor, BasePlayer npc, LootTaskState state)
+    private bool TryGatherViaOre(Survivor survivor, BasePlayer npc, LootTaskState state, string preferredYieldShortname = null)
     {
         if (!HasAnyGatherCapableTool(npc, OreGatherToolPriority))
+        {
+            return false;
+        }
+
+        // Tries a node that actually yields the preferred ore type first, falling back to any
+        // ore node if nothing matching is nearby.
+        if (preferredYieldShortname != null
+            && _engine.NavigationManager.TryFindNearestOreResourceEntity(
+                npc.transform.position,
+                CraftIngredientSearchRadius,
+                out OreResourceEntity preferredOre,
+                candidate => !state.Visited.Contains(candidate.net.ID)
+                    && !IsLootTargetClaimed(candidate.net.ID)
+                    && !IsInPoisonedZone(candidate.transform.position, state)
+                    && !IsInThreatFleeZone(survivor.Character.Id, candidate.transform.position)
+                    && !IsInMonumentAvoidZone(candidate.transform.position)
+                    && !IsBelowSafeLootDepth(candidate.transform.position)
+                    && !IsResourceNodePoisoned(candidate)
+                    && GetNodeYields(candidate)?.Any(y => y?.itemDef?.shortname == preferredYieldShortname) == true))
+        {
+            state.Visited.Add(preferredOre.net.ID);
+            ClaimLootTarget(state, preferredOre.net.ID);
+            VerbosePuts($"craft-task: '{survivor.Character.Alias}' needs {preferredYieldShortname} - heading to a matching ore node.");
+            GatherOreAndContinue(survivor, preferredOre, state);
+            return true;
+        }
+
+        // A specific preferred type (metal.fragments/sulfur callers above) that couldn't be found
+        // nearby never falls back to an unrelated ore type - substituting sulfur for a metal.ore
+        // request (or vice versa) would silently ignore the early-game ore restriction and gather
+        // something the survivor has no actual use for. Only the type-agnostic "need more stone"
+        // caller (no preferredYieldShortname) reaches this generic any-node search.
+        if (preferredYieldShortname != null)
         {
             return false;
         }
@@ -1508,11 +1149,8 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Same walk-then-gather shape as GatherTreeAndContinue/GatherOreAndContinue
-    /// (LivingRust.ResourceGathering.cs), for a real collectible pile
-    /// (hemp/wood/stone) - PickupCollectibleAndContinue itself already
-    /// handles the actual pickup/range check, this just supplies the
-    /// missing walk leg the same way the tree/ore wrappers do.
+    /// Walks to and picks up a collectible pile (hemp/wood/stone), same walk-then-gather shape
+    /// as the tree/ore gather wrappers.
     /// </summary>
     private void GatherCraftCollectibleAndContinue(Survivor survivor, CollectibleEntity collectible, LootTaskState state)
     {

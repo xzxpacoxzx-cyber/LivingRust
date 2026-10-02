@@ -13,11 +13,7 @@ namespace LivingRust.Core
         public CharacterManager CharacterManager { get; }
         public SurvivorManager SurvivorManager { get; }
         public CombatManager CombatManager { get; }
-        public ConfigManager ConfigManager { get; }
         public SaveManager SaveManager { get; }
-        public PopulationManager PopulationManager { get; }
-        public SimulationManager SimulationManager { get; }
-        public WorldManager WorldManager { get; }
         public NavigationManager NavigationManager { get; }
 
         public LivingRustEngine()
@@ -28,11 +24,7 @@ namespace LivingRust.Core
             SurvivorManager = new SurvivorManager();
 
             CombatManager = new CombatManager();
-            ConfigManager = new ConfigManager();
             SaveManager = new SaveManager();
-            PopulationManager = new PopulationManager();
-            SimulationManager = new SimulationManager(CharacterManager);
-            WorldManager = new WorldManager();
             NavigationManager = new NavigationManager();
 
             Logger.Info("LivingRust Engine created.");
@@ -42,9 +34,9 @@ namespace LivingRust.Core
         {
             Logger.Info("Starting LivingRust Engine...");
 
-            WorldManager.Start();
-
-            // Load previously saved characters.
+            // Load previously saved characters so RestoreSpawnedSurvivors can
+            // re-link/respawn them. New characters only ever come from an
+            // explicit spawn command - this never auto-pads the population.
             List<Character> characters = SaveManager.LoadCharacters();
 
             foreach (Character character in characters)
@@ -63,32 +55,12 @@ namespace LivingRust.Core
                 Logger.Info("No existing world found.");
             }
 
-            // Determine how many new survivors should exist.
-            int survivorsToCreate =
-                PopulationManager.GetRequiredSurvivors(CharacterManager.Count);
-
-            Logger.Info($"Population requires {survivorsToCreate} additional survivors.");
-
-            for (int i = 0; i < survivorsToCreate; i++)
-            {
-                Character character = CharacterManager.CreateInitialSurvivor();
-
-                SurvivorManager.Create(character);
-            }
-
-            Logger.Info($"Persistent Characters : {CharacterManager.Count}");
-            Logger.Info($"Active Survivors      : {SurvivorManager.Count}");
-
-            SimulationManager.Tick();
-
             Logger.Info("LivingRust Engine started.");
         }
 
         public void Stop()
         {
             Logger.Info("Stopping LivingRust Engine...");
-
-            WorldManager.Stop();
 
             SaveManager.SaveCharacters(CharacterManager.GetAllCharacters());
 

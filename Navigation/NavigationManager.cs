@@ -1569,6 +1569,58 @@ namespace LivingRust.Navigation
         }
 
         /// <summary>
+        /// Same real OverlapSphere scan as TryFindNearestLootableCorpse, but
+        /// picks the HIGHEST-scoring candidate (via the caller-supplied
+        /// scorer, e.g. a real gear-value score over the corpse's own
+        /// containers) rather than the nearest one (2026-09-23, Lucas's own
+        /// explicit ask: prioritise a corpse by what it's actually worth
+        /// looting, not just proximity). Deduplicates by entity (not just by
+        /// collider hit) since a single ragdoll can register multiple
+        /// colliders - scoring the same corpse twice would be wasted work,
+        /// never a correctness bug, but cheap to avoid regardless.
+        /// </summary>
+        public bool TryFindBestLootableCorpse(Vector3 origin, float maxRadius, Func<LootableCorpse, float> scorer, out LootableCorpse corpse, Func<LootableCorpse, bool> filter = null)
+        {
+            Collider[] hits = Physics.OverlapSphere(origin, maxRadius, ObstacleLayerMask, QueryTriggerInteraction.Collide);
+
+            LootableCorpse best = null;
+            float bestScore = float.MinValue;
+            HashSet<LootableCorpse> seen = new();
+
+            foreach (Collider hit in hits)
+            {
+                LootableCorpse candidate = hit.GetComponentInParent<LootableCorpse>();
+
+                if (candidate == null || candidate.IsDestroyed || !seen.Add(candidate))
+                {
+                    continue;
+                }
+
+                if (filter != null && !filter(candidate))
+                {
+                    continue;
+                }
+
+                float score = scorer(candidate);
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = candidate;
+                }
+            }
+
+            if (best == null)
+            {
+                corpse = null;
+                return false;
+            }
+
+            corpse = best;
+            return true;
+        }
+
+        /// <summary>
         /// Same idea as TryFindNearestLootContainer/TryFindNearestLootableCorpse,
         /// but for dropped bags - what a destroyed/despawned body (fire,
         /// explosives, or a corpse's own timer) converts into. A FOURTH
@@ -1619,6 +1671,53 @@ namespace LivingRust.Navigation
             }
 
             container = closest;
+            return true;
+        }
+
+        /// <summary>
+        /// Same real OverlapSphere scan as TryFindNearestDroppedItemContainer,
+        /// but picks the HIGHEST-scoring candidate rather than the nearest
+        /// one - see TryFindBestLootableCorpse's own doc comment for the
+        /// full reasoning, identical here just for bags instead of corpses.
+        /// </summary>
+        public bool TryFindBestDroppedItemContainer(Vector3 origin, float maxRadius, Func<DroppedItemContainer, float> scorer, out DroppedItemContainer container, Func<DroppedItemContainer, bool> filter = null)
+        {
+            Collider[] hits = Physics.OverlapSphere(origin, maxRadius, ObstacleLayerMask, QueryTriggerInteraction.Collide);
+
+            DroppedItemContainer best = null;
+            float bestScore = float.MinValue;
+            HashSet<DroppedItemContainer> seen = new();
+
+            foreach (Collider hit in hits)
+            {
+                DroppedItemContainer candidate = hit.GetComponentInParent<DroppedItemContainer>();
+
+                if (candidate == null || candidate.IsDestroyed || !seen.Add(candidate))
+                {
+                    continue;
+                }
+
+                if (filter != null && !filter(candidate))
+                {
+                    continue;
+                }
+
+                float score = scorer(candidate);
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = candidate;
+                }
+            }
+
+            if (best == null)
+            {
+                container = null;
+                return false;
+            }
+
+            container = best;
             return true;
         }
 

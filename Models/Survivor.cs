@@ -29,30 +29,14 @@ namespace LivingRust.Models
         public BasePlayer Player { get; set; }
 
         /// <summary>
-        /// The most recent position where real, unblocked movement
-        /// progress was confirmed (see ApplyMovementStep) - used as the
-        /// first, safest candidate when stuck-recovery escalates to an
-        /// emergency relocation, preferred over a blind random-direction
-        /// teleport since it's a position already known to be walkable.
-        /// Null until the survivor has taken at least one real step this
-        /// life.
+        /// The most recent confirmed walkable position, used as a safe fallback
+        /// during stuck-recovery instead of a random teleport.
         /// </summary>
         public Vector3? LastKnownGoodPosition { get; set; }
 
         /// <summary>
-        /// The real water surface height (minus the swim submersion
-        /// offset) captured ONCE, the moment this survivor started
-        /// swimming - held fixed for the rest of that swim rather than
-        /// recomputed every tick, which is what let earlier attempts keep
-        /// fighting Unity's own continuous underwater drift (round 7).
-        /// Locking in per-swim-session (not one global constant) handles a
-        /// lake/river sitting at a real elevation different from the main
-        /// ocean's own sea level correctly, unlike a flat hardcoded value
-        /// (round 8) - Lucas's own explicit follow-up: "that could
-        /// definitely happen." Cleared back to null the moment the
-        /// survivor stops swimming, so the NEXT time it enters water
-        /// (possibly a completely different body of water) gets a fresh
-        /// reading instead of reusing a stale one.
+        /// The water surface height captured once when swimming starts, held fixed
+        /// for that swim to avoid drift, and cleared when swimming stops.
         /// </summary>
         public float? LockedSwimY { get; set; }
 

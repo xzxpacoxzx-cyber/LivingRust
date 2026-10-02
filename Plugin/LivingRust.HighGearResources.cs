@@ -7,13 +7,9 @@ namespace Carbon.Plugins;
 
 public partial class LivingRust
 {
-    // High-gear resource discipline (2026-09-21, Lucas's own explicit spec): a
-    // survivor above HighGearResourceAvoidScore has better things to do
-    // (airdrops, fights, loot from other players) than farming. It avoids
-    // collectables and farm nodes entirely UNLESS (A) it already has a base
-    // AND (B) it already carries that specific item (so it keeps topping up
-    // cloth if it already has cloth, but won't start collecting sulfur ore,
-    // metal ore, HQM ore, stones or wood it isn't already holding).
+    // High-gear resource discipline: a survivor above HighGearResourceAvoidScore has
+    // better things to do than farming. It avoids collectables and farm nodes
+    // entirely unless it already has a base and already carries that specific item.
     private const int HighGearResourceAvoidScore = 35;
 
     private bool IsResourceAllowedForHighGear(Survivor survivor, BasePlayer npc, IEnumerable<ItemAmount> yields)

@@ -6,43 +6,14 @@ using UnityEngine;
 namespace Carbon.Plugins;
 
 /// <summary>
-/// Tactical decision system, Piece 3 (2026-08-24) - the actual scoring/
-/// decision function scoped across a long design conversation earlier this
-/// session, built on top of Piece 1 (TryFindCoverPoint, LivingRust.Combat.cs
-/// + LivingRust.MonumentCoverPoints.cs) and Piece 2 (damage-dealt/health-
-/// rate tracking, LivingRust.CombatDecisionTracking.cs).
-///
-/// Deliberately mirrors the loot-destination decision system exactly
-/// (GetTierWeights/TryStartWithGearWeightedDestination, LivingRust.
-/// GearScore.cs) rather than inventing a new selection mechanism, per
-/// Lucas's own explicit request to reuse "a similar curved weighing scale."
-/// Five candidate actions, each gets a continuous weight via the SAME real
-/// triangular-falloff SHAPE GearScore.cs's own TierFalloffWeight uses
-/// (peak near an "ideal" center, floored so nothing's ever truly
-/// impossible) - a local float/per-call-radius sibling (TacticalFalloffWeight,
-/// below) rather than the exact same function, since that one is typed
-/// against an int gear score with one shared radius constant and these
-/// inputs (damage/health/distance) sit on genuinely different natural
-/// scales. Then one cumulative weighted roll picks the actual action - not
-/// a top-N shortlist, not a hardcoded if/else tree. This is what makes the
-/// result read as "deciding" rather than a deterministic script - two bots
-/// in an identical situation can plausibly do different things.
-///
-/// Replaces the old standalone "heal below 70 health, unconditionally,
-/// regardless of exposure" trigger entirely - Lucas's own explicit
-/// correction: healing shouldn't be its own independent check, it should
-/// be something that happens AS PART OF retreating to safety, not a reflex
-/// that fires while standing fully exposed mid-exchange. RetreatToCover's
-/// execution now triggers TryUseMedicalItemIfHurt itself (which still
-/// self-gates on the same health threshold internally, so this composes
-/// cleanly - no duplicate logic). Deliberately does NOT gate the walk on
-/// reaching cover first - Lucas's own explicit call: real players heal
-/// while moving constantly (only run-and-GUN is actually impossible,
-/// matching the existing SprintFireSettleSeconds fire-lock), and the
-/// only reason an earlier version required standing still was a cosmetic
-/// animation-vs-movement conflict that's a non-issue in the context this
-/// would ever actually happen in (a real player mid-chase, not calmly
-/// inspecting a bot's syringe animation from a metre away).
+/// Tactical combat decision system, built on top of cover-point finding and
+/// damage-dealt/health-rate tracking. Mirrors the loot-destination decision
+/// system's weighted-selection approach: five candidate actions each get a
+/// continuous weight via a triangular-falloff shape, and one cumulative weighted
+/// roll picks the action, so identical situations can plausibly play out
+/// differently. Healing is triggered as part of retreating to safety rather than
+/// as an independent check, and happens concurrently with the retreat walk rather
+/// than only after arriving.
 /// </summary>
 public partial class LivingRust
 {
@@ -56,19 +27,16 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// How often a fresh decision gets rolled - deliberately NOT every
-    /// combat tick (0.05s), real decisions aren't reconsidered 20x/second.
+    /// How often a fresh decision gets rolled, deliberately less often than every
+    /// combat tick.
     /// </summary>
     private const float TacticalDecisionReevaluationSeconds = 2.5f;
 
     private readonly Dictionary<Guid, float> _nextTacticalDecisionTime = new();
 
     // ============================================================
-    // Weight curve tuning - first-pass numbers, not yet live-tested at
-    // scale. Same "ship a reasonable start, tune from real trace evidence"
-    // approach as every other constant in this project (cover distances,
-    // structure-size thresholds, etc all started as guesses and got
-    // corrected from live reports) - expect these to move.
+    // Weight curve tuning constants, first-pass numbers expected to be adjusted
+    // as they get tested at scale.
     // ============================================================
 
     private const float TacticalPushDamageCenter = 60f;
@@ -78,12 +46,9 @@ public partial class LivingRust
     private const float TacticalPushMaxUsefulDistance = 25f;
 
     /// <summary>
-    /// How long ago the last landed hit still counts at full confidence -
-    /// see LivingRust.CombatDecisionTracking.cs's own doc comment on
-    /// GetDamageDealtToCurrentAttacker. A continuous point-blank exchange
-    /// keeps this near 1.0 constantly; a real gap since the last hit
-    /// (LOS lost, distance opened) discounts the tally, since the
-    /// attacker may have had time to patch themselves up in that gap.
+    /// How long ago the last landed hit still counts at full confidence. A
+    /// continuous exchange keeps this near 1.0; a gap since the last hit discounts
+    /// the tally, since the attacker may have had time to heal.
     /// </summary>
     private const float DamageConfidenceDecaySeconds = 4f;
 
@@ -92,13 +57,9 @@ public partial class LivingRust
     private const float TacticalRetreatHealthCenter = 65f;
 
     /// <summary>
-    /// Lowered from 50 (2026-08-24, Lucas's own live report: cover-seeking
-    /// is genuinely good but fires "a bit too often"). Combined with
-    /// TacticalHoldBaselineWeight's own bump and the longer
-    /// TacticalDecisionReevaluationSeconds - all three first-pass tunings
-    /// from the same feedback, together meant to make Retreat a real but
-    /// less dominant option relative to just holding the fight, not to
-    /// remove it.
+    /// Tuned together with TacticalHoldBaselineWeight and
+    /// TacticalDecisionReevaluationSeconds to make Retreat a real but less
+    /// dominant option relative to holding the fight.
     /// </summary>
     private const float TacticalRetreatPeakWeight = 38f;
 
@@ -106,22 +67,15 @@ public partial class LivingRust
     private const float TacticalRetreatFalloffRadius = 45f;
 
     /// <summary>
-    /// Health lost per second (over GetRecentHealthDropRate's own rolling
-    /// window) that counts as a genuine "rapid burst" rather than an
-    /// ordinary gradual fight - Lucas's own concrete example: 60-80%
-    /// health lost within roughly 0.01-2 real seconds. ~70 points over
-    /// ~2s lands around 35/s, so this sits comfortably below that as the
-    /// trigger point without firing on an ordinary slower exchange.
+    /// Health lost per second (over GetRecentHealthDropRate's rolling window) that
+    /// counts as a genuine rapid burst rather than an ordinary gradual fight.
     /// </summary>
     private const float TacticalRapidHealthLossRate = 25f;
 
     /// <summary>
-    /// A genuine rapid burst boosts BOTH retreat-to-cover AND push at
-    /// once - Lucas's own explicit fork: "dodge and weave... OR just try
-    /// 'I'm most likely going to die here, let's at least go down
-    /// trying'" - both need to become real, live options simultaneously
-    /// so the weighted roll can plausibly pick either, not one
-    /// deterministic reaction to the same trigger.
+    /// A genuine rapid burst boosts both retreat-to-cover and push at once, so the
+    /// weighted roll can plausibly pick either rather than one deterministic
+    /// reaction.
     /// </summary>
     private const float TacticalRapidBurstRetreatMultiplier = 1.8f;
 
@@ -133,14 +87,9 @@ public partial class LivingRust
     private const float TacticalFlankFalloffRadius = 20f;
 
     /// <summary>
-    /// How far away from the attacker's current position a fallback
-    /// retreat point sits when TryFindCoverPoint genuinely finds nothing -
-    /// Lucas's own explicit call: "it isn't a be all and end all if it
-    /// can't find cover... it just needs to use them in the right
-    /// situations" - not finding formal cover shouldn't block retreating/
-    /// healing outright, just means the destination is a plain
-    /// put-some-distance-between-us point instead of a real blocked-LOS
-    /// one.
+    /// How far away from the attacker's current position a fallback retreat point
+    /// sits when TryFindCoverPoint finds nothing, so retreating/healing isn't
+    /// blocked outright by the lack of formal cover.
     /// </summary>
     private const float TacticalFallbackRetreatDistance = 10f;
 
@@ -149,14 +98,10 @@ public partial class LivingRust
     private const float TacticalFlankAngleDegrees = 70f;
 
     /// <summary>
-    /// Entry point, called once per combat tick from the main loop
-    /// (LivingRust.Combat.cs) - internally self-gates on
-    /// TacticalDecisionReevaluationSeconds, so most calls are simply a
-    /// dictionary lookup that returns false immediately. Returns true only
-    /// when a NEW non-default action (retreat/flank) was just started this
-    /// call, telling the caller to skip the rest of this tick - Push/Hold
-    /// always return false, since they're the existing default combat
-    /// behaviour and don't need to interrupt anything.
+    /// Entry point, called once per combat tick. Self-gates on
+    /// TacticalDecisionReevaluationSeconds, so most calls are just a dictionary
+    /// lookup. Returns true only when a new non-default action (retreat/flank) was
+    /// just started, telling the caller to skip the rest of this tick.
     /// </summary>
     private bool TryStartTacticalRepositioning(Survivor survivor, BasePlayer npc, BaseCombatEntity attacker)
     {
@@ -169,16 +114,10 @@ public partial class LivingRust
 
         _nextTacticalDecisionTime[characterId] = Time.realtimeSinceStartup + TacticalDecisionReevaluationSeconds;
 
-        // Last-ditch widening (2026-08-24, Lucas's own explicit request):
-        // below CombatFleeHealthThreshold - the same "too low to keep
-        // fighting normally" line the fixed disengage check already uses -
-        // the normal "10-20m, roughly in front" cover restriction stops
-        // mattering. At that point it's a last-ditch effort to stay alive,
-        // not a considered tactical repositioning - any real cover within
-        // CoverMaxUsefulDistance in ANY direction beats no cover at all.
-        // See TryFindCoverPoint's own doc comment for exactly what this
-        // relaxes (the direction/angle filter only - the distance cap and
-        // every real geometry/ground validation still apply unchanged).
+        // Below CombatFleeHealthThreshold, the normal direction/angle cover
+        // restriction is relaxed as a last-ditch effort to stay alive: any real
+        // cover within CoverMaxUsefulDistance beats no cover at all. Distance cap
+        // and geometry/ground validation still apply unchanged.
         bool desperate = npc.health <= CombatFleeHealthThreshold;
         bool hasCover = TryFindCoverPoint(npc, attacker, out Vector3 coverPoint, desperate);
 
@@ -219,10 +158,8 @@ public partial class LivingRust
         {
             case CombatTacticalAction.Push:
             case CombatTacticalAction.Hold:
-                // The existing default combat behaviour already handles
-                // this (StartFollowing toward hold distance / holding
-                // position) - nothing new to do, let the rest of this
-                // tick run exactly as it always has.
+                // The existing default combat behaviour already handles this;
+                // nothing new to do here.
                 return false;
 
             case CombatTacticalAction.RetreatToCover:
@@ -240,12 +177,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Local sibling of GearScore.cs's own TierFalloffWeight - same real
-    /// triangular-falloff shape (peak at center, tapering to a nonzero
-    /// floor over a given radius), but float-valued with its own per-call
-    /// radius instead of an int gear-score and one shared constant radius,
-    /// since damage/health/distance here all sit on genuinely different
-    /// natural scales and each needs its own tuned reach.
+    /// Triangular-falloff weight curve: peaks at center and tapers to a nonzero
+    /// floor over the given radius. A float-valued sibling of GearScore.cs's
+    /// TierFalloffWeight, since damage/health/distance sit on different scales.
     /// </summary>
     private static float TacticalFalloffWeight(float value, float center, float peak, float floor, float radius)
     {
@@ -269,8 +203,8 @@ public partial class LivingRust
 
         if (distance > TacticalPushMaxUsefulDistance)
         {
-            // A real player doesn't "push" from 25m+ out - that's still
-            // just holding/exchanging fire at range, not closing in.
+            // Beyond this distance, pushing reads as holding/exchanging fire at
+            // range rather than closing in.
             push *= 0.3f;
         }
 
@@ -283,9 +217,8 @@ public partial class LivingRust
 
         if (healthDropRate >= TacticalRapidHealthLossRate)
         {
-            // Rapid burst - see TacticalRapidBurstRetreatMultiplier's own
-            // doc comment for why this boosts BOTH options rather than
-            // picking one deterministically.
+            // Rapid burst boosts both options rather than picking one
+            // deterministically.
             retreatToCover *= TacticalRapidBurstRetreatMultiplier;
             push *= TacticalRapidBurstPushMultiplier;
         }
@@ -310,18 +243,10 @@ public partial class LivingRust
         }
         else
         {
-            // No formal cover found - still worth putting real distance
-            // between them rather than doing nothing, see
-            // TacticalFallbackRetreatDistance's own doc comment. Ground-
-            // snapped the same way TryFindCoverPoint's own live fan search
-            // validates its candidates (2026-08-24, live report: bots
-            // "semi stuck out in the open" mid-heal - a raw
-            // position-plus-offset point with no ground/overlap check can
-            // land somewhere the real pathing system then can't reach at
-            // all, same class of failure the walk-progress-diag/NoPath
-            // lines already show constantly for ordinary loot movement).
-            // Falls back to the raw offset if no real ground is found
-            // nearby at all - still better than not moving.
+            // No formal cover found; still worth putting distance between them
+            // rather than doing nothing. Ground-snapped like TryFindCoverPoint's
+            // own candidate validation, to avoid landing somewhere unreachable.
+            // Falls back to the raw offset if no ground is found nearby.
             Vector3 awayFromAttacker = npc.transform.position - attacker.transform.position;
             awayFromAttacker.y = 0f;
 
@@ -346,18 +271,12 @@ public partial class LivingRust
             VerbosePuts($"'{survivor.Character.Alias}' is falling back from '{GetAttackerDisplayName(attacker)}' - no real cover found nearby.");
         }
 
-        // StartWalkingWithRecovery (not a bare StartWalking) - same
-        // escalating stuck-recovery every other exclusive movement task in
-        // this project already uses (loot/recycle/puzzle walks). onFailed
-        // releases the tactical-action lock immediately rather than leaving
-        // the bot visibly frozen mid-heal for the rest of
-        // TacticalActionDurationSeconds if the destination genuinely can't
-        // be reached - the very next tick gets a fresh reroll instead.
+        // Uses StartWalkingWithRecovery, the same escalating stuck-recovery every
+        // other exclusive movement task in this project uses.
         StartWalkingWithRecovery(survivor, destination, onArrived: null, onFailed: null);
 
-        // Deliberately concurrent, not gated on arrival - see this file's
-        // own top-of-file doc comment for why healing-while-moving is now
-        // the intended behaviour, not a sequential "arrive then heal."
+        // Runs concurrently rather than gated on arrival, since healing-while-moving
+        // is the intended behaviour.
         TryUseMedicalItemIfHurt(survivor);
     }
 
@@ -382,9 +301,8 @@ public partial class LivingRust
 
         VerbosePuts($"'{survivor.Character.Alias}' is flanking {(isLeft ? "left" : "right")} around '{GetAttackerDisplayName(attacker)}'.");
 
-        // See StartTacticalRetreat's own doc comment on StartWalkingWithRecovery -
-        // same reasoning applies here (a raw lateral offset is just as
-        // capable of landing somewhere unreachable).
+        // Same StartWalkingWithRecovery reasoning as StartTacticalRetreat applies
+        // here too.
         StartWalkingWithRecovery(survivor, destination, onArrived: null, onFailed: null);
     }
 

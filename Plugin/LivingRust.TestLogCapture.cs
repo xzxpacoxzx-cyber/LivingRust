@@ -10,16 +10,8 @@ namespace Carbon.Plugins;
 public partial class LivingRust
 {
     /// <summary>
-    /// Carbon.Core.log rotates unpredictably (size/time based, outside our
-    /// control) and this has repeatedly eaten the middle of a spawnmany/
-    /// tracemany test run - the archive cuts off before the test starts and
-    /// the live log only picks up again near the end, losing everything in
-    /// between. This hooks Carbon's static Logger callbacks (the same funnel
-    /// every Puts() call goes through - see RustPlugin.Puts -> Logger.Log)
-    /// and mirrors every "[Project] ..." line to our own append-only file
-    /// that nothing else ever rotates or truncates, so a full test's worth
-    /// of log lines always survives regardless of what Carbon's own log does
-    /// around it.
+    /// Mirrors this plugin's log lines to a dedicated append-only file via Carbon's
+    /// static Logger callbacks, independent of Carbon's own log rotation.
     /// </summary>
     private const string TestLogDirectory = "LivingRust/testlogs";
 
@@ -81,11 +73,7 @@ public partial class LivingRust
 
     private void WriteTestLogLine(string text)
     {
-        // Every plugin on the server routes through the same static Logger
-        // callbacks - filter down to just our own lines (Puts prefixes
-        // everything with "[Title]", and this plugin's Title is "Project"
-        // per the Info attribute) so the file stays a clean per-test record
-        // instead of a firehose of unrelated server/plugin noise.
+        // Filters the shared Logger stream down to this plugin's own lines only.
         if (text == null || !text.StartsWith("[Project]", StringComparison.Ordinal))
         {
             return;
@@ -104,10 +92,7 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Manual start/stop, independent of spawnmany/tracemany auto-capture -
-    /// call once to start, call again to stop. Useful for bounding capture
-    /// around any test (e.g. re-tracing already-spawned bots) without
-    /// needing a fresh spawnmany call.
+    /// Toggles manual test log capture on or off, independent of auto-capture.
     /// </summary>
     [ChatCommand("lr.debug.testlog")]
     private void CmdDebugTestLog(BasePlayer player, string command, string[] args)

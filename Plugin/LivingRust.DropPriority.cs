@@ -6,14 +6,11 @@ namespace Carbon.Plugins;
 
 public partial class LivingRust
 {
-    // Value-aware drop order (2026-09-21, Lucas's own spec). Higher rank =
-    // dropped sooner. Starts from the loot-priority tier, then adjusts:
-    //  - bandages are cheap to make, so they go first (medical syringes and
-    //    large medkits stay protected as Medical);
-    //  - a survivor with a ready firearm has no use for a bow or arrows;
-    //  - a stack at or under 30% of its maximum (300 of 1000 stones, 30
-    //    pistol rounds, a handful of components) is worth less than any
-    //    weapon, clothing or armour piece, so it ranks below them.
+    // Value-aware drop order. Higher rank = dropped sooner. Starts from the
+    // loot-priority tier, then adjusts: bandages go first since they are cheap to
+    // make; a survivor with a ready firearm has no use for a bow or arrows; and a
+    // stack at or under 30% of its maximum ranks below any weapon, clothing, or
+    // armor piece.
     private const float SmallStackFraction = 0.3f;
 
     private int GetDropRank(BasePlayer npc, Item item)
