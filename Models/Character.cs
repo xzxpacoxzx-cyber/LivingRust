@@ -148,6 +148,18 @@ namespace LivingRust.Models
         public int FreeResearchesUsed { get; set; }
 
         /// <summary>
+        /// Completed recycler trips since this character last assessed its storage. After five it
+        /// reads its coffers and picks what to craft next (see AssessCoffers).
+        /// </summary>
+        public int RecycleTripsSinceAssessment { get; set; }
+
+        /// <summary>
+        /// Shortname of the item this character decided, at its last coffer assessment, to craft
+        /// next. The base workshop pursues it and recycling keeps its ingredients. Null when unset.
+        /// </summary>
+        public string CraftGoal { get; set; }
+
+        /// <summary>
         /// Last place this character died and what killed it, used to stop it revisiting a
         /// death site that killed it the same way twice. Persisted so a reload doesn't forget.
         /// </summary>

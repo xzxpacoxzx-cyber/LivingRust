@@ -468,7 +468,17 @@ public partial class LivingRust
             string target = null;
             int bestScore = int.MinValue;
 
-            foreach (string shortname in WeaponAmmoType.Keys)
+            // The weapon the survivor decided it wants at its last assessment comes first.
+            string goal = survivor.Character.CraftGoal;
+            ItemDefinition goalDef = string.IsNullOrEmpty(goal) ? null : ItemManager.FindItemDefinition(goal);
+
+            if (goalDef?.Blueprint != null && IsWeaponGoal(goal) && !npc.blueprints.IsUnlocked(goalDef)
+                && goalDef.Blueprint.userCraftable && goalDef.Blueprint.workbenchLevelRequired <= workbenchLevel)
+            {
+                target = goal;
+            }
+
+            foreach (string shortname in target != null ? Array.Empty<string>() : WeaponGoalShortnames)
             {
                 ItemDefinition def = ItemManager.FindItemDefinition(shortname);
                 ItemBlueprint bp = def?.Blueprint;
@@ -520,7 +530,7 @@ public partial class LivingRust
     {
         ("torso", new[] { "metal.plate.torso", "roadsign.jacket", "wood.armor.jacket", "hoodie", "tshirt", "burlap.shirt" }),
         ("legs", new[] { "roadsign.kilt", "wood.armor.pants", "pants", "burlap.trousers" }),
-        ("head", new[] { "metal.facemask", "wood.armor.helmet", "burlap.headwrap" }),
+        ("head", new[] { "metal.facemask", "bucket.helmet", "wood.armor.helmet", "hat.wolf", "burlap.headwrap" }),
         ("feet", new[] { "shoes.boots", "burlap.shoes" }),
         ("hands", new[] { "roadsign.gloves", "burlap.gloves" }),
     };
@@ -604,6 +614,59 @@ public partial class LivingRust
                 && i.info.shortname != StoneHatchetShortname && i.info.shortname != StonePickaxeShortname);
     }
 
+    /// <summary>
+    /// Clothing/armor pieces worth making right now, best first within each slot: anything in the
+    /// slot's wish list that is ranked above what is worn there AND not already covered by a worn
+    /// piece of equal or better armor tier. Shared by the workshop planner and the assessment.
+    /// </summary>
+    private List<(string Group, string Shortname)> GetUsefulClothingCandidates(BasePlayer npc, int wbLevel)
+    {
+        List<(string, string)> result = new();
+        List<Item> worn = npc.inventory.containerWear.itemList;
+
+        foreach ((string group, string[] candidates) in WorkshopClothingGroups)
+        {
+            int bestWornRank = int.MaxValue;
+
+            foreach (Item w in worn)
+            {
+                int rank = Array.IndexOf(candidates, w.info.shortname);
+
+                if (rank >= 0 && rank < bestWornRank)
+                {
+                    bestWornRank = rank;
+                }
+            }
+
+            for (int i = 0; i < candidates.Length && i < bestWornRank; i++)
+            {
+                string shortname = candidates[i];
+                ItemDefinition def = ItemManager.FindItemDefinition(shortname);
+                ItemModWearable wearable = def?.GetComponent<ItemModWearable>();
+
+                if (def?.Blueprint == null || wearable == null || def.Blueprint.workbenchLevelRequired > wbLevel)
+                {
+                    continue;
+                }
+
+                ArmorTier candidateTier = GetArmorTier(shortname);
+
+                bool coveredAtEqualOrBetter = worn.Any(w =>
+                {
+                    ItemModWearable wornWearable = w.info.GetComponent<ItemModWearable>();
+                    return wornWearable != null && !wearable.CanExistWith(wornWearable) && GetArmorTier(w.info.shortname) >= candidateTier;
+                });
+
+                if (!coveredAtEqualOrBetter)
+                {
+                    result.Add((group, shortname));
+                }
+            }
+        }
+
+        return result;
+    }
+
     private WorkshopJob PlanNextWorkshopJob(Survivor survivor, BasePlayer npc, List<StorageContainer> boxes, int wbLevel, HashSet<string> failed)
     {
         // 1. Metal hatchet + pickaxe: a respawned survivor should never walk back out with a rock.
@@ -627,49 +690,41 @@ public partial class LivingRust
             }
         }
 
-        // 2. Clothing / armor: heads out wearing something in every slot it can afford to cover.
-        List<Item> worn = npc.inventory.containerWear.itemList;
+        // 1b. The item this survivor decided it wants next at its last coffer assessment.
+        string goal = survivor.Character.CraftGoal;
 
-        foreach ((string group, string[] candidates) in WorkshopClothingGroups)
+        if (!string.IsNullOrEmpty(goal))
         {
-            int bestWornRank = int.MaxValue;
+            ItemDefinition goalDef = ItemManager.FindItemDefinition(goal);
 
-            foreach (Item w in worn)
+            if (goalDef == null || IsCraftGoalSatisfied(npc, boxes, goalDef))
             {
-                int rank = Array.IndexOf(candidates, w.info.shortname);
-
-                if (rank >= 0 && rank < bestWornRank)
+                if (goalDef != null)
                 {
-                    bestWornRank = rank;
+                    Puts($"assess: '{survivor.Character.Alias}' has its craft goal '{goal}' now - it will pick a new one at its next assessment.");
                 }
+
+                survivor.Character.CraftGoal = null;
+            }
+            else if (!failed.Contains(goal) && goalDef.category != ItemCategory.Ammunition
+                && (npc.blueprints.IsUnlocked(goalDef) || !IsWeaponGoal(goal))
+                && CanWorkshopCraft(npc, boxes, goalDef, 1, wbLevel))
+            {
+                return new WorkshopJob { Shortname = goal, Reason = "assessed craft goal" };
+            }
+        }
+
+        // 2. Clothing / armor: heads out wearing something in every slot it can afford to cover.
+        foreach ((string group, string shortname) in GetUsefulClothingCandidates(npc, wbLevel))
+        {
+            ItemDefinition def = ItemManager.FindItemDefinition(shortname);
+
+            if (def == null || failed.Contains(shortname) || !CanWorkshopCraft(npc, boxes, def, 1, wbLevel))
+            {
+                continue;
             }
 
-            for (int i = 0; i < candidates.Length && i < bestWornRank; i++)
-            {
-                string shortname = candidates[i];
-                ItemDefinition def = ItemManager.FindItemDefinition(shortname);
-                ItemModWearable wearable = def?.GetComponent<ItemModWearable>();
-
-                if (def == null || wearable == null || failed.Contains(shortname))
-                {
-                    continue;
-                }
-
-                ArmorTier candidateTier = GetArmorTier(shortname);
-
-                bool coveredAtEqualOrBetter = worn.Any(w =>
-                {
-                    ItemModWearable wornWearable = w.info.GetComponent<ItemModWearable>();
-                    return wornWearable != null && !wearable.CanExistWith(wornWearable) && GetArmorTier(w.info.shortname) >= candidateTier;
-                });
-
-                if (coveredAtEqualOrBetter || !CanWorkshopCraft(npc, boxes, def, 1, wbLevel))
-                {
-                    continue;
-                }
-
-                return new WorkshopJob { Shortname = shortname, Reason = $"{group} clothing" };
-            }
+            return new WorkshopJob { Shortname = shortname, Reason = $"{group} clothing" };
         }
 
         // 3. Gunpowder: sulfur + charcoal sitting around is wasted progression.
@@ -941,7 +996,7 @@ public partial class LivingRust
 
         // Free research where the spec allows it: metal tools, basic clothing, gunpowder and ammo for
         // guns it actually owns. Firearms are never unlocked here - those cost scrap-gated research.
-        if (!npc.blueprints.IsUnlocked(def) && !WeaponAmmoType.ContainsKey(job.Shortname))
+        if (!npc.blueprints.IsUnlocked(def) && !IsWeaponGoal(job.Shortname))
         {
             FreeUnlock(npc, def, job.Reason, survivor.Character.Alias);
         }
@@ -1028,6 +1083,262 @@ public partial class LivingRust
 
             next();
         });
+    }
+
+    // ============================================================
+    // Coffer assessment (every 5th recycler trip)
+    // ============================================================
+
+    private const int RecycleTripsPerAssessment = 5;
+
+    private static string[] _weaponGoalShortnames;
+
+    // Every firearm the project knows plus the crossbow (not in WeaponAmmoType - it fires arrows).
+    private static string[] WeaponGoalShortnames =>
+        _weaponGoalShortnames ??= WeaponAmmoType.Keys.Concat(new[] { "crossbow" }).ToArray();
+
+    private static bool IsWeaponGoal(string shortname)
+    {
+        return Array.IndexOf(WeaponGoalShortnames, shortname) >= 0;
+    }
+
+    private static bool IsCraftGoalSatisfied(BasePlayer npc, List<StorageContainer> boxes, ItemDefinition def)
+    {
+        if (def.category == ItemCategory.Ammunition)
+        {
+            return npc.inventory.GetAmount(def.itemid) >= AmmoWorkshopRefillBelow;
+        }
+
+        return CountOwned(npc, boxes, def) > 0 || npc.inventory.containerWear.itemList.Any(w => w.info.itemid == def.itemid);
+    }
+
+    /// <summary>
+    /// Keeps the components of the survivor's current craft goal out of the recycler.
+    /// </summary>
+    private bool IsRecycleFodderFor(Survivor survivor, Item item)
+    {
+        if (!IsRecycleFodder(item))
+        {
+            return false;
+        }
+
+        string goal = survivor.Character.CraftGoal;
+
+        if (string.IsNullOrEmpty(goal))
+        {
+            return true;
+        }
+
+        ItemBlueprint bp = ItemManager.FindItemDefinition(goal)?.Blueprint;
+        return bp == null || !bp.GetIngredients().Any(i => i?.itemDef != null && i.itemDef.itemid == item.info.itemid);
+    }
+
+    private void NoteRecycleTripCompleted(Survivor survivor)
+    {
+        Character character = survivor.Character;
+
+        if (character.Home == null)
+        {
+            return;
+        }
+
+        if (++character.RecycleTripsSinceAssessment < RecycleTripsPerAssessment)
+        {
+            return;
+        }
+
+        character.RecycleTripsSinceAssessment = 0;
+        AssessCoffers(survivor);
+    }
+
+    private sealed class GoalCandidate
+    {
+        public string Shortname = "";
+        public int Category;
+        public int Score;
+        public bool Affordable;
+        public List<string> Missing = new();
+    }
+
+    /// <summary>
+    /// After five recycler trips a survivor reads what its base storage holds and decides what to
+    /// craft next, aiming at the next best thing its workbench tier allows: a better firearm or
+    /// crossbow first, then ammunition for what it owns, then armour/clothing it is missing
+    /// (wood armour, bucket helmet, wolf headdress, shirts, pants, boots/shoes at tier 1 ...).
+    /// The choice is stored as Character.CraftGoal: the workshop crafts it as soon as it is
+    /// affordable, its components stop being recycled, and a goal that is already affordable
+    /// pulls the next base trip forward. Weapons still need a researched blueprint (the scrap
+    /// entitlement), so a weapon the survivor can't research yet is skipped for now.
+    /// </summary>
+    private void AssessCoffers(Survivor survivor)
+    {
+        BasePlayer npc = survivor.Player;
+        HomeBase home = survivor.Character.Home;
+
+        if (npc == null || npc.IsDestroyed || home == null || npc.blueprints == null)
+        {
+            return;
+        }
+
+        List<StorageContainer> boxes = FindOwnedStorageBoxesNear(npc, home.Position, HomeStorageSearchRadius);
+        FindOwnedWorkbench(npc, home, out int wbLevel);
+
+        ItemDefinition scrapDef = ItemManager.FindItemDefinition(ScrapShortname);
+        int scrap = scrapDef != null ? CountOwned(npc, boxes, scrapDef) : 0;
+        int researchLeft = scrap / ScrapPerFreeResearch - survivor.Character.FreeResearchesUsed;
+
+        // What it already owns, so it only aims at genuine upgrades.
+        List<Item> everything = boxes.Where(b => b != null && !b.IsDestroyed && b.inventory != null)
+            .SelectMany(b => b.inventory.itemList)
+            .Concat(npc.inventory.containerMain.itemList)
+            .Concat(npc.inventory.containerBelt.itemList)
+            .ToList();
+
+        int ownedBestWeaponScore = 0;
+        HashSet<string> ownedAmmoTypes = new(survivor.Character.KnownAmmoTypes ?? new List<string>());
+
+        foreach (Item item in everything)
+        {
+            string shortname = item.info.shortname;
+
+            if (!IsWeaponGoal(shortname))
+            {
+                continue;
+            }
+
+            ownedBestWeaponScore = Math.Max(ownedBestWeaponScore, WeaponGearScore.TryGetValue(shortname, out int s) ? s : 1);
+
+            if (WeaponAmmoType.TryGetValue(shortname, out string ammo))
+            {
+                ownedAmmoTypes.Add(ammo);
+            }
+            else if (shortname == "crossbow")
+            {
+                ownedAmmoTypes.Add(ArrowShortname);
+            }
+        }
+
+        GoalCandidate Evaluate(string shortname, int category, int score)
+        {
+            ItemDefinition def = ItemManager.FindItemDefinition(shortname);
+            ItemBlueprint bp = def?.Blueprint;
+
+            if (bp == null || !bp.userCraftable || bp.workbenchLevelRequired > wbLevel)
+            {
+                return null;
+            }
+
+            GoalCandidate candidate = new() { Shortname = shortname, Category = category, Score = score };
+
+            foreach (ItemAmount ingredient in bp.GetIngredients())
+            {
+                if (ingredient?.itemDef == null)
+                {
+                    continue;
+                }
+
+                int have = CountOwned(npc, boxes, ingredient.itemDef);
+
+                if (have < (int)ingredient.amount)
+                {
+                    candidate.Missing.Add($"{(int)ingredient.amount - have}x {ingredient.itemDef.shortname}");
+                }
+            }
+
+            candidate.Affordable = candidate.Missing.Count == 0;
+            return candidate;
+        }
+
+        List<GoalCandidate> pool = new();
+
+        // 0. A better firearm / crossbow than anything owned (research permitting).
+        foreach (string shortname in WeaponGoalShortnames)
+        {
+            int score = WeaponGearScore.TryGetValue(shortname, out int s) ? s : 1;
+            ItemDefinition def = ItemManager.FindItemDefinition(shortname);
+
+            if (def == null || score <= ownedBestWeaponScore || (!npc.blueprints.IsUnlocked(def) && researchLeft <= 0))
+            {
+                continue;
+            }
+
+            GoalCandidate candidate = Evaluate(shortname, 0, score);
+
+            if (candidate != null)
+            {
+                pool.Add(candidate);
+            }
+        }
+
+        // 1. Ammunition for the weapons it owns.
+        foreach (string ammoShortname in ownedAmmoTypes)
+        {
+            ItemDefinition ammoDef = ItemManager.FindItemDefinition(ammoShortname);
+
+            if (ammoDef == null || npc.inventory.GetAmount(ammoDef.itemid) >= AmmoWorkshopRefillBelow)
+            {
+                continue;
+            }
+
+            GoalCandidate candidate = Evaluate(ammoShortname, 1, 0);
+
+            if (candidate != null)
+            {
+                pool.Add(candidate);
+            }
+        }
+
+        // 2. Armour / clothing for any slot it could be wearing something better in.
+        int position = 0;
+
+        foreach ((string _, string shortname) in GetUsefulClothingCandidates(npc, wbLevel))
+        {
+            GoalCandidate candidate = Evaluate(shortname, 2, (int)GetArmorTier(shortname) * 100 - position++);
+
+            if (candidate != null)
+            {
+                pool.Add(candidate);
+            }
+        }
+
+        GoalCandidate chosen = null;
+
+        for (int category = 0; category <= 2 && chosen == null; category++)
+        {
+            chosen = pool.Where(c => c.Category == category)
+                .OrderByDescending(c => c.Affordable)
+                .ThenBy(c => c.Missing.Count)
+                .ThenByDescending(c => c.Score)
+                .FirstOrDefault();
+        }
+
+        string header = $"assess: '{survivor.Character.Alias}' read its coffers ({boxes.Count} box(es), {scrap} scrap, tier {wbLevel} workbench)";
+
+        if (chosen == null)
+        {
+            survivor.Character.CraftGoal = null;
+            Puts($"{header} - nothing worth aiming for with what it has and can research right now.");
+            return;
+        }
+
+        survivor.Character.CraftGoal = chosen.Shortname;
+
+        if (chosen.Category == 1 && survivor.Character.KnownAmmoTypes != null && !survivor.Character.KnownAmmoTypes.Contains(chosen.Shortname))
+        {
+            survivor.Character.KnownAmmoTypes.Add(chosen.Shortname);
+        }
+
+        string[] categoryNames = { "weapon", "ammunition", "armour/clothing" };
+
+        if (chosen.Affordable)
+        {
+            _nextBaseReturnTime[survivor.Character.Id] = Time.realtimeSinceStartup + 10f;
+            Puts($"{header} - wants a {categoryNames[chosen.Category]} next: '{chosen.Shortname}', and it can afford it now - heading home to craft it.");
+        }
+        else
+        {
+            Puts($"{header} - wants a {categoryNames[chosen.Category]} next: '{chosen.Shortname}'; still needs {string.Join(", ", chosen.Missing)} (those components are now kept out of the recycler).");
+        }
     }
 
     // ============================================================

@@ -219,7 +219,7 @@ public partial class LivingRust
 
         bool hasFodder = npc.inventory.containerMain.itemList
             .Concat(npc.inventory.containerBelt.itemList)
-            .Any(IsRecycleFodder);
+            .Any(i => IsRecycleFodderFor(survivor, i));
 
         if (!hasFodder)
         {
@@ -287,7 +287,7 @@ public partial class LivingRust
 
         // Sweeps recycle fodder from the belt into main first, best-effort. The fodder search
         // below still pulls from both containers regardless, so nothing is skipped if this fails.
-        foreach (Item beltItem in npc.inventory.containerBelt.itemList.Where(IsRecycleFodder).ToList())
+        foreach (Item beltItem in npc.inventory.containerBelt.itemList.Where(i => IsRecycleFodderFor(survivor, i)).ToList())
         {
             beltItem.MoveToContainer(npc.inventory.containerMain);
         }
@@ -322,7 +322,7 @@ public partial class LivingRust
         // there's more fodder than room, Components get fed ahead of catch-all Other junk.
         List<Item> fodder = npc.inventory.containerMain.itemList
             .Concat(npc.inventory.containerBelt.itemList)
-            .Where(IsRecycleFodder)
+            .Where(i => IsRecycleFodderFor(survivor, i))
             .OrderBy(GetLootPriorityTier)
             .Take(RecyclerInputSlotCount)
             .ToList();
@@ -471,7 +471,7 @@ public partial class LivingRust
 
         bool hasMoreFodder = npc.inventory.containerMain.itemList
             .Concat(npc.inventory.containerBelt.itemList)
-            .Any(IsRecycleFodder);
+            .Any(i => IsRecycleFodderFor(survivor, i));
 
         if (hasMoreFodder)
         {
@@ -481,6 +481,9 @@ public partial class LivingRust
         }
 
         VerbosePuts($"loot-task: '{survivor.Character.Alias}' has no components left to recycle - done.");
+
+        // A completed recycler trip; every fifth one makes the survivor assess its coffers.
+        NoteRecycleTripCompleted(survivor);
 
         // Goes home to deposit recycled items, then resumes the previous task. CurrentTask stays
         // Recycling for the whole trip so the "already recycling" gate elsewhere keeps working.

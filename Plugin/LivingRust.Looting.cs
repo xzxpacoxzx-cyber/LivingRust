@@ -4280,7 +4280,9 @@ public partial class LivingRust
         TopTier = 5,
     }
 
-    private static readonly string[] WoodArmorShortnames = { "wood.armor.jacket", "wood.armor.pants", "wood.armor.helmet" };
+    // bucket.helmet added 2026-10-03: a tier-1 workbench staple (assessed craft goals) that has to
+    // outrank a burlap headwrap or the workshop would never think it was an upgrade.
+    private static readonly string[] WoodArmorShortnames = { "wood.armor.jacket", "wood.armor.pants", "wood.armor.helmet", "bucket.helmet" };
     // coffeecan.helmet added 2026-08-15 (Lucas's own explicit request,
     // "have coffee can helmet added as medium, same as road sign") - real
     // shortname confirmed via Bundles\items\coffeecan.helmet.json.

@@ -707,6 +707,7 @@ public partial class LivingRust
             TryGrantMonumentClothingReward(survivor, npc, tier);
             TryGrantMonumentMedicalReward(survivor, npc, tier);
             TryGrantMonumentToolBonusReward(survivor, npc, tier);
+            TryGrantMonumentBlueprintFragmentReward(survivor, npc, tier);
         }
         else
         {
@@ -717,6 +718,7 @@ public partial class LivingRust
             TryGrantMonumentClothingReward(survivor, npc, tier);
             TryGrantMonumentMedicalReward(survivor, npc, tier);
             TryGrantMonumentToolBonusReward(survivor, npc, tier);
+            TryGrantMonumentBlueprintFragmentReward(survivor, npc, tier);
         }
 
         if (!TryStartRecyclingTask(survivor))

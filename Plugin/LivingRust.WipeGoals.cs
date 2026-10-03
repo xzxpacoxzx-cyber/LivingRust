@@ -309,8 +309,16 @@ public partial class LivingRust
     /// among the pool's entries once it does. Returns null on a miss. The stated percentage is
     /// the combined odds of getting something from the pool, not each entry's individual odds.
     /// </summary>
+    // Weapon and clothing/armour monument rewards are 20% likelier on every roll, at every monument
+    // (2026-10-03, Lucas's spec). Applied once, here and in RollClothingPool, so every caller
+    // (normal clears, rush completion, the stacked pools) gets it. Multiplicative: a 10% roll
+    // becomes 12%. Capped at 100.
+    private const float MonumentRewardChanceMultiplier = 1.2f;
+
     private static HandicapReward? RollHandicapPool(HandicapReward[] pool, float chancePercent)
     {
+        chancePercent = Mathf.Min(100f, chancePercent * MonumentRewardChanceMultiplier);
+
         if (pool.Length == 0 || UnityEngine.Random.Range(0f, 100f) >= chancePercent)
         {
             return null;
@@ -431,6 +439,8 @@ public partial class LivingRust
 
     private static string RollClothingPool(string[] pool, float chancePercent)
     {
+        chancePercent = Mathf.Min(100f, chancePercent * MonumentRewardChanceMultiplier);
+
         if (pool.Length == 0 || UnityEngine.Random.Range(0f, 100f) >= chancePercent)
         {
             return null;
@@ -565,6 +575,44 @@ public partial class LivingRust
         }
 
         Puts($"wipe-goal: '{survivor.Character.Alias}' got a bonus tool reward from a monument clear - '{shortname}'.");
+    }
+
+    /// <summary>
+    /// Guaranteed blueprint-fragment reward for finishing a monument loot run or ghost route
+    /// (2026-10-03, Lucas's spec; tiers are the project's own 0-indexed MonumentTier): Tier1
+    /// 0-2 basic fragments, Tier2 1-3 basic fragments, Tier3 exactly 1 advanced fragment.
+    /// 100% chance in every case; Tier0 has none.
+    /// </summary>
+    private void TryGrantMonumentBlueprintFragmentReward(Survivor survivor, BasePlayer npc, MonumentTier tier)
+    {
+        string shortname;
+        int amount;
+
+        switch (tier)
+        {
+            case MonumentTier.TierOne:
+                shortname = "basicblueprintfragment";
+                amount = UnityEngine.Random.Range(0, 3);
+                break;
+            case MonumentTier.TierTwo:
+                shortname = "basicblueprintfragment";
+                amount = UnityEngine.Random.Range(1, 4);
+                break;
+            case MonumentTier.TierThree:
+                shortname = "advancedblueprintfragment";
+                amount = 1;
+                break;
+            default:
+                return;
+        }
+
+        if (amount <= 0)
+        {
+            return;
+        }
+
+        GiveItem(npc, shortname, amount);
+        Puts($"wipe-goal: '{survivor.Character.Alias}' got a blueprint fragment reward from a monument clear - {amount}x {shortname}.");
     }
 
     // Flat override chance for ConcludeMonumentRush's bonus roll: one flat roll against the

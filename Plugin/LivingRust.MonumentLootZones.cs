@@ -933,6 +933,7 @@ public partial class LivingRust
             TryGrantMonumentClothingReward(survivor, npc, finishedMonumentTier);
             TryGrantMonumentMedicalReward(survivor, npc, finishedMonumentTier);
             TryGrantMonumentToolBonusReward(survivor, npc, finishedMonumentTier);
+            TryGrantMonumentBlueprintFragmentReward(survivor, npc, finishedMonumentTier);
 
             // The monument-run timer has run out: the one non-full-inventory moment a survivor
             // heads to a recycler (2026-10-03, Lucas's spec). Returns false if nothing worth
