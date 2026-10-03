@@ -599,6 +599,15 @@ public partial class LivingRust
             return;
         }
 
+        // The survivor must itself be on the ground it's placing on, with something solid under the spot.
+        if (Mathf.Abs(npc.transform.position.y - groundHeight) > 2f
+            || !TryFindSupportBeneath(new Vector3(npc.transform.position.x, groundHeight, npc.transform.position.z), BagSupportMaxGap, out Vector3 _))
+        {
+            VerbosePuts($"craft-task: '{survivor.Character.Alias}' won't place a sleeping bag here - no solid ground under it.");
+            ContinueLootTask(survivor, state, forceLocalScan: true);
+            return;
+        }
+
         Vector3 position = npc.transform.position;
         position.y = groundHeight;
 

@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using LivingRust.Core;
 using UnityEngine;
 
@@ -66,6 +68,9 @@ public partial class LivingRust : CarbonPlugin
 
         // Restores every survivor that was alive/spawned when state was last captured.
         RestoreSpawnedSurvivors();
+
+        // Clears out any bot-owned sleeping bags left hanging in the air by earlier placements.
+        RemoveFloatingBotBags(new HashSet<ulong>(_engine.SurvivorManager.GetAll().Select(s => s.Character.BotId)));
 
         // Starts on-sight combat detection.
         StartOnSightDetection();

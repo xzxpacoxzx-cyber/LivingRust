@@ -468,6 +468,12 @@ public partial class LivingRust
                 Puts($"respawn: removing a sleeping bag of bot {botId} placed inside a monument ({monumentZone}).");
                 monumentBag.Kill();
             }
+            else if (entity is SleepingBag airBag && airBag.OwnerID == botId && !airBag.IsDestroyed
+                && !TryFindSupportBeneath(airBag.transform.position, BagSupportMaxGap, out Vector3 _))
+            {
+                Puts($"respawn: removing a sleeping bag of bot {botId} floating in the air at {airBag.transform.position} (nothing solid beneath it).");
+                airBag.Kill();
+            }
         }
 
         foreach (BaseNetworkable entity in BaseNetworkable.serverEntities)

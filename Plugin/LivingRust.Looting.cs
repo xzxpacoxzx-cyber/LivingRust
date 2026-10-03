@@ -6979,9 +6979,15 @@ public partial class LivingRust
             return;
         }
 
-        // The survivor is standing on its own base floor (it was just moved to the cupboard), so its
-        // own height is the right one - the terrain height below a raised foundation would bury the bag.
-        Vector3 position = npc.transform.position;
+        // The bag goes flush on the floor the survivor is standing on - and only if there IS one right
+        // beneath it. (Using the survivor's own height fixed bags buried under raised foundations, but
+        // let a survivor that was up in the air drop a bag there: bags hanging 30-40m up.)
+        if (!TryFindSupportBeneath(npc.transform.position, BagSupportMaxGap, out Vector3 position))
+        {
+            Puts($"home-storage: '{survivor.Character.Alias}' won't place a sleeping bag at {npc.transform.position} - nothing solid within {BagSupportMaxGap:F1}m beneath it.");
+            return;
+        }
+
         Quaternion rotation = Quaternion.LookRotation(Vector3.up, npc.eyes.BodyForward()) * Quaternion.Euler(90f, 0f, 0f);
 
         BaseEntity bagEntity = GameManager.server.CreateEntity(modDeployable.entityPrefab.resourcePath, position, rotation);

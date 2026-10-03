@@ -2931,7 +2931,12 @@ public partial class LivingRust
             BasePlayer liveNpc = survivor.Player;
             Item bagItem = liveNpc != null && !liveNpc.IsDestroyed ? liveNpc.inventory.FindItemByItemID(bagDef.itemid) : null;
 
-            if (bagItem != null)
+            if (bagItem != null && Mathf.Abs(liveNpc.transform.position.y - anchor.y) > BagMaxHeightFromCupboard)
+            {
+                // Not on the cupboard's level (stuck on a roof, hanging in the air...): no bag this trip.
+                Puts($"home-storage: '{survivor.Character.Alias}' is {liveNpc.transform.position.y - anchor.y:F1}m off its cupboard's height - not placing a sleeping bag here.");
+            }
+            else if (bagItem != null)
             {
                 DeployBaseSleepingBag(survivor, liveNpc, bagDef, bagItem);
                 _baseBagFailCount.Remove(survivor.Character.Id);
@@ -2941,6 +2946,57 @@ public partial class LivingRust
         }
 
         StartPhasingToDestination(survivor, point, onArrived: Deploy, onFailed: Deploy);
+    }
+
+    // ============================================================
+    // Sleeping bags must sit on something
+    // ============================================================
+
+    private static readonly int BagSupportMask = LayerMask.GetMask("Terrain", "World", "Construction");
+    private const float BagSupportMaxGap = 1.5f;
+    private const float BagMaxHeightFromCupboard = 3f;
+
+    /// <summary>
+    /// Finds the solid surface (terrain, world geometry or a base floor) directly below position, within
+    /// maxGap. A bag placed with nothing under it just hangs there (the sky-bags Lucas reported).
+    /// </summary>
+    private static bool TryFindSupportBeneath(Vector3 position, float maxGap, out Vector3 surface)
+    {
+        if (Physics.Raycast(position + Vector3.up * 0.5f, Vector3.down, out RaycastHit hit, maxGap + 0.5f, BagSupportMask, QueryTriggerInteraction.Ignore))
+        {
+            surface = hit.point;
+            return true;
+        }
+
+        surface = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Removes every bot-owned sleeping bag with nothing solid beneath it (placed before this check
+    /// existed, or by a survivor that was itself hanging in the air). Run at startup and whenever a
+    /// survivor's bags are looked up for a respawn.
+    /// </summary>
+    private int RemoveFloatingBotBags(ICollection<ulong> botIds)
+    {
+        int removed = 0;
+
+        foreach (BaseNetworkable entity in BaseNetworkable.serverEntities.ToArray())
+        {
+            if (entity is SleepingBag bag && !bag.IsDestroyed && botIds.Contains(bag.OwnerID)
+                && !TryFindSupportBeneath(bag.transform.position, BagSupportMaxGap, out Vector3 _))
+            {
+                bag.Kill();
+                removed++;
+            }
+        }
+
+        if (removed > 0)
+        {
+            Puts($"sleeping-bags: removed {removed} bot-owned bag(s) that had nothing solid beneath them (floating in the air).");
+        }
+
+        return removed;
     }
 
     // ============================================================
