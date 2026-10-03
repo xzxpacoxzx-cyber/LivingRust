@@ -428,6 +428,158 @@ public partial class LivingRust
     }
 
     // ============================================================
+    // Excess wood / stone, and ground-following for stationary survivors
+    // ============================================================
+
+    private readonly Dictionary<Guid, float> _nextExcessDropCheck = new();
+    private const float ExcessDropCheckSeconds = 20f;
+    private const float ExcessDropMinDistanceFromBase = 25f;
+
+    /// <summary>
+    /// The numeric cap (design requirement + 20% pre-base, 1000 roaming) applied as a hard carry limit:
+    /// is the survivor already holding that much of this wood/stone? Used to refuse more pickups.
+    /// </summary>
+    private bool IsAtCarryCap(Survivor survivor, BasePlayer npc, string shortname)
+    {
+        if (survivor == null || (shortname != WoodShortname && shortname != StoneShortname))
+        {
+            return false;
+        }
+
+        ItemDefinition def = ItemManager.FindItemDefinition(shortname);
+        int cap = GetGatherCap(survivor, shortname);
+
+        return def != null && cap != int.MaxValue && npc.inventory.GetAmount(def.itemid) >= cap;
+    }
+
+    /// <summary>
+    /// Drops wood / stone carried beyond the cap (2026-10-03, Lucas's spec): the base-design requirement
+    /// + 20% before a base exists, 1000 once roaming with one. Does nothing near the base (a deposit
+    /// trip banks it), mid-build, in a fight, or before there is any meaningful cap (no base and no
+    /// rolled design). Pickup of wood/stone is refused at the cap, so the bot does not re-collect it.
+    /// </summary>
+    private void DropExcessWoodAndStone(Survivor survivor, BasePlayer npc)
+    {
+        Guid id = survivor.Character.Id;
+        float now = Time.realtimeSinceStartup;
+
+        if (_nextExcessDropCheck.TryGetValue(id, out float next) && now < next)
+        {
+            return;
+        }
+
+        _nextExcessDropCheck[id] = now + ExcessDropCheckSeconds;
+
+        HomeBase home = survivor.Character.Home;
+
+        if ((home == null && !_rolledBaseDesign.ContainsKey(id))
+            || IsBaseBuildInFlight(id)
+            || _activeCombat.ContainsKey(id)
+            || (home != null && Vector3.Distance(npc.transform.position, home.Position) < ExcessDropMinDistanceFromBase))
+        {
+            return;
+        }
+
+        foreach (string shortname in new[] { WoodShortname, StoneShortname })
+        {
+            ItemDefinition def = ItemManager.FindItemDefinition(shortname);
+
+            if (def == null)
+            {
+                continue;
+            }
+
+            int excess = npc.inventory.GetAmount(def.itemid) - GetGatherCap(survivor, shortname);
+
+            if (excess <= 0)
+            {
+                continue;
+            }
+
+            List<Item> toDrop = new();
+            npc.inventory.Take(toDrop, def.itemid, excess);
+
+            Vector3 dropPosition = npc.transform.position + Vector3.up * 1f + npc.eyes.BodyForward() * 0.5f;
+            Vector3 dropVelocity = npc.eyes.BodyForward() * 0.5f + Vector3.up * 0.5f;
+
+            foreach (Item item in toDrop)
+            {
+                item.Drop(dropPosition, dropVelocity);
+            }
+
+            Puts($"gather-cap: '{survivor.Character.Alias}' was carrying {excess} more {shortname} than its cap ({GetGatherCap(survivor, shortname)}) - dropped the excess.");
+        }
+    }
+
+    // A connectionless bot never gets Rust's own gravity tick, so anything that leaves it off the ground
+    // (a strafe step off a ledge, a phase that ended mid-air, a floor that got destroyed) leaves it
+    // hanging there until some walk happens to correct its height. Lucas's report: bots floating during
+    // PVP in monuments. This lets any stationary survivor fall back to the surface beneath it.
+    private const float GravitySweepIntervalSeconds = 0.25f;
+    private const float GravityFallSpeed = 14f;
+    private const float GravityMinGap = 0.35f;
+    private const float GravityMaxGap = 8f;
+    private Timer _gravityTimer;
+    private static readonly int GravityGroundMask = LayerMask.GetMask("Terrain", "World", "Construction");
+
+    private void StartGravitySweep()
+    {
+        _gravityTimer?.Destroy();
+        _gravityTimer = timer.Every(GravitySweepIntervalSeconds, RunGravitySweep);
+    }
+
+    private void StopGravitySweep()
+    {
+        _gravityTimer?.Destroy();
+        _gravityTimer = null;
+    }
+
+    private void RunGravitySweep()
+    {
+        if (_engine == null)
+        {
+            return;
+        }
+
+        foreach (Survivor survivor in _engine.SurvivorManager.GetAll())
+        {
+            BasePlayer npc = survivor.Player;
+
+            // Anything with a movement system driving it (walking, phasing, climbing) owns its own height.
+            if (npc == null || npc.IsDestroyed || !npc.IsAlive() || npc.IsWounded()
+                || survivor.Character.State == CharacterState.Dead
+                || _activeMovement.ContainsKey(survivor.Character.Id)
+                || npc.WaterFactor() > 0.3f
+                || npc.isMounted)
+            {
+                continue;
+            }
+
+            Vector3 position = npc.transform.position;
+
+            if (!Physics.Raycast(position + Vector3.up * 0.3f, Vector3.down, out RaycastHit hit, GravityMaxGap + 0.3f, GravityGroundMask, QueryTriggerInteraction.Ignore))
+            {
+                continue;
+            }
+
+            float gap = position.y - hit.point.y;
+
+            if (gap < GravityMinGap || gap > GravityMaxGap)
+            {
+                continue;
+            }
+
+            position.y = Mathf.Max(hit.point.y, position.y - GravityFallSpeed * GravitySweepIntervalSeconds);
+            npc.transform.position = position;
+            npc.MovePosition(position);
+            survivor.Position = position;
+            survivor.Character.Position = position;
+
+            VerbosePuts($"gravity: '{survivor.Character.Alias}' was {gap:F1}m above the surface with nothing moving it - falling.");
+        }
+    }
+
+    // ============================================================
     // Storage stockpile (cached) and fuel need
     // ============================================================
 

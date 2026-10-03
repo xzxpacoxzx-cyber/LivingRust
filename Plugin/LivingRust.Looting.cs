@@ -1255,6 +1255,9 @@ public partial class LivingRust
         // Fire-and-forget: no-ops instantly if health is fine, already mid-chain, on cooldown, or has nothing to heal with.
         TryUseMedicalItemIfHurt(survivor);
 
+        // Wood / stone carried past the gather cap is dropped (throttled; see DropExcessWoodAndStone).
+        DropExcessWoodAndStone(survivor, npc);
+
         // Top priority right after a respawn: go scavenge the survivor's own death spot first.
         if (TryPursueDeathSiteLoot(survivor, npc, state))
         {
@@ -1543,6 +1546,7 @@ public partial class LivingRust
             candidate => !state.Visited.Contains(candidate.net.ID)
                 && !IsLootTargetClaimed(candidate.net.ID)
                 && !IsNeverLootItem(candidate.item.info.shortname)
+                && !ShouldSkipExcessWood(npc, candidate.item)
                 && !IsInPoisonedZone(candidate.transform.position, state)
                 && !IsInThreatFleeZone(survivor.Character.Id, candidate.transform.position)
                 && !IsInMonumentAvoidZone(candidate.transform.position)
@@ -3158,6 +3162,7 @@ public partial class LivingRust
             c => !IsLootTargetClaimed(c.net.ID)
                 && !RecentlyFailedEnRouteLoot(c.net.ID)
                 && !IsNeverLootItem(c.item.info.shortname)
+                && !ShouldSkipExcessWood(npc, c.item)
                 && !IsInMonumentAvoidZone(c.transform.position)
                 && !IsBelowSafeLootDepth(c.transform.position)
                 && !IsNearCardReader(c.transform.position)
@@ -5235,12 +5240,23 @@ public partial class LivingRust
 
     private bool ShouldSkipExcessWood(BasePlayer npc, Item item)
     {
-        if (item.info.shortname != WoodShortname)
+        string shortname = item.info.shortname;
+
+        if (shortname != WoodShortname && shortname != StoneShortname)
         {
             return false;
         }
 
-        return npc.inventory.GetAmount(item.info.itemid) >= WoodPickupCap;
+        // At (or past) the survivor's gather cap - the base-design requirement + 20% before a base exists,
+        // 1000 once roaming with one: no more of it is picked up, from containers, corpses or the ground.
+        Survivor picker = FindSurvivorByPlayer(npc);
+
+        if (picker != null)
+        {
+            return IsAtCarryCap(picker, npc, shortname);
+        }
+
+        return shortname == WoodShortname && npc.inventory.GetAmount(item.info.itemid) >= WoodPickupCap;
     }
 
     private bool IsContainerFull(ItemContainer container)

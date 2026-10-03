@@ -77,6 +77,9 @@ public partial class LivingRust : CarbonPlugin
         // Closes any base door left standing open by an interrupted enter/exit route.
         StartDoorSweeper();
 
+        // Lets stationary survivors fall back to the ground (floating-bot fix).
+        StartGravitySweep();
+
         // Drives the crafting queue, since a disconnected survivor's own
         // ItemCrafter needs this manual push.
         StartCraftQueueDriver();
@@ -123,6 +126,7 @@ public partial class LivingRust : CarbonPlugin
         StopLifeStallWatchdog();
         StopBaseReturnScheduler();
         StopDoorSweeper();
+        StopGravitySweep();
         StopCraftQueueDriver();
 
         // Captures every spawned survivor's live position/health/inventory into its
