@@ -166,7 +166,10 @@ public partial class LivingRust
     /// </summary>
     private bool HasCompletedPrimitiveGoals(Survivor survivor, BasePlayer npc)
     {
-        if (!_hasPlacedSleepingBag.Contains(survivor.Character.Id))
+        // A bag already standing at the base counts, even on a life where the per-life flag was
+        // never set (the respawn lands at that very bag).
+        if (!_hasPlacedSleepingBag.Contains(survivor.Character.Id)
+            && !(survivor.Character.Home != null && HasSleepingBagNearHome(npc, survivor.Character.Home)))
         {
             return false;
         }
@@ -193,21 +196,9 @@ public partial class LivingRust
             return false;
         }
 
-        ItemDefinition hatchetDef = ItemManager.FindItemDefinition(StoneHatchetShortname);
-
-        if (hatchetDef == null || npc.inventory.GetAmount(hatchetDef.itemid) < 1)
-        {
-            return false;
-        }
-
-        ItemDefinition pickaxeDef = ItemManager.FindItemDefinition(StonePickaxeShortname);
-
-        if (pickaxeDef == null || npc.inventory.GetAmount(pickaxeDef.itemid) < 1)
-        {
-            return false;
-        }
-
-        return true;
+        // Any gather tool of the family satisfies this, not specifically the stone one - a survivor
+        // kitted out with metal tools at its workbench shouldn't be sent to craft stone ones too.
+        return HasAnyToolOfFamily(npc, HatchetFamily) && HasAnyToolOfFamily(npc, PickaxeFamily);
     }
 
     /// <summary>
@@ -233,6 +224,11 @@ public partial class LivingRust
         if (TryPursueOneOffToolGoal(survivor, npc, state, StonePickaxeShortname, "stone pickaxe", allowGather: false)) return true;
         if (TryPursueSleepingBagGoal(survivor, npc, state, allowGather: false)) return true;
         if (TryPursueBandageGoal(survivor, npc, state, allowGather: false)) return true;
+        // A learned firearm beats a bow/crossbow outright (2026-10-03, Lucas's own explicit
+        // framing: "10x more effective... progress towards getting stronger") - checked ahead of
+        // the bow/arrow goals below, not instead of them, so a survivor with no firearm blueprint
+        // yet still falls through to the normal primitive bow path unchanged.
+        if (TryPursueLearnedFirearmGoal(survivor, npc, state, allowGather: false)) return true;
         if (TryPursueBowGoal(survivor, npc, state, allowGather: false)) return true;
         if (TryPursueArrowGoal(survivor, npc, state, allowGather: false)) return true;
 
@@ -240,6 +236,7 @@ public partial class LivingRust
         if (TryPursueOneOffToolGoal(survivor, npc, state, StonePickaxeShortname, "stone pickaxe")) return true;
         if (TryPursueSleepingBagGoal(survivor, npc, state)) return true;
         if (TryPursueBandageGoal(survivor, npc, state)) return true;
+        if (TryPursueLearnedFirearmGoal(survivor, npc, state, allowGather: true)) return true;
         if (TryPursueBowGoal(survivor, npc, state)) return true;
         if (TryPursueArrowGoal(survivor, npc, state)) return true;
 
@@ -272,6 +269,36 @@ public partial class LivingRust
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// A real firearm the survivor has learned the blueprint for (via pickup, see
+    /// LivingRust.Blueprints.cs) beats crafting a bow/crossbow outright - 2026-10-03, Lucas's own
+    /// explicit spec. No-ops once the survivor already has a real ready firearm (HasReadyFirearm),
+    /// so this only ever fires for a survivor that's currently primitive-tier despite having
+    /// learned something better. Picks the single best-scoring learned firearm it can currently
+    /// craft (or gather toward, on the allowGather pass) via the same generic one-off goal
+    /// TryPursueOneOffToolGoal already uses for tools - this is specifically about building the
+    /// weapon itself; ammo crafting/gathering is unchanged, handled by the existing ammo-goal
+    /// machinery once the gun exists.
+    /// </summary>
+    private bool TryPursueLearnedFirearmGoal(Survivor survivor, BasePlayer npc, LootTaskState state, bool allowGather)
+    {
+        if (HasReadyFirearm(npc) || npc.blueprints == null)
+        {
+            return false;
+        }
+
+        string bestShortname = WeaponPriority
+            .Where(shortname => Array.IndexOf(NonCombatCapableRangedWeaponShortnames, shortname) < 0
+                && Array.IndexOf(MeleeToolPriority, shortname) < 0
+                && npc.inventory.GetAmount(ItemManager.FindItemDefinition(shortname)?.itemid ?? -1) < 1
+                && ItemManager.FindItemDefinition(shortname) is ItemDefinition def
+                && npc.blueprints.IsUnlocked(def))
+            .OrderByDescending(shortname => WeaponGearScore.TryGetValue(shortname, out int score) ? score : 0)
+            .FirstOrDefault();
+
+        return bestShortname != null && TryPursueOneOffToolGoal(survivor, npc, state, bestShortname, "learned firearm", allowGather);
     }
 
     private const string StoneHatchetShortname = "stonehatchet";
@@ -401,6 +428,13 @@ public partial class LivingRust
             return false;
         }
 
+        // With a base standing, the respawn bag is placed AT the base by the base trip
+        // (TryPlaceSleepingBagAtBase) - never dropped out in the field.
+        if (survivor.Character.Home != null)
+        {
+            return false;
+        }
+
         ItemDefinition bagDef = ItemManager.FindItemDefinition(SleepingBagShortname);
         ItemBlueprint bp = bagDef?.Blueprint;
         ItemCrafter crafter = npc.inventory.crafting;
@@ -520,6 +554,17 @@ public partial class LivingRust
 
         if (bagItem == null)
         {
+            ContinueLootTask(survivor, state, forceLocalScan: true);
+            return;
+        }
+
+        // No base yet (2026-10-03, Lucas's own spec): the checklist bag is HELD, not dropped on the
+        // ground wherever the survivor happens to be - it gets placed at the base once one exists
+        // (TryPlaceSleepingBagAtBase), so a death never respawns it on some far-flung beach spot.
+        if (survivor.Character.Home == null)
+        {
+            _hasPlacedSleepingBag.Add(survivor.Character.Id);
+            Puts($"craft-task: '{survivor.Character.Alias}' crafted its sleeping bag and is holding it to place at its base once one is built.");
             ContinueLootTask(survivor, state, forceLocalScan: true);
             return;
         }
@@ -1089,6 +1134,19 @@ public partial class LivingRust
     private bool TryGatherViaOre(Survivor survivor, BasePlayer npc, LootTaskState state, string preferredYieldShortname = null)
     {
         if (!HasAnyGatherCapableTool(npc, OreGatherToolPriority))
+        {
+            return false;
+        }
+
+        // Same early-game ore discipline as the opportunistic/extended ore searches
+        // (IsEarlyGameRestrictedOre, LivingRust.ResourceGathering.cs) - metal/sulfur ore stay
+        // off-limits until a survivor has a base down, even when a specific crafting goal
+        // (code lock/sheet metal door/tool cupboard, all pursued "regardless of checklist
+        // status") wants metal.fragments. This caller was the one gap in that rule (2026-10-03,
+        // Lucas's live report: bots mining heavy metal/sulfur ore early game) - recycling
+        // already supplies metal.fragments without needing a mining trip, and once a base
+        // exists this restriction lifts the same way it already does for the other two paths.
+        if (preferredYieldShortname is MetalOreShortname or SulfurOreShortname && survivor.Character.Home == null)
         {
             return false;
         }

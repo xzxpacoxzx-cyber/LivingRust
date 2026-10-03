@@ -56,6 +56,8 @@ public partial class LivingRust : CarbonPlugin
 
         _engine?.Start();
 
+        DetectFreshWipe();
+
         ValidateMeleeToolPriority();
         ValidateWeaponPriority();
         ValidateNeverLootShortnames();
@@ -71,6 +73,9 @@ public partial class LivingRust : CarbonPlugin
         // Safety net that catches a survivor that is stuck and not moving.
         StartLifeStallWatchdog();
         StartBaseReturnScheduler();
+
+        // Closes any base door left standing open by an interrupted enter/exit route.
+        StartDoorSweeper();
 
         // Drives the crafting queue, since a disconnected survivor's own
         // ItemCrafter needs this manual push.
@@ -117,6 +122,7 @@ public partial class LivingRust : CarbonPlugin
         StopOnSightDetection();
         StopLifeStallWatchdog();
         StopBaseReturnScheduler();
+        StopDoorSweeper();
         StopCraftQueueDriver();
 
         // Captures every spawned survivor's live position/health/inventory into its

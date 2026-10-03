@@ -614,6 +614,16 @@ public partial class LivingRust
         for (int attempt = 0; attempt < MaxDistanceDecisionRerolls; attempt++)
         {
             (float tierZero, float tier1, float tier2, float tier3, float local) = GetTierWeights(gearScore);
+
+            // A survivor with a base is a monument farmer, not a roadside scavenger or a local
+            // wanderer (2026-10-03): its scrap/component income is what funds research, crafting
+            // and base upgrades, so the low-value tiers and "just search here" are heavily damped.
+            if (survivor.Character.Home != null)
+            {
+                tierZero *= 0.3f;
+                tier1 *= 0.7f;
+                local *= 0.25f;
+            }
             (tierZero, tier1, tier2, tier3) = ApplyKeycardTierDestinationBias(npc, tierZero, tier1, tier2, tier3);
 
             float total = tierZero + tier1 + tier2 + tier3 + local;
@@ -720,6 +730,14 @@ public partial class LivingRust
             return GetGearScore(npc) < MediumTierBandMin;
         }
 
+        // Launch Site had no floor at all (2026-10-03): the local server log shows gear-score 0-14
+        // survivors rolling it over a hundred times, and the hosted server piled up 50+ corpses
+        // there. Ghost-route-only now (see IsGhostRouteOnlyMonument), plus a real gear floor.
+        if (monumentName.IndexOf("launch_site", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return GetGearScore(npc) < MediumTierBandMin;
+        }
+
         if (monumentName.IndexOf("arctic_research_base", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             return GetGearScore(npc) < ArcticResearchBaseGearScoreMin;
@@ -749,6 +767,21 @@ public partial class LivingRust
 
                 if (IsBelowRequiredGearScoreForMonument(npc, monument.name))
                 {
+                    continue;
+                }
+
+                // Ghost-route-only monuments (Launch Site): the destination IS a free authored
+                // route's start point, and the monument drops out of the roll entirely when every
+                // route is held or recently run - never a loot zone to wander into.
+                if (IsGhostRouteOnlyMonument(monument))
+                {
+                    Survivor rollingSurvivor = FindSurvivorByPlayer(npc);
+
+                    if (rollingSurvivor != null && TryGetAvailableGhostRouteStart(monument, rollingSurvivor.Character.Id, out Vector3 routeStart))
+                    {
+                        candidates.Add((routeStart, monument.name));
+                    }
+
                     continue;
                 }
 

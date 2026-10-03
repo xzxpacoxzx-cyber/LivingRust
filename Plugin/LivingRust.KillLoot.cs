@@ -410,7 +410,9 @@ public partial class LivingRust
             return false;
         }
 
-        if (UnityEngine.Time.realtimeSinceStartup >= entry.ExpiresAt || entry.Steps >= DeathSiteLootMaxSteps)
+        // A death spot that has since been poisoned (died there the same way twice, a pile-up of
+        // bodies, or inside a ghost-route-only monument) is never walked back to.
+        if (UnityEngine.Time.realtimeSinceStartup >= entry.ExpiresAt || entry.Steps >= DeathSiteLootMaxSteps || IsInMonumentAvoidZone(entry.Position))
         {
             _pendingDeathSiteLoot.Remove(characterId);
             return false;

@@ -140,6 +140,21 @@ namespace LivingRust.Models
         /// </summary>
         public List<string> KnownAmmoTypes { get; set; } = new();
 
+        /// <summary>
+        /// How many free blueprint researches this character has already been granted from
+        /// its scrap hoard (one per 150 scrap sitting in its base storage). Never shrinks, so
+        /// spending or recycling the scrap later doesn't hand the same entitlement out twice.
+        /// </summary>
+        public int FreeResearchesUsed { get; set; }
+
+        /// <summary>
+        /// Last place this character died and what killed it, used to stop it revisiting a
+        /// death site that killed it the same way twice. Persisted so a reload doesn't forget.
+        /// </summary>
+        public Vector3 LastDeathPosition { get; set; }
+
+        public string LastDeathCause { get; set; }
+
         public Character()
         {
             Id = Guid.NewGuid();

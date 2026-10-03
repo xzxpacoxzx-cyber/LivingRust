@@ -1621,16 +1621,16 @@ public partial class LivingRust
     private const float SpawnManyStaggerWindowSeconds = 5f;
 
     // Delay before the next bot spawns when this one's spawn point lands within
-    // SpawnManyContentionRadius of the previous one. Currently a flat 0.1s for testing.
-    private const float SpawnManyContentionDelayMin = 0.1f;
-    private const float SpawnManyContentionDelayMax = 0.1f;
+    // SpawnManyContentionRadius of the previous one. 1-3s variable buffer (2026-10-03, Lucas: bots should not spawn instantaneously).
+    private const float SpawnManyContentionDelayMin = 1f;
+    private const float SpawnManyContentionDelayMax = 3f;
 
     // Distance between two consecutive spawn points to count as contested.
     private const float SpawnManyContentionRadius = 5f;
 
-    // Stagger used when a bot's spawn point is not contested. Currently a flat 0.1s for testing.
-    private const float SpawnManyClearDelayMin = 0.1f;
-    private const float SpawnManyClearDelayMax = 0.1f;
+    // Stagger used when a bot's spawn point is not contested. Same 1-3s variable buffer as above.
+    private const float SpawnManyClearDelayMin = 1f;
+    private const float SpawnManyClearDelayMax = 3f;
 
     /// <summary>
     /// Percent chance (0-100) each /lr.debug.spawnmany survivor spawns at a validated random inland point

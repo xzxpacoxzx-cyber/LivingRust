@@ -337,9 +337,17 @@ public partial class LivingRust
             return;
         }
 
-        GiveItem(npc, reward.AmmoShortname, reward.AmmoAmount);
+        // 2026-10-03, Lucas's own explicit spec: the stated amount is now a ceiling, not a fixed
+        // grant - rolled 0 to that amount inclusive, so sometimes the weapon arrives with no ammo
+        // at all.
+        int ammoAmount = UnityEngine.Random.Range(0, reward.AmmoAmount + 1);
 
-        Puts($"wipe-goal: '{survivor.Character.Alias}' got a handicap reward - '{reward.WeaponShortname}' ({weapon.conditionNormalized:P0} durability) + {reward.AmmoAmount}x {reward.AmmoShortname}.");
+        if (ammoAmount > 0)
+        {
+            GiveItem(npc, reward.AmmoShortname, ammoAmount);
+        }
+
+        Puts($"wipe-goal: '{survivor.Character.Alias}' got a handicap reward - '{reward.WeaponShortname}' ({weapon.conditionNormalized:P0} durability) + {ammoAmount}x {reward.AmmoShortname}.");
     }
 
     // Already-armed penalty: an armed survivor can still roll a handicap weapon, just at a
@@ -389,6 +397,174 @@ public partial class LivingRust
         {
             GrantHandicapReward(survivor, npc, reward.Value);
         }
+    }
+
+    // Clothing/armor bonus reward (2026-10-03, Lucas's own explicit spec), independent of and
+    // stacked on top of the weapon handicap reward above - one item, not all, cascaded the same
+    // "tier's own pool, then a boosted shot at the tier below" shape. Shortnames verified live
+    // against wiki.rustclash.com's own "Short Name" field for each item, not guessed.
+    private static readonly string[] Tier0ClothingPool =
+    {
+        "hazmatsuit", "tshirt", "shirt.tanktop", "wood.armor.helmet", "wood.armor.pants",
+        "wood.armor.jacket", "woodarmor.gloves", "jacket.snow", "pants", "bucket.helmet",
+        "riot.helmet", "smallbackpack", "diving.wetsuit", "pants.shorts",
+        "attire.hide.boots", "attire.hide.pants", "attire.hide.helterneck", "attire.hide.poncho",
+        "attire.hide.skirt", "attire.hide.vest",
+    };
+
+    private static readonly string[] Tier1ClothingPool =
+    {
+        "shoes.boots", "hat.wolf", "shirt.collared", "tshirt.long", "jacket", "hoodie",
+        "coffeecan.helmet", "roadsign.kilt", "roadsign.jacket", "hat.cap", "hat.boonie",
+        "roadsign.gloves",
+    };
+
+    private static readonly string[] Tier2ClothingPool =
+    {
+        "roadsign.kilt", "roadsign.jacket", "coffeecan.helmet", "hat.wolf", "roadsign.gloves",
+    };
+
+    private static readonly string[] Tier3ClothingPool =
+    {
+        "metal.facemask", "metal.plate.torso", "largebackpack",
+    };
+
+    private static string RollClothingPool(string[] pool, float chancePercent)
+    {
+        if (pool.Length == 0 || UnityEngine.Random.Range(0f, 100f) >= chancePercent)
+        {
+            return null;
+        }
+
+        return pool[UnityEngine.Random.Range(0, pool.Length)];
+    }
+
+    /// <summary>
+    /// Bonus clothing/armor roll on top of the weapon handicap reward, same "finished a loot run
+    /// at this monument" trigger. Tier0: 10% at the Tier0 pool. Tier1: 15% at Tier1, else 20% at
+    /// Tier0. Tier2: 20% at Tier2, else 30% at Tier1. Tier3: 20% at Tier3, else 30% at Tier2 -
+    /// first hit wins, so only ever one item. Random not-full condition, same "lucky battlefield
+    /// find" reasoning as GrantHandicapReward, skipped for items with no durability.
+    /// </summary>
+    private void TryGrantMonumentClothingReward(Survivor survivor, BasePlayer npc, MonumentTier tier)
+    {
+        string shortname = tier switch
+        {
+            MonumentTier.TierZero => RollClothingPool(Tier0ClothingPool, 10f),
+            MonumentTier.TierOne => RollClothingPool(Tier1ClothingPool, 15f) ?? RollClothingPool(Tier0ClothingPool, 20f),
+            MonumentTier.TierTwo => RollClothingPool(Tier2ClothingPool, 20f) ?? RollClothingPool(Tier1ClothingPool, 30f),
+            MonumentTier.TierThree => RollClothingPool(Tier3ClothingPool, 20f) ?? RollClothingPool(Tier2ClothingPool, 30f),
+            _ => null,
+        };
+
+        if (shortname == null)
+        {
+            return;
+        }
+
+        Item item = ItemManager.CreateByName(shortname, 1);
+
+        if (item == null)
+        {
+            Puts($"WARNING: monument clothing reward couldn't create '{shortname}' - unknown shortname?");
+            return;
+        }
+
+        if (item.hasCondition)
+        {
+            item.condition = item.info.condition.max * UnityEngine.Random.Range(HandicapDurabilityMin, HandicapDurabilityMax);
+        }
+
+        if (!npc.inventory.GiveItem(item))
+        {
+            item.Remove();
+            return;
+        }
+
+        Puts($"wipe-goal: '{survivor.Character.Alias}' got a bonus clothing reward from a monument clear - '{shortname}'.");
+    }
+
+    // Medical bonus reward (2026-10-03, Lucas's own explicit spec), independent of the other
+    // monument-clear rewards above. Tier0 gets bandages (1-3), Tier1/2/3 get medical syringes
+    // (1-3) - both 20% flat, no tier scaling.
+    private const float MonumentMedicalRewardChance = 20f;
+
+    private void TryGrantMonumentMedicalReward(Survivor survivor, BasePlayer npc, MonumentTier tier)
+    {
+        if (UnityEngine.Random.Range(0f, 100f) >= MonumentMedicalRewardChance)
+        {
+            return;
+        }
+
+        string shortname = tier == MonumentTier.TierZero ? BandageShortname : MedicalSyringeShortname;
+        int amount = UnityEngine.Random.Range(1, 4); // 1-3 inclusive
+
+        GiveItem(npc, shortname, amount);
+        Puts($"wipe-goal: '{survivor.Character.Alias}' got a bonus medical reward from a monument clear - {amount}x {shortname}.");
+    }
+
+    // Tool/weapon bonus reward (2026-10-03, Lucas's own explicit spec), independent of every
+    // other monument-clear reward above - one item, not all. Tier3 isn't covered by this one;
+    // Lucas's spec only named Tier0 through Tier2.
+    private static readonly string[] Tier0ToolBonusPool = { "pickaxe", "hatchet", "crossbow" };
+    private static readonly string[] Tier1ToolBonusPool = { "icepick.salvaged", "axe.salvaged", "jackhammer" };
+
+    private const float Tier0ToolBonusChance = 40f;
+    private const float Tier1ToolBonusChance = 40f;
+
+    // Tier2 reuses the Tier1 pool at a boosted chance - Lucas's own framing: "Tier2 Monuments
+    // additionally reward at Tier1 monument rewards however with a 60% chance."
+    private const float Tier2ToolBonusChance = 60f;
+
+    private void TryGrantMonumentToolBonusReward(Survivor survivor, BasePlayer npc, MonumentTier tier)
+    {
+        string[] pool;
+        float chance;
+
+        switch (tier)
+        {
+            case MonumentTier.TierZero:
+                pool = Tier0ToolBonusPool;
+                chance = Tier0ToolBonusChance;
+                break;
+            case MonumentTier.TierOne:
+                pool = Tier1ToolBonusPool;
+                chance = Tier1ToolBonusChance;
+                break;
+            case MonumentTier.TierTwo:
+                pool = Tier1ToolBonusPool;
+                chance = Tier2ToolBonusChance;
+                break;
+            default:
+                return;
+        }
+
+        if (UnityEngine.Random.Range(0f, 100f) >= chance)
+        {
+            return;
+        }
+
+        string shortname = pool[UnityEngine.Random.Range(0, pool.Length)];
+        Item item = ItemManager.CreateByName(shortname, 1);
+
+        if (item == null)
+        {
+            Puts($"WARNING: monument tool bonus reward couldn't create '{shortname}' - unknown shortname?");
+            return;
+        }
+
+        if (item.hasCondition)
+        {
+            item.condition = item.info.condition.max * UnityEngine.Random.Range(HandicapDurabilityMin, HandicapDurabilityMax);
+        }
+
+        if (!npc.inventory.GiveItem(item))
+        {
+            item.Remove();
+            return;
+        }
+
+        Puts($"wipe-goal: '{survivor.Character.Alias}' got a bonus tool reward from a monument clear - '{shortname}'.");
     }
 
     // Flat override chance for ConcludeMonumentRush's bonus roll: one flat roll against the

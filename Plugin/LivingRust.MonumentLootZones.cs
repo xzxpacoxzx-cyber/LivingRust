@@ -709,7 +709,15 @@ public partial class LivingRust
             || (!HasCompletedEarlyGameMilestones(survivor) && IsNearEarlyGameRestrictedMonument(monument.transform.position))
             || (ShouldAvoidInventoryOrPrepGatedMonument(survivor) && IsNearInventoryOrPrepGatedMonument(monument.transform.position)))
         {
-            EscalateSearchAlongRoad(survivor, state);
+            if (state.OnMonumentZonesExhausted != null)
+            {
+                state.OnMonumentZonesExhausted();
+            }
+            else
+            {
+                EscalateSearchAlongRoad(survivor, state);
+            }
+
             return;
         }
 
@@ -778,8 +786,40 @@ public partial class LivingRust
                     VerbosePuts($"loot-task: '{survivor.Character.Alias}' couldn't reach the ghost route's start near '{monument.name}' - falling back to the generic path instead.");
                     _pendingGhostRouteToResume.Remove(survivor.Character.Id);
                     StopGhostRouteLootScan(survivor.Character.Id);
-                    EscalateSearchAlongRoad(survivor, state);
+
+                    if (state.OnMonumentZonesExhausted != null)
+                    {
+                        state.OnMonumentZonesExhausted();
+                    }
+                    else
+                    {
+                        EscalateSearchAlongRoad(survivor, state);
+                    }
                 });
+
+            return;
+        }
+
+        // Ghost-route-only monument (Launch Site) with no route to run (none free, or the visit's
+        // route/puzzle already finished): leave. No ambient zone looting there - that is what piled
+        // up 50+ corpses. A genuinely completed route/puzzle falls through to the normal wrap-up
+        // below so its rewards still apply.
+        if (IsGhostRouteOnlyMonument(monument)
+            && !state.GhostRouteCompletedMonuments.Contains(monument.name)
+            && !state.CardPuzzleCompletedMonuments.Contains(monument.name))
+        {
+            Puts($"loot-task: '{survivor.Character.Alias}' is at '{monument.name}' with no ghost route or puzzle available to run - leaving (this monument is ghost-route-only).");
+            state.CommittedMonumentName = null;
+
+            timer.Once(0.5f, () =>
+            {
+                BasePlayer liveNpc = survivor.Player;
+
+                if (liveNpc != null && !liveNpc.IsDestroyed && survivor.Character.State != CharacterState.Dead)
+                {
+                    StartLootForResourcesTask(survivor);
+                }
+            });
 
             return;
         }
@@ -888,7 +928,29 @@ public partial class LivingRust
             // Separate roll/table from the weapon handicap above.
             TryGrantMonumentKeycardReward(survivor, npc, finishedMonumentTier, monument.name);
 
-            EscalateSearchAlongRoad(survivor, state);
+            // Independent of all of the above - a bonus clothing/armor item, a bonus medical
+            // item, and a bonus tool/weapon item.
+            TryGrantMonumentClothingReward(survivor, npc, finishedMonumentTier);
+            TryGrantMonumentMedicalReward(survivor, npc, finishedMonumentTier);
+            TryGrantMonumentToolBonusReward(survivor, npc, finishedMonumentTier);
+
+            // The monument-run timer has run out: the one non-full-inventory moment a survivor
+            // heads to a recycler (2026-10-03, Lucas's spec). Returns false if nothing worth
+            // recycling or no recycler in range, in which case it carries on as before.
+            if (TryStartRecyclingTask(survivor))
+            {
+                return;
+            }
+
+            if (state.OnMonumentZonesExhausted != null)
+            {
+                state.OnMonumentZonesExhausted();
+            }
+            else
+            {
+                EscalateSearchAlongRoad(survivor, state);
+            }
+
             return;
         }
 
@@ -953,7 +1015,7 @@ public partial class LivingRust
 
         foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
-            if (candidate == null || IsMonumentExcludedFromAutonomy(candidate)
+            if (candidate == null || IsMonumentExcludedFromAutonomy(candidate) || IsGhostRouteOnlyMonument(candidate)
                 || (!HasCompletedEarlyGameMilestones(survivor) && IsNearEarlyGameRestrictedMonument(candidate.transform.position))
                 || (ShouldAvoidInventoryOrPrepGatedMonument(survivor) && IsNearInventoryOrPrepGatedMonument(candidate.transform.position))
                 || !_monumentLootZones.TryGetValue(candidate.name, out List<MonumentLootZone> zones) || zones.Count == 0)
@@ -1017,10 +1079,8 @@ public partial class LivingRust
             return;
         }
 
-        if (TryStartRecyclingTask(survivor))
-        {
-            return;
-        }
+        // No recycler trip here (2026-10-03, Lucas's spec): a survivor only recycles when its
+        // inventory is full or the monument-run timer runs out - not at every dead end.
 
         if (UnityEngine.Random.value < 0.5f)
         {

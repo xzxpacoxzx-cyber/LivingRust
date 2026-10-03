@@ -1328,7 +1328,17 @@ public partial class LivingRust
         // tier2+/tier-upgrade base does. Substituted here, the single shared read point every
         // caller (cost calculation, affordability checks, actual placement) already goes through,
         // so all three stay consistent automatically.
-        if (path.Contains("/tier0/") || path.Contains("/tier1/"))
+        //
+        // 2026-10-03, found live: Directory.GetFiles (the source of every path reaching this
+        // function) returns paths using the OS's native separator - backslashes on Windows - so
+        // the original literal "/tier0/"/"/tier1/" forward-slash check silently never matched on
+        // a Windows-hosted server, even though it worked fine on Cybrancee's Linux host. Confirmed
+        // live: a local Windows test run placed door.hinged.metal for every tier0/tier1 base, zero
+        // door.hinged.wood anywhere in the whole session log. Normalizing separators before the
+        // check makes this work identically on both.
+        string normalizedPath = path.Replace('\\', '/');
+
+        if (normalizedPath.Contains("/tier0/") || normalizedPath.Contains("/tier1/"))
         {
             foreach (BuildTraceRow row in rows)
             {
@@ -1652,11 +1662,12 @@ public partial class LivingRust
 
         if (remainingShortfall > 0)
         {
-            Item topUp = ItemManager.CreateByItemID(itemDef.itemid, remainingShortfall);
-
-            if (topUp != null && !topUp.MoveToContainer(cupboard.inventory))
+            foreach (Item topUp in CreateStackSizedItems(itemDef, remainingShortfall))
             {
-                topUp.Remove();
+                if (!topUp.MoveToContainer(cupboard.inventory))
+                {
+                    topUp.Remove();
+                }
             }
         }
 
@@ -1695,6 +1706,11 @@ public partial class LivingRust
                 ComputeHomeDoorRoute(state, home);
                 LoadHomeDoorRoutes(home);
                 survivor.Character.Home = home;
+
+                // Brings the first base trip forward (2026-10-03): the held checklist sleeping bag
+                // gets placed at the new base and the workshop (metal tools, clothing) gets its
+                // first run within ~45s instead of waiting out the usual 20-minute cycle.
+                _nextBaseReturnTime[survivor.Character.Id] = Time.realtimeSinceStartup + 30f;
 
                 // Once set, this flag is never cleared, so a tier0/tier1 build satisfies the
                 // prerequisite for every future tier2+ attempt by this character.
@@ -1807,9 +1823,14 @@ public partial class LivingRust
             return;
         }
 
-        // A code lock isn't a free-standing piece; it slots onto the most recently placed door via
-        // its lock slot, not a normal CreateEntity-at-worldPosition placement.
-        if (row.Shortname == CodeLockShortname)
+        // A lock isn't a free-standing piece; it slots onto the most recently placed door via its
+        // lock slot, not a normal CreateEntity-at-worldPosition placement. Covers both lock types -
+        // tier0/tier1 designs get "lock.code" rows substituted to "lock.key" (see
+        // LoadBuildTraceRows), and until this point that substituted row fell through to the
+        // generic construction-piece path below, which can't resolve a lock as a buildable piece
+        // and just silently failed every time (2026-10-03, Lucas's live report: wood doors going
+        // up fine with no lock of either kind ever landing on them).
+        if (row.Shortname == CodeLockShortname || row.Shortname == KeyLockShortname)
         {
             if (state.SkipCodeLocks)
             {
@@ -1817,7 +1838,7 @@ public partial class LivingRust
                 return;
             }
 
-            PlaceCodeLockReplayRow(survivor, state, row, worldPosition);
+            PlaceLockReplayRow(survivor, state, row, worldPosition);
             return;
         }
 
@@ -1953,19 +1974,31 @@ public partial class LivingRust
     // TryResolveConstructionPrefabPath to find.
     private const string RealCodeLockPrefabPath = "assets/prefabs/locks/keypad/lock.code.prefab";
 
-    /// <summary>
-    /// Places a code lock onto a door or cupboard, mirroring the slot-anchor sequence a real
-    /// deploy uses: parenting to the target's lock slot before Spawn(), then setting the slot
-    /// after. Sets a random 4-digit code and whitelists the survivor, reaching the same end state
-    /// as a real client deploy.
-    /// </summary>
-    private void PlaceCodeLockReplayRow(Survivor survivor, BuildReplayState state, BuildTraceRow row, Vector3 worldPosition)
-    {
-        BasePlayer npc = survivor.Player;
+    // Fallback only, same role as RealCodeLockPrefabPath above - TryResolveConstructionPrefabPath
+    // normally resolves this from the live "lock.key" item's own deployable data.
+    // Corrected 2026-10-03 (Lucas's live report: still no lock on fresh wood doors post-deploy) -
+    // the original path guessed "key lock" (with a space) as the folder name from memory; the
+    // real one, confirmed against Rust/server/Bundles/AssetSceneManifest.json directly rather
+    // than guessed again, is "keylock" (one word). TryResolveConstructionPrefabPath's own
+    // live-entity-scan fallback only works once SOME key lock already exists anywhere on the
+    // map - on a fresh wipe, nothing has placed one yet, so this hardcoded constant was the only
+    // path actually in play, and it was wrong.
+    private const string RealKeyLockPrefabPath = "assets/prefabs/locks/keylock/lock.key.prefab";
 
-        // Finds the closest lockable target by each candidate's original trace-space position,
-        // rather than always using whichever door was placed most recently, so each lock matches
-        // the specific door/cupboard it was recorded beside.
+    private const string KeyLockShortname = "lock.key";
+    private const string KeyItemShortname = "key.lock";
+
+    // KeyLock.keyCode is private (no public replacement) - reflection stand-in, same pattern as
+    // LivingRust.LockedApiAccess.cs for other members Rust's own lockdown passes hid.
+    private static readonly System.Reflection.FieldInfo KeyLockKeyCodeField =
+        typeof(KeyLock).GetField("keyCode", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+    /// <summary>
+    /// Shared first half of both lock types: finds the nearest still-unlocked door/cupboard this
+    /// row was originally recorded beside. Null means there's nothing left to lock.
+    /// </summary>
+    private BaseEntity FindLockTargetForRow(BuildReplayState state, BuildTraceRow row)
+    {
         BaseEntity lockTarget = null;
         float bestDistSqr = float.MaxValue;
 
@@ -1985,9 +2018,24 @@ public partial class LivingRust
             }
         }
 
+        return lockTarget;
+    }
+
+    /// <summary>
+    /// Places either lock type onto a door or cupboard, mirroring the slot-anchor sequence a real
+    /// deploy uses: parenting to the target's lock slot before Spawn(), then setting the slot
+    /// after. Dispatches to the code-lock or key-lock specific finish below.
+    /// </summary>
+    private void PlaceLockReplayRow(Survivor survivor, BuildReplayState state, BuildTraceRow row, Vector3 worldPosition)
+    {
+        BasePlayer npc = survivor.Player;
+        bool isKeyLock = row.Shortname == KeyLockShortname;
+
+        BaseEntity lockTarget = FindLockTargetForRow(state, row);
+
         if (lockTarget == null)
         {
-            Puts($"basebuild-replay: '{survivor.Character.Alias}' has no door or cupboard yet to lock - skipping the code lock.");
+            Puts($"basebuild-replay: '{survivor.Character.Alias}' has no door or cupboard yet to lock - skipping the {(isKeyLock ? "key" : "code")} lock.");
             state.Failed++;
             timer.Once(BuildPlacementPaceSeconds, () => AdvanceBuildReplay(survivor, state));
             return;
@@ -1995,7 +2043,7 @@ public partial class LivingRust
 
         if (!TryResolveConstructionPrefabPath(row.Shortname, out string prefabPath))
         {
-            prefabPath = RealCodeLockPrefabPath;
+            prefabPath = isKeyLock ? RealKeyLockPrefabPath : RealCodeLockPrefabPath;
         }
 
         EquipHeldItemByShortname(npc, row.Shortname);
@@ -2006,6 +2054,18 @@ public partial class LivingRust
         // nonzero starting position/rotation would land the lock in the wrong place or tilted.
         BaseEntity spawned = GameManager.server.CreateEntity(prefabPath, Vector3.zero, Quaternion.identity);
 
+        if (isKeyLock)
+        {
+            FinishKeyLockReplayRow(survivor, npc, state, row, lockTarget, spawned, prefabPath);
+        }
+        else
+        {
+            FinishCodeLockReplayRow(survivor, npc, state, row, lockTarget, spawned, prefabPath);
+        }
+    }
+
+    private void FinishCodeLockReplayRow(Survivor survivor, BasePlayer npc, BuildReplayState state, BuildTraceRow row, BaseEntity lockTarget, BaseEntity spawned, string prefabPath)
+    {
         if (spawned is not CodeLock codeLock)
         {
             Puts($"basebuild-replay: failed to create a real code lock from '{prefabPath}'.");
@@ -2038,6 +2098,62 @@ public partial class LivingRust
 
         // Logs the resolved prefab path and the lock's final position/rotation for diagnostics.
         Puts($"basebuild-replay: '{survivor.Character.Alias}' placed and locked a code lock (code {realCode}) on '{lockTarget.ShortPrefabName}' - prefab '{prefabPath}', final pos {codeLock.transform.position}, net.ID {codeLock.net?.ID}, parent bone anchor '{lockTarget.GetSlotAnchorName(BaseEntity.Slot.Lock)}'.");
+
+        timer.Once(BuildPlacementPaceSeconds, () => AdvanceBuildReplay(survivor, state));
+    }
+
+    /// <summary>
+    /// Key-lock equivalent of FinishCodeLockReplayRow. Confirmed via decompile: a real client
+    /// deploy only sets a random keyCode and calls the (private) Lock() method
+    /// (KeyLock.OnDeployed); the player's own UI then separately fires RPC_CreateKey to actually
+    /// craft their first physical key, which this replicates directly (same item/instanceData
+    /// shape, bypassing the RPC layer like the code-lock path above already does for its own
+    /// RPC-free flow) since a bot has no client UI to fire that follow-up call.
+    /// </summary>
+    private void FinishKeyLockReplayRow(Survivor survivor, BasePlayer npc, BuildReplayState state, BuildTraceRow row, BaseEntity lockTarget, BaseEntity spawned, string prefabPath)
+    {
+        if (spawned is not KeyLock keyLock)
+        {
+            Puts($"basebuild-replay: failed to create a real key lock from '{prefabPath}'.");
+            state.Failed++;
+            timer.Once(BuildPlacementPaceSeconds, () => AdvanceBuildReplay(survivor, state));
+            return;
+        }
+
+        keyLock.SetParent(lockTarget, lockTarget.GetSlotAnchorName(BaseEntity.Slot.Lock));
+        keyLock.OwnerID = npc.userID;
+        keyLock.SetFlagLocal(BaseEntity.Flags.Locked, true);
+        keyLock.Spawn();
+        lockTarget.SetSlot(BaseEntity.Slot.Lock, keyLock);
+
+        int keyCode = UnityEngine.Random.Range(1, 100000);
+        KeyLockKeyCodeField?.SetValue(keyLock, keyCode);
+        keyLock.LockLock(npc);
+        keyLock.SendNetworkUpdate();
+
+        // The physical key item the bot now needs to carry to use this lock - same shape
+        // RPC_CreateKey builds, created directly since there's no client RPC to fire it for us.
+        Item keyItem = ItemManager.CreateByName(KeyItemShortname, 1);
+
+        if (keyItem != null)
+        {
+            keyItem.instanceData ??= new ProtoBuf.Item.InstanceData();
+            keyItem.instanceData.ShouldPool = false;
+            keyItem.instanceData.dataInt = keyCode;
+
+            if (!npc.inventory.GiveItem(keyItem))
+            {
+                keyItem.Remove();
+            }
+        }
+
+        Item heldItem = npc.inventory.FindItemByItemID(ItemManager.FindItemDefinition(row.Shortname)?.itemid ?? 0);
+        heldItem?.UseItem(1);
+
+        // KeyLock has no effectLocked (that's CodeLock-specific) - no lock-sound effect to play here.
+        state.Placed++;
+
+        Puts($"basebuild-replay: '{survivor.Character.Alias}' placed and locked a key lock on '{lockTarget.ShortPrefabName}' and kept its key - prefab '{prefabPath}', final pos {keyLock.transform.position}, net.ID {keyLock.net?.ID}, parent bone anchor '{lockTarget.GetSlotAnchorName(BaseEntity.Slot.Lock)}'.");
 
         timer.Once(BuildPlacementPaceSeconds, () => AdvanceBuildReplay(survivor, state));
     }

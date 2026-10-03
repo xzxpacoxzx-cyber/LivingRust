@@ -334,7 +334,10 @@ public partial class LivingRust
 
     private bool IsInMonumentAvoidZone(Vector3 worldPosition)
     {
-        if (IsNearFullyAvoidedMonument(worldPosition) || IsNearTrainTunnelEntrance(worldPosition) || IsInGlobalStallZone(worldPosition))
+        // Ghost-route-only monuments (Launch Site) are closed to ambient looting: nothing inside is a
+        // valid generic loot/zone/gather candidate - the authored routes are the only way in.
+        if (IsNearFullyAvoidedMonument(worldPosition) || IsNearTrainTunnelEntrance(worldPosition) || IsInGlobalStallZone(worldPosition)
+            || IsInGhostRouteOnlyMonumentArea(worldPosition))
         {
             return true;
         }

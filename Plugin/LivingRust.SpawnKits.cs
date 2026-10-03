@@ -188,17 +188,23 @@ public partial class LivingRust
         KitArmorTier armorTier = KitArmorTier.High;
         string tierLabel = "high";
 
-        if (args.Length > 0)
+        bool withResources = false;
+
+        foreach (string arg in args)
         {
-            if (args[0].Equals("medium", StringComparison.OrdinalIgnoreCase))
+            if (arg.Equals("medium", StringComparison.OrdinalIgnoreCase))
             {
                 armorTier = KitArmorTier.Medium;
                 tierLabel = "medium";
             }
-            else if (args[0].Equals("low", StringComparison.OrdinalIgnoreCase))
+            else if (arg.Equals("low", StringComparison.OrdinalIgnoreCase))
             {
                 armorTier = KitArmorTier.Low;
                 tierLabel = "low";
+            }
+            else if (arg.Equals("resources", StringComparison.OrdinalIgnoreCase))
+            {
+                withResources = true;
             }
         }
 
@@ -210,8 +216,43 @@ public partial class LivingRust
             return;
         }
 
+        if (withResources)
+        {
+            GiveKitBuildingResources(character);
+        }
+
         string where = aimedSpawn ? "where you're looking" : "near you (nothing solid in view)";
-        player.ChatMessage($"[LivingRust] Spawned '{character.Alias}' {where} with a {SpawnKits[kitKey].DisplayName} kit ({tierLabel} armor). (ID {character.BotId})");
+        string resourcesNote = withResources ? ", loaded with building resources for a tier3 base" : "";
+        player.ChatMessage($"[LivingRust] Spawned '{character.Alias}' {where} with a {SpawnKits[kitKey].DisplayName} kit ({tierLabel} armor){resourcesNote}. (ID {character.BotId})");
+    }
+
+    // Late-game test helper (2026-10-03, Lucas's own explicit ask: "give them higher valued items
+    // ... to make a tier3 base and see what they do") - a generous flat grant, not tied to any
+    // specific design's real cost, since this is purely for testing late-game behavior on demand
+    // rather than a normal gameplay path. Opt-in via the "resources" arg on any /lr.spawn.X kit
+    // command, e.g. "/lr.spawn.ak high resources".
+    private static readonly Dictionary<string, int> KitBuildingResources = new()
+    {
+        ["wood"] = 5000,
+        ["stones"] = 5000,
+        ["metal.fragments"] = 3000,
+        ["metal.refined"] = 500,
+        ["lowgradefuel"] = 200,
+    };
+
+    private void GiveKitBuildingResources(Character character)
+    {
+        BasePlayer npc = _engine?.SurvivorManager.GetAll().FirstOrDefault(s => s.Character.Id == character.Id)?.Player;
+
+        if (npc == null || npc.IsDestroyed)
+        {
+            return;
+        }
+
+        foreach (KeyValuePair<string, int> resource in KitBuildingResources)
+        {
+            GiveItem(npc, resource.Key, resource.Value);
+        }
     }
 
     /// <summary>

@@ -67,6 +67,83 @@ public partial class LivingRust
         }
     }
 
+    // Reverse lookup, built once: component shortname -> every ItemDefinition whose blueprint
+    // uses it as an ingredient. Backs ReserveHalfForKnownBlueprint below - 2026-10-03, Lucas's own
+    // explicit spec: a component feeding a blueprint the bot has actually learned (via pickup,
+    // see LivingRust.Blueprints.cs) should only ever be half-fed to a recycler, keeping the other
+    // half to craft another one later at a real workbench.
+    private static Dictionary<string, List<ItemDefinition>> _blueprintIngredientUsers;
+
+    private static Dictionary<string, List<ItemDefinition>> BlueprintIngredientUsers
+    {
+        get
+        {
+            if (_blueprintIngredientUsers != null)
+            {
+                return _blueprintIngredientUsers;
+            }
+
+            _blueprintIngredientUsers = new Dictionary<string, List<ItemDefinition>>();
+
+            foreach (ItemDefinition def in ItemManager.GetItemDefinitions())
+            {
+                ItemBlueprint bp = def?.Blueprint;
+
+                if (bp == null || !bp.userCraftable)
+                {
+                    continue;
+                }
+
+                foreach (ItemAmount ingredient in bp.ingredients)
+                {
+                    string shortname = ingredient?.itemDef?.shortname;
+
+                    if (shortname == null)
+                    {
+                        continue;
+                    }
+
+                    if (!_blueprintIngredientUsers.TryGetValue(shortname, out List<ItemDefinition> users))
+                    {
+                        users = new List<ItemDefinition>();
+                        _blueprintIngredientUsers[shortname] = users;
+                    }
+
+                    users.Add(def);
+                }
+            }
+
+            return _blueprintIngredientUsers;
+        }
+    }
+
+    /// <summary>
+    /// True if this item is an ingredient for some blueprint npc has actually learned (not just
+    /// the ones every survivor already knows by default).
+    /// </summary>
+    private static bool IsIngredientForKnownBlueprint(BasePlayer npc, Item item)
+    {
+        return npc?.blueprints != null
+            && BlueprintIngredientUsers.TryGetValue(item.info.shortname, out List<ItemDefinition> users)
+            && users.Any(def => npc.blueprints.IsUnlocked(def));
+    }
+
+    /// <summary>
+    /// For a fodder item that's also a known blueprint's ingredient, splits off and feeds only
+    /// half the stack (rounded down, at least 1), leaving the rest in inventory as a crafting
+    /// reserve. Returns the piece to actually feed - the original item for everything else.
+    /// </summary>
+    private static Item ReserveHalfForKnownBlueprint(BasePlayer npc, Item item)
+    {
+        if (!IsIngredientForKnownBlueprint(npc, item) || item.amount < 2)
+        {
+            return item;
+        }
+
+        int feedAmount = item.amount / 2;
+        return item.SplitItem(feedAmount) ?? item;
+    }
+
     /// <summary>
     /// Checks whether an item is recycle fodder: only the bottom two loot-priority tiers
     /// (Components/Other), so weapons, armor, medical supplies, and ammo are never fed in.
@@ -77,6 +154,20 @@ public partial class LivingRust
         if (item.info.shortname == "fuse" || item.info.shortname == "fuse.highgrade")
         {
             return false;
+        }
+
+        // A carried sleeping bag is waiting to be placed at the base (the checklist bag is now held
+        // until the base exists) - never junk.
+        if (item.info.shortname == SleepingBagShortname)
+        {
+            return false;
+        }
+
+        // Explicit junk list (2026-10-03): electrical/utility items the category rules below would
+        // otherwise refuse, all worth recycling for their components.
+        if (IsExplicitRecycleItem(item))
+        {
+            return item.info.Blueprint != null;
         }
 
         // Never feed away a tool cupboard (base ownership anchor), stone tools (likely the
@@ -240,7 +331,12 @@ public partial class LivingRust
 
         foreach (Item item in fodder)
         {
-            if (item.MoveToContainer(recycler.inventory))
+            // Half-reserve for a component that's an ingredient of a blueprint this survivor has
+            // actually learned, so there's still material on hand to craft another one later
+            // instead of feeding the whole stack away.
+            Item toFeed = ReserveHalfForKnownBlueprint(npc, item);
+
+            if (toFeed.MoveToContainer(recycler.inventory))
             {
                 fed++;
             }

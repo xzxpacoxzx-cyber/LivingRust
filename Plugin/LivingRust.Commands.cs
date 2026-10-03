@@ -372,6 +372,29 @@ public partial class LivingRust
                 continue;
             }
 
+            // A survivor crafting at its base workbench stands still by design (and must not get
+            // its own base blacklisted as a "dead end").
+            if (IsInWorkshop(characterId))
+            {
+                _lifeStallSnapshot.Remove(characterId);
+                continue;
+            }
+
+            // A survivor in active combat (ranged or melee) is expected to hold close
+            // to its target rather than cover real distance - melee in particular closes
+            // to MeleeEngagementRange (0.5m) and stays there. Without this exemption the
+            // watchdog misread a normal (or lightly oscillating) melee hold as "stalled"
+            // and emergency-teleported the survivor mid-fight (2026-10-02, Lucas's live
+            // report: a melee bot "teleported under the map... then teleported back up
+            // after 5-10 seconds to continue chasing" - the teleport landing briefly
+            // below the surface before correction, then combat simply re-engaging since
+            // the attacker was still right there).
+            if (_activeCombat.ContainsKey(characterId))
+            {
+                _lifeStallSnapshot.Remove(characterId);
+                continue;
+            }
+
             Vector3 currentPosition = npc.transform.position;
             TaskType currentTask = survivor.Character.CurrentTask;
 
@@ -943,10 +966,9 @@ public partial class LivingRust
 
         if (useBeachSpawnPoint)
         {
-            // Uses Rust's own dedicated spawn point lookup so bots start at real, procedurally-distributed beach spawns.
-            BasePlayer.SpawnPoint spawnPoint = ServerMgr.FindSpawnPoint(npc);
-            position = spawnPoint.pos;
-            rotation = spawnPoint.rot;
+            // Uses Rust's own dedicated spawn point lookup so bots start at real, procedurally-distributed beach spawns,
+            // re-rolled if another survivor is already standing on the chosen point (see LivingRust.SpawnSpacing.cs).
+            FindUnoccupiedSpawnPosition(npc, survivor.Character.Id, out position, out rotation);
             npc.transform.position = position;
             npc.transform.rotation = rotation;
         }

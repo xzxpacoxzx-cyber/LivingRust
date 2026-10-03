@@ -980,6 +980,12 @@ public partial class LivingRust
         public string? CommittedMonumentName;
         public float CommittedMonumentDeadline;
 
+        // Set only for a throwaway side-quest state (see LivingRust.TierZeroSideQuest.cs) - called
+        // once EscalateSearchToMonumentZone has exhausted every zone, instead of its normal
+        // EscalateSearchAlongRoad continuation, so a side-questing survivor resumes whatever it was
+        // doing before rather than falling into ordinary opportunistic looting.
+        public Action? OnMonumentZonesExhausted;
+
         // Caps this task to at most one long cross-country trip toward a distant known monument.
         public bool TraveledToDistantMonument;
 
@@ -1166,6 +1172,16 @@ public partial class LivingRust
 
             DropUnneededLightSource(survivor, rushNpc);
             PerformInventoryCheck(survivor, rushNpc);
+
+            // The immediate rush variant still needs its minimal hatchet+pickaxe kit first -
+            // routes through the normal task loop so TryPursueImmediateRushTools (checked early
+            // in ContinueLootTask) can gather/craft them before departing for the monument.
+            if (_pursuingImmediateRushTools.Contains(survivor.Character.Id))
+            {
+                ContinueLootTask(survivor, new LootTaskState());
+                return;
+            }
+
             TryStartWithGearWeightedDestination(survivor, rushNpc);
             return;
         }
@@ -1289,6 +1305,14 @@ public partial class LivingRust
 
         // Progression goal layer; see LivingRust.WipeGoals.cs's own doc comment. Falls through to normal looting when nothing is currently blocking progress.
         if (TryPursueWipeGoal(survivor, npc, state))
+        {
+            return;
+        }
+
+        // An immediate-monument-rush survivor gathering its minimal hatchet+pickaxe kit checks
+        // before the full checklist below - it deliberately skips everything else in that
+        // checklist until a genuine monument clear.
+        if (TryPursueImmediateRushTools(survivor, npc, state))
         {
             return;
         }
@@ -1525,7 +1549,7 @@ public partial class LivingRust
         // check below alongside everything else, rather than being starved whenever a container exists anywhere in the wider radius.
         bool foundCollectible = _engine.NavigationManager.TryFindNearestCollectible(
             npc.transform.position,
-            CollectibleSearchRadius,
+            ApplyFreshWipeCollectibleBoost(CollectibleSearchRadius),
             out CollectibleEntity collectible,
             candidate => !state.Visited.Contains(candidate.net.ID)
                 && !IsLootTargetClaimed(candidate.net.ID)
@@ -1538,6 +1562,7 @@ public partial class LivingRust
                 && !IsNearVisibleHostileScientist(candidate.transform.position, nearbyVisibleHostileScientists)
                 && !IsExcludedCollectibleType(candidate)
                 && IsResourceAllowedForHighGear(survivor, npc, candidate.itemList)
+                && IsFarmedResourceWanted(survivor, candidate.itemList)
                 && Vector3.Distance(npc.transform.position, candidate.transform.position) <= GetCollectibleDivertRadius(candidate));
 
         if (!foundContainer && !foundBarrel && !foundCorpse && !foundBag && !foundDroppedItem && !foundCollectible)
@@ -2918,6 +2943,15 @@ public partial class LivingRust
                 return;
             }
 
+            // Checked before the normal small-item en-route detour below, since this is a bigger
+            // one - resumes this exact walk once the side quest concludes.
+            if (TryPursueTierZeroMonumentSideQuest(survivor, npc, new LootTaskState(),
+                    () => StartLongDistanceWalkDirect(survivor, destination, onArrived, onFailed)))
+            {
+                StopEnRouteLootScan(characterId);
+                return;
+            }
+
             if (!TryFindEnRouteLootCandidate(survivor, npc, out BaseEntity candidate, out EnRouteLootKind kind))
             {
                 return;
@@ -3035,7 +3069,7 @@ public partial class LivingRust
     /// low-value berry - flag if that default is wrong for something
     /// specific.
     /// </summary>
-    private static float GetCollectibleDivertRadius(CollectibleEntity candidate)
+    private float GetCollectibleDivertRadius(CollectibleEntity candidate)
     {
         string name = candidate.ShortPrefabName;
 
@@ -3049,7 +3083,10 @@ public partial class LivingRust
             return 5f;
         }
 
-        return 15f;
+        // Real early-game building-block resources (hemp/wood/stone/metal ore/sulfur ore, plus
+        // anything unclassified) - doubled for a window right after a fresh wipe, unlike the
+        // berry/mushroom tiers above.
+        return ApplyFreshWipeCollectibleBoost(15f);
     }
 
     // How much wood a survivor is allowed to passively stockpile via
@@ -3143,6 +3180,7 @@ public partial class LivingRust
             && !HasEnoughWoodAlready(survivor, npc)
             && HasAnyGatherCapableTool(npc, TreeGatherToolPriority)
             && IsResourceAllowedForHighGear(survivor, npc, WoodYieldForGate())
+            && IsFarmedResourceWanted(survivor, WoodYieldForGate())
             && _engine.NavigationManager.TryFindNearestTreeEntity(
                 npc.transform.position,
                 EnRouteResourceNodeDetectionRadius,
@@ -3166,6 +3204,7 @@ public partial class LivingRust
                 out OreResourceEntity ore,
                 c => !IsLootTargetClaimed(c.net.ID)
                     && IsResourceAllowedForHighGear(survivor, npc, GetNodeYields(c))
+                    && IsFarmedResourceWanted(survivor, GetNodeYields(c))
                     && !RecentlyFailedEnRouteLoot(c.net.ID)
                     && !IsInMonumentAvoidZone(c.transform.position)
                     && !IsBelowSafeLootDepth(c.transform.position)
@@ -3178,13 +3217,14 @@ public partial class LivingRust
 
         if (_engine.NavigationManager.TryFindNearestCollectible(
             npc.transform.position,
-            EnRouteCollectibleDetectionRadius,
+            ApplyFreshWipeCollectibleBoost(EnRouteCollectibleDetectionRadius),
             out CollectibleEntity collectible,
             c => !IsLootTargetClaimed(c.net.ID)
                 && !RecentlyFailedEnRouteLoot(c.net.ID)
                 && c.itemList != null
                 && c.itemList.Length > 0
                 && IsResourceAllowedForHighGear(survivor, npc, c.itemList)
+                && IsFarmedResourceWanted(survivor, c.itemList)
                 && !IsInMonumentAvoidZone(c.transform.position)
                 && !IsBelowSafeLootDepth(c.transform.position)
                 && HasLineOfSight(npc, c)
@@ -6109,23 +6149,34 @@ public partial class LivingRust
     /// </summary>
     private void GrantItemIntoOwnedBoxes(List<StorageContainer> boxes, string shortname, int amount, Vector3 fallbackDropPosition)
     {
-        Item item = ItemManager.CreateByName(shortname, amount);
+        ItemDefinition def = ItemManager.FindItemDefinition(shortname);
 
-        if (item == null)
+        if (def == null)
         {
             Puts($"WARNING: tier-upgrade pity grant couldn't create '{shortname}' - unknown shortname?");
             return;
         }
 
-        foreach (StorageContainer box in boxes)
+        // Real stack-sized chunks (2026-10-03): the single oversized Item this used to create is
+        // what put impossible 6,639-stone "stacks" into base boxes.
+        foreach (Item item in CreateStackSizedItems(def, amount))
         {
-            if (box != null && !box.IsDestroyed && box.inventory != null && item.MoveToContainer(box.inventory))
+            bool placed = false;
+
+            foreach (StorageContainer box in boxes)
             {
-                return;
+                if (box != null && !box.IsDestroyed && box.inventory != null && item.MoveToContainer(box.inventory))
+                {
+                    placed = true;
+                    break;
+                }
+            }
+
+            if (!placed)
+            {
+                item.Drop(fallbackDropPosition, Vector3.zero);
             }
         }
-
-        item.Drop(fallbackDropPosition, Vector3.zero);
     }
 
     /// <summary>
@@ -6741,6 +6792,11 @@ public partial class LivingRust
             return;
         }
 
+        // Keeps the door sweeper's hands off this survivor's doors for the length of the trip, and
+        // repairs impossible stacks / destroys torches before anything is deposited.
+        _baseTripUntil[survivor.Character.Id] = Time.realtimeSinceStartup + 120f;
+        SanitizeBaseStorage(survivor);
+
         GhostEnterHomeForDeposit(survivor, () =>
         {
             GhostDepositIntoOwnedCupboard(survivor, cupboardMoved =>
@@ -6758,7 +6814,7 @@ public partial class LivingRust
                 // multi-tick operation, and lets IsOnlyGatherToolOfItsFamily
                 // see the survivor's real current inventory at each deposit
                 // decision.
-                GhostDepositIntoOwnedBoxes(survivor, item => ShouldDepositAtBase(item, survivor.Player), deposited =>
+                GhostDepositIntoOwnedBoxes(survivor, item => ShouldDepositAtBaseFor(survivor, item), deposited =>
                 {
                     if (deposited > 0)
                     {
@@ -6777,6 +6833,10 @@ public partial class LivingRust
                         // tail.
                         TryUpgradeGearFromStorage(survivor, () =>
                         {
+                            // The in-base workshop (2026-10-03): free metal tools, clothing,
+                            // gunpowder, ammo, firearms from researched blueprints, and the
+                            // sheet-metal base upgrade - all standing at the workbench.
+                            TryRunBaseWorkshop(survivor, () =>
                             TryStockBandagesBeforeLeaving(survivor, () =>
                             {
                                 TryPlaceSleepingBagAtBase(survivor, () =>
@@ -6817,7 +6877,7 @@ public partial class LivingRust
 
                             TryPursueTierUpgrade(survivor, () => TeleportOutsideHomeIfInside(survivor, home, onComplete));
                                 });
-                            });
+                            }));
                         });
                     });
                 });
@@ -6852,12 +6912,20 @@ public partial class LivingRust
     /// Opportunistic - if there's not enough cloth on hand right now, just
     /// tries again on the next trip home rather than blocking this one.
     /// </summary>
+    // Tight, dedicated radius for "does a base already have its own bag" - 2026-10-03, Lucas's own
+    // explicit spec ("a sleeping bag is placed within 5 metres of their base"). Deliberately
+    // narrower than HomeStorageSearchRadius (40m, used for general storage-box lookups) - a bag
+    // 40m away would still pass the old check and silently block a genuinely base-local one from
+    // ever being placed, which defeats the actual point (dying far from base and respawning 40m
+    // away still means a real walk back, not "respawn at the base").
+    private const float SleepingBagNearHomeRadius = 5f;
+
     private bool HasSleepingBagNearHome(BasePlayer npc, HomeBase home)
     {
         foreach (BaseNetworkable entity in BaseNetworkable.serverEntities)
         {
             if (entity is SleepingBag bag && !bag.IsDestroyed && bag.OwnerID == npc.userID
-                && Vector3.Distance(bag.transform.position, home.Position) <= HomeStorageSearchRadius)
+                && Vector3.Distance(bag.transform.position, home.Position) <= SleepingBagNearHomeRadius)
             {
                 return true;
             }
@@ -6866,73 +6934,19 @@ public partial class LivingRust
         return false;
     }
 
-    private void TryPlaceSleepingBagAtBase(Survivor survivor, Action onComplete)
-    {
-        HomeBase home = survivor.Character.Home;
-        BasePlayer npc = survivor.Player;
-
-        if (home == null || npc == null || npc.IsDestroyed || HasSleepingBagNearHome(npc, home))
-        {
-            onComplete?.Invoke();
-            return;
-        }
-
-        ItemDefinition bagDef = ItemManager.FindItemDefinition(SleepingBagShortname);
-        ItemBlueprint bp = bagDef?.Blueprint;
-        ItemCrafter crafter = npc.inventory.crafting;
-
-        if (bp == null || crafter == null || !crafter.CanCraft(bp, SleepingBagTargetBatches, free: false))
-        {
-            onComplete?.Invoke();
-            return;
-        }
-
-        crafter.CraftItem(bp, npc, amount: SleepingBagTargetBatches);
-        Puts($"home-storage: '{survivor.Character.Alias}' is crafting a second sleeping bag to place at its base.");
-
-        int ticks = 0;
-        Timer pollTimer = null;
-
-        pollTimer = timer.Every(1f, () =>
-        {
-            BasePlayer liveNpc = survivor.Player;
-
-            if (liveNpc == null || liveNpc.IsDestroyed || survivor.Character.State == CharacterState.Dead)
-            {
-                pollTimer.Destroy();
-                onComplete?.Invoke();
-                return;
-            }
-
-            Item bagItem = liveNpc.inventory.FindItemByItemID(bagDef.itemid);
-
-            if (bagItem != null)
-            {
-                pollTimer.Destroy();
-                DeployBaseSleepingBag(survivor, liveNpc, bagDef, bagItem);
-                onComplete?.Invoke();
-                return;
-            }
-
-            if (++ticks >= SleepingBagDeployWaitMaxTicks)
-            {
-                pollTimer.Destroy();
-                onComplete?.Invoke();
-            }
-        });
-    }
 
     private void DeployBaseSleepingBag(Survivor survivor, BasePlayer npc, ItemDefinition bagDef, Item bagItem)
     {
         ItemModDeployable modDeployable = bagDef.GetComponent<ItemModDeployable>();
 
-        if (modDeployable == null || !_engine.NavigationManager.TryGetGroundHeight(npc.transform.position, out float groundHeight))
+        if (modDeployable == null)
         {
             return;
         }
 
+        // The survivor is standing on its own base floor (it was just moved to the cupboard), so its
+        // own height is the right one - the terrain height below a raised foundation would bury the bag.
         Vector3 position = npc.transform.position;
-        position.y = groundHeight;
         Quaternion rotation = Quaternion.LookRotation(Vector3.up, npc.eyes.BodyForward()) * Quaternion.Euler(90f, 0f, 0f);
 
         BaseEntity bagEntity = GameManager.server.CreateEntity(modDeployable.entityPrefab.resourcePath, position, rotation);
@@ -6948,6 +6962,8 @@ public partial class LivingRust
         bagEntity.OwnerID = npc.userID;
         bagEntity.Spawn();
         bagItem.UseItem(1);
+
+        _hasPlacedSleepingBag.Add(survivor.Character.Id);
 
         Puts($"home-storage: '{survivor.Character.Alias}' placed a sleeping bag at its base.");
     }
@@ -8750,13 +8766,7 @@ public partial class LivingRust
             {
                 string route = candidate.Replace('\\', '/');
 
-                if (_ghostRouteExhaustedUntil.TryGetValue(route, out float exhaustedUntil) && exhaustedUntil > now)
-                {
-                    continue;
-                }
-
-                if (_ghostRouteClaims.TryGetValue(route, out (Guid CharacterId, float ExpiresAt) claim)
-                    && claim.ExpiresAt > now && claim.CharacterId != characterId)
+                if (!IsGhostRouteClaimable(route, monumentName, characterId, now))
                 {
                     continue;
                 }

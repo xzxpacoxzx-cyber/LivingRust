@@ -264,6 +264,28 @@ public partial class LivingRust
     // Detection range for bot-vs-bot on-sight spotting, kept narrower than OnSightDetectionRange to limit the cost of the O(n^2) scan across the bot population.
     private const float BotOnSightDetectionRange = 50f;
 
+    // A bow-armed survivor only initiates on-sight combat within this range, regardless of the
+    // normal player/bot detection ranges above - 2026-10-03, Lucas's own explicit spec ("bots
+    // with bows please only engage other bots or players if they are within 50 metres of the
+    // target, not 100m+"). Real bow combat (arrow drop/spread/cadence) is tuned for a much
+    // closer fight than a firearm's effective range, so the long OnSightDetectionRange (125m)
+    // was letting archers pick fights they had no business starting that far out.
+    private const float BowOnSightEngagementRange = 50f;
+
+    private static bool IsCurrentlyWieldingBow(BasePlayer npc)
+    {
+        Item activeItem = npc.GetActiveItem();
+        return activeItem != null && Array.IndexOf(NonCombatCapableRangedWeaponShortnames, activeItem.info.shortname) >= 0;
+    }
+
+    // Caps baseRange to BowOnSightEngagementRange for a bow-armed survivor before the usual
+    // biome-visibility scaling is applied, so a bow user in open terrain still can't initiate
+    // past 50m the way a firearm user can.
+    private static float GetOnSightEngagementRange(BasePlayer npc, float baseRange)
+    {
+        return IsCurrentlyWieldingBow(npc) ? Mathf.Min(baseRange, BowOnSightEngagementRange) : baseRange;
+    }
+
     // How often the on-sight detection sweep runs, controlling how quickly a bot notices a nearby target. Reactive combat (taking damage) is unaffected and always responds instantly.
     private const float OnSightDetectionIntervalSeconds = 2f;
 
@@ -395,7 +417,7 @@ public partial class LivingRust
                         continue;
                     }
 
-                    if (Vector3.Distance(npc.transform.position, player.transform.position) > OnSightDetectionRange * GetBiomeVisibilityFactor(npc.transform.position, player.transform.position))
+                    if (Vector3.Distance(npc.transform.position, player.transform.position) > GetOnSightEngagementRange(npc, OnSightDetectionRange) * GetBiomeVisibilityFactor(npc.transform.position, player.transform.position))
                     {
                         continue;
                     }
@@ -588,7 +610,7 @@ public partial class LivingRust
                 continue;
             }
 
-            if (Vector3.Distance(npc.transform.position, otherNpc.transform.position) > BotOnSightDetectionRange * GetBiomeVisibilityFactor(npc.transform.position, otherNpc.transform.position))
+            if (Vector3.Distance(npc.transform.position, otherNpc.transform.position) > GetOnSightEngagementRange(npc, BotOnSightDetectionRange) * GetBiomeVisibilityFactor(npc.transform.position, otherNpc.transform.position))
             {
                 continue;
             }

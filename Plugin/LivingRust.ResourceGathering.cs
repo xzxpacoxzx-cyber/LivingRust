@@ -584,6 +584,17 @@ public partial class LivingRust
         {
             return false;
         }
+        // With a base standing (2026-10-03, Lucas's live audit: bases swimming in wood/stone with no
+        // scrap, components or guns) the last-resort gather no longer fells trees or mines plain
+        // stone at all - only sulfur (preferred) and metal ore, so a bot with nothing nearby to loot
+        // moves on to monuments/roads instead of grinding bulk resources.
+        bool postBase = survivor.Character.Home != null;
+
+        if (postBase)
+        {
+            _resourceGatherTypeLock.Remove(characterId);
+        }
+
         bool? lockedToTree = _resourceGatherTypeLock.TryGetValue(characterId, out bool locked) ? locked : (bool?)null;
 
         // Unlike the ore quota below, hitting the wood quota while locked to trees releases
@@ -597,6 +608,7 @@ public partial class LivingRust
         }
 
         if (lockedToTree != false
+            && !postBase
             && !HasReachedWoodQuota(characterId)
             && !HasEnoughWoodAlready(survivor, npc)
             && HasAnyGatherCapableTool(npc, TreeGatherToolPriority)
@@ -623,6 +635,11 @@ public partial class LivingRust
         if (lockedToTree == true)
         {
             return false;
+        }
+
+        if (postBase)
+        {
+            return TryStartPostBaseOreFallback(survivor, npc, state);
         }
 
         if (HasReachedOreQuota(survivor.Character.Id) || !HasAnyGatherCapableTool(npc, OreGatherToolPriority))
@@ -766,6 +783,62 @@ public partial class LivingRust
         }
     }
 
+    /// <summary>
+    /// Post-base last-resort ore farming: sulfur first, then metal ore, each against its OWN quota
+    /// (the old shared HasReachedOreQuota stopped ALL mining the moment any one type hit 1000 -
+    /// plain stone, being everywhere, always won that race, which is why bases had piles of stone
+    /// and next to no metal or sulfur). Plain stone is never mined once a base exists.
+    /// </summary>
+    private bool TryStartPostBaseOreFallback(Survivor survivor, BasePlayer npc, LootTaskState state)
+    {
+        Guid characterId = survivor.Character.Id;
+
+        if (!HasAnyGatherCapableTool(npc, OreGatherToolPriority))
+        {
+            return false;
+        }
+
+        bool Eligible(OreResourceEntity candidate) =>
+            !state.Visited.Contains(candidate.net.ID)
+            && !IsLootTargetClaimed(candidate.net.ID)
+            && !IsInPoisonedZone(candidate.transform.position, state)
+            && !IsInThreatFleeZone(characterId, candidate.transform.position)
+            && !IsInMonumentAvoidZone(candidate.transform.position)
+            && !IsBelowSafeLootDepth(candidate.transform.position)
+            && !IsResourceNodePoisoned(candidate);
+
+        (string Ore, float Total, float Quota)[] order =
+        {
+            (SulfurOreShortname, _totalSulfurOreGathered.GetValueOrDefault(characterId), OreQuotaSulfurOre),
+            (MetalOreShortname, _totalMetalOreGathered.GetValueOrDefault(characterId), OreQuotaMetalOre),
+        };
+
+        foreach ((string ore, float total, float quota) in order)
+        {
+            if (total >= quota)
+            {
+                continue;
+            }
+
+            string wanted = ore;
+
+            if (_engine.NavigationManager.TryFindNearestOreResourceEntity(
+                    npc.transform.position,
+                    ResourceNodeSearchRadius,
+                    out OreResourceEntity node,
+                    candidate => Eligible(candidate) && YieldsContain(GetNodeYields(candidate), wanted)))
+            {
+                state.Visited.Add(node.net.ID);
+                ClaimLootTarget(state, node.net.ID);
+                VerbosePuts($"gather-task: '{survivor.Character.Alias}' found nothing left to loot nearby - heading to a nearby {ore} node (post-base: sulfur/metal only).");
+                GatherOreAndContinue(survivor, node, state);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private bool HasReachedOreQuota(Guid characterId)
     {
         return _totalStoneGathered.GetValueOrDefault(characterId) >= OreQuotaStone
@@ -826,7 +899,7 @@ public partial class LivingRust
 
         foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
-            if (candidate == null || IsMonumentExcludedFromAutonomy(candidate))
+            if (candidate == null || IsMonumentExcludedFromAutonomy(candidate) || IsGhostRouteOnlyMonument(candidate))
             {
                 continue;
             }

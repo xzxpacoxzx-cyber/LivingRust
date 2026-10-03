@@ -38,14 +38,48 @@ public partial class LivingRust
     private readonly HashSet<Guid> _pursuingMonumentRushGoal = new();
     private readonly Dictionary<Guid, float> _monumentRushDeadline = new();
 
+    // Chance, GIVEN a fresh life already rolled into a monument rush, that it's the more extreme
+    // "immediate" variant: skip the full primitive checklist (sleeping bag/bow/arrows/bandages) in
+    // favor of gathering only a stone hatchet + stone pickaxe first, then go straight for the
+    // monument - 2026-10-03, Lucas's own explicit spec. 10% of the 25% that roll a rush at all,
+    // so 2.5% of all fresh lives.
+    private const float ImmediateMonumentRushChance = 0.10f;
+
+    // This-life flag: true once a rushing survivor's nested roll lands on the immediate variant.
+    // Reset on death along with the other once-per-life rush flags (see LivingRust.Hooks.cs) -
+    // a death during the attempt is handled separately via _disqualifiedFromMonumentRush below,
+    // not by this flag surviving the reset.
+    private readonly HashSet<Guid> _isImmediateMonumentRush = new();
+
+    // Still gathering its minimal hatchet+pickaxe kit before departing for the monument.
+    private readonly HashSet<Guid> _pursuingImmediateRushTools = new();
+
+    // Permanent - never reset on death. A survivor that dies anywhere during an immediate rush
+    // attempt (tool-gathering, travel, or at the monument itself) never rolls ANY monument rush
+    // again for the rest of its existence and instead always runs the normal full checklist and
+    // priority ladder, matching Lucas's own explicit spec: "it respawns and joins the rest of the
+    // 75% of bots trying to do everything else."
+    private readonly HashSet<Guid> _disqualifiedFromMonumentRush = new();
+
     /// <summary>
     /// Once-per-life roll deciding whether a survivor should rush a monument before its checklist
-    /// and home-site rolls. Returns true while the rush is still in progress, and clears either on
-    /// a genuine monument completion or once the safety-net deadline expires.
+    /// and home-site rolls. Returns true while the rush is still in progress (including the
+    /// immediate variant's tool-gathering lead-in), and clears either on a genuine monument
+    /// completion or once the safety-net deadline expires.
     /// </summary>
     private bool RollMonumentRushIfFreshLife(Survivor survivor)
     {
         Guid characterId = survivor.Character.Id;
+
+        if (_disqualifiedFromMonumentRush.Contains(characterId))
+        {
+            return false;
+        }
+
+        if (_pursuingImmediateRushTools.Contains(characterId))
+        {
+            return true;
+        }
 
         if (_pursuingMonumentRushGoal.Contains(characterId))
         {
@@ -72,10 +106,79 @@ public partial class LivingRust
             return false;
         }
 
+        if (UnityEngine.Random.value < ImmediateMonumentRushChance)
+        {
+            _isImmediateMonumentRush.Add(characterId);
+            _pursuingImmediateRushTools.Add(characterId);
+            Puts($"monument-rush: '{survivor.Character.Alias}' rolled the immediate variant - gathering just a stone hatchet and pickaxe before rushing a monument, skipping the rest of its checklist until a genuine clear.");
+            return true;
+        }
+
         _pursuingMonumentRushGoal.Add(characterId);
         _monumentRushDeadline[characterId] = UnityEngine.Time.realtimeSinceStartup + MonumentRushTimeLimitSeconds;
         Puts($"monument-rush: '{survivor.Character.Alias}' rolled to rush a monument before starting its checklist/base-building this life.");
         return true;
+    }
+
+    /// <summary>
+    /// Pursues the immediate-rush variant's minimal tool kit (stone hatchet + pickaxe only - no
+    /// sleeping bag/bow/arrows/bandages). Once both are owned, hands off into the normal
+    /// gear-weighted destination roll the same way the non-immediate rush already does.
+    /// </summary>
+    private bool TryPursueImmediateRushTools(Survivor survivor, BasePlayer npc, LootTaskState state)
+    {
+        Guid characterId = survivor.Character.Id;
+
+        if (!_pursuingImmediateRushTools.Contains(characterId))
+        {
+            return false;
+        }
+
+        if (TryStartCraftingFallbackForImmediateRushTools(survivor, npc, state))
+        {
+            return true;
+        }
+
+        ItemDefinition hatchetDef = ItemManager.FindItemDefinition(StoneHatchetShortname);
+        ItemDefinition pickaxeDef = ItemManager.FindItemDefinition(StonePickaxeShortname);
+
+        if ((hatchetDef == null || npc.inventory.GetAmount(hatchetDef.itemid) < 1)
+            || (pickaxeDef == null || npc.inventory.GetAmount(pickaxeDef.itemid) < 1))
+        {
+            // Not done yet, but nothing to craft/gather this cycle either - fall through to
+            // normal looting so the survivor keeps acting while waiting on materials.
+            return false;
+        }
+
+        _pursuingImmediateRushTools.Remove(characterId);
+        _pursuingMonumentRushGoal.Add(characterId);
+        _monumentRushDeadline[characterId] = UnityEngine.Time.realtimeSinceStartup + MonumentRushTimeLimitSeconds;
+        Puts($"monument-rush: '{survivor.Character.Alias}' has its hatchet and pickaxe - heading out to rush a monument now.");
+
+        TryStartWithGearWeightedDestination(survivor, npc);
+        return true;
+    }
+
+    /// <summary>
+    /// Same shape as TryStartCraftingFallback but scoped to only the two tools the immediate rush
+    /// variant needs, so it never drifts into crafting a bow/bag/bandages while "everything else"
+    /// is supposed to stay disregarded until a genuine monument clear.
+    /// </summary>
+    private bool TryStartCraftingFallbackForImmediateRushTools(Survivor survivor, BasePlayer npc, LootTaskState state)
+    {
+        ItemCrafter activeCrafter = npc.inventory?.crafting;
+
+        if (activeCrafter != null && activeCrafter.queue.Count > 0)
+        {
+            return false;
+        }
+
+        if (TryPursueOneOffToolGoal(survivor, npc, state, StoneHatchetShortname, "stone hatchet", allowGather: false)) return true;
+        if (TryPursueOneOffToolGoal(survivor, npc, state, StonePickaxeShortname, "stone pickaxe", allowGather: false)) return true;
+        if (TryPursueOneOffToolGoal(survivor, npc, state, StoneHatchetShortname, "stone hatchet")) return true;
+        if (TryPursueOneOffToolGoal(survivor, npc, state, StonePickaxeShortname, "stone pickaxe")) return true;
+
+        return false;
     }
 
     // Window with no gathering progress before a coastal survivor gives up and heads inland
@@ -471,6 +574,72 @@ public partial class LivingRust
     /// <summary>
     /// Rolls a random tier2 design at full cost, used as the monument-rush completion reward.
     /// </summary>
+    /// <summary>
+    /// Called when a survivor learns a blueprint (LivingRust.Blueprints.cs) that needs a higher
+    /// workbench than its currently targeted base design provides - 2026-10-03, Lucas's own
+    /// explicit spec: "I picked up a rifle.ak but I only have a tier2 base design built, I need
+    /// to now build a tier3 base design." Only ever raises the target, never lowers it, and only
+    /// while the survivor hasn't already built that tier (a real built Home's own tier isn't
+    /// tracked here - this just re-rolls the still-pending target design, the same thing
+    /// TryPursueTierUpgrade already walks toward once gathering/building resumes).
+    /// </summary>
+    private void TryUpgradeBaseTierForLearnedBlueprint(BasePlayer npc, ItemBlueprint blueprint)
+    {
+        int neededTier = blueprint.workbenchLevelRequired;
+
+        if (neededTier <= 0)
+        {
+            return;
+        }
+
+        Survivor survivor = FindSurvivorByPlayer(npc);
+
+        if (survivor == null)
+        {
+            return;
+        }
+
+        Guid characterId = survivor.Character.Id;
+
+        int currentTier = _rolledBaseDesign.TryGetValue(characterId, out (string Tier, string DesignPath, Dictionary<string, int> Cost) rolled)
+            && int.TryParse(rolled.Tier.Replace("tier", ""), out int parsedTier)
+                ? parsedTier
+                : 0;
+
+        if (neededTier <= currentTier || !TryRollBaseDesignForTier(neededTier, out string designPath, out Dictionary<string, int> cost))
+        {
+            return;
+        }
+
+        _rolledBaseDesign[characterId] = ($"tier{neededTier}", designPath, cost);
+        Puts($"blueprint: '{survivor.Character.Alias}' learned a blueprint needing a tier{neededTier} workbench - upgrading its target base design from tier{currentTier} to tier{neededTier}.");
+    }
+
+    private bool TryRollBaseDesignForTier(int tier, out string designPath, out Dictionary<string, int> cost)
+    {
+        string tierDirectory = $"{BaseDesignsDirectory}/tier{tier}";
+
+        if (!Directory.Exists(tierDirectory))
+        {
+            designPath = null;
+            cost = null;
+            return false;
+        }
+
+        string[] designs = Directory.GetFiles(tierDirectory, "*.csv");
+
+        if (designs.Length == 0)
+        {
+            designPath = null;
+            cost = null;
+            return false;
+        }
+
+        designPath = PickWeightedBaseDesign(designs);
+        cost = CalculateTraceResourceRequirements(designPath);
+        return true;
+    }
+
     private bool TryRollTier2BaseDesign(out string designPath, out Dictionary<string, int> cost)
     {
         string tierDirectory = $"{BaseDesignsDirectory}/tier2";
@@ -505,9 +674,22 @@ public partial class LivingRust
     private void ConcludeMonumentRush(Survivor survivor, BasePlayer npc, MonumentTier tier, string monumentName, bool wasGenuineSuccess)
     {
         Guid characterId = survivor.Character.Id;
+        bool wasImmediate = _isImmediateMonumentRush.Remove(characterId);
 
-        _pursuingPrimitiveGoals.Remove(characterId);
-        _pursuingBaseGatherGoal.Add(characterId);
+        if (wasImmediate && wasGenuineSuccess)
+        {
+            // Spec: "everything else can be disregarded then resumed IF AND ONLY IF the bot
+            // clears the monument loot path" - unlike the normal rush (which jumps straight to
+            // base-gathering either way), a genuine immediate-rush clear resumes the REST of the
+            // primitive checklist (sleeping bag/bow/arrows/bandages - hatchet/pickaxe are already
+            // owned, so those two checks just pass through immediately) before base-gathering.
+            _pursuingPrimitiveGoals.Add(characterId);
+        }
+        else
+        {
+            _pursuingPrimitiveGoals.Remove(characterId);
+            _pursuingBaseGatherGoal.Add(characterId);
+        }
 
         if (wasGenuineSuccess)
         {
@@ -522,6 +704,9 @@ public partial class LivingRust
 
             GrantMonumentRushCompletionReward(survivor, npc, tier);
             TryGrantMonumentKeycardReward(survivor, npc, tier, monumentName);
+            TryGrantMonumentClothingReward(survivor, npc, tier);
+            TryGrantMonumentMedicalReward(survivor, npc, tier);
+            TryGrantMonumentToolBonusReward(survivor, npc, tier);
         }
         else
         {
@@ -529,6 +714,9 @@ public partial class LivingRust
 
             TryGrantMonumentHandicapReward(survivor, npc, tier, didRealGhostRoute: false, didCardPuzzle: false);
             TryGrantMonumentKeycardReward(survivor, npc, tier, monumentName);
+            TryGrantMonumentClothingReward(survivor, npc, tier);
+            TryGrantMonumentMedicalReward(survivor, npc, tier);
+            TryGrantMonumentToolBonusReward(survivor, npc, tier);
         }
 
         if (!TryStartRecyclingTask(survivor))
@@ -621,15 +809,11 @@ public partial class LivingRust
 
             allResourcesReady = false;
 
-            // No farmable node exists for metal fragments, so this starts a recycling trip instead
-            // of a gather walk once there's something worth recycling.
+            // No farmable node exists for metal fragments. This used to start a recycling trip, but
+            // recycling is now only for a full inventory or an expired monument-run timer
+            // (2026-10-03, Lucas's spec) - the build-by deadline top-up covers any shortfall.
             if (requirement.Key == "metal.fragments")
             {
-                if (TryStartRecyclingTask(survivor))
-                {
-                    return true;
-                }
-
                 continue;
             }
 
@@ -932,21 +1116,21 @@ public partial class LivingRust
             // Animal is dead - StartCombat's damage pipeline already ran EndCombat.
             pollTimer.Destroy();
 
-            if (!TryFindNearestCorpse(lastKnownPosition, AnimalHuntCorpseSearchRadius, out BaseCorpse corpse))
-            {
-                VerbosePuts($"base-gather: '{survivor.Character.Alias}' killed its hunt target but couldn't find a real corpse nearby to harvest.");
-                _activeAnimalHunt.Remove(characterId);
-                return;
-            }
-
-            Puts($"base-gather: '{survivor.Character.Alias}' finished off its hunt target - harvesting the corpse.");
-
-            StartHarvestingCorpse(survivor, corpse, onDone: () =>
-            {
-                _animalHuntKillCount[characterId] = _animalHuntKillCount.GetValueOrDefault(characterId) + 1;
-                _activeAnimalHunt.Remove(characterId);
-                ContinueLootTask(survivor, state, forceLocalScan: true);
-            });
+            // An animal kill never produces a BaseCorpse (that's the lootbag/ragdoll a
+            // dead PLAYER leaves) - the animal itself just stays dead in place, harvestable
+            // the same way a tree/ore node is (see LivingRust.KillLoot.cs's own
+            // TryFindNearestDeadHuntableAnimal/StartHarvestingAnimalCorpse). This call used
+            // to search for a BaseCorpse here and always fail ("couldn't find a real corpse
+            // nearby to harvest" - every time, for every hunt kill - 2026-10-02, Lucas's live
+            // report: a bot killed a boar and never harvested it), then stop without
+            // continuing the task loop at all. OnEntityDeath's own NotePotentialPriorityKill
+            // hook already queued this exact kill as priority loot the instant it died
+            // (independent of this function) - continuing the loot task here is all that's
+            // needed to let that already-correct pathway pick it up and walk over to harvest
+            // it for real.
+            _animalHuntKillCount[characterId] = _animalHuntKillCount.GetValueOrDefault(characterId) + 1;
+            _activeAnimalHunt.Remove(characterId);
+            ContinueLootTask(survivor, state, forceLocalScan: true);
         });
     }
 

@@ -63,6 +63,7 @@ public partial class LivingRust
         {
             owner.blueprints.Unlock(item.info);
             Puts($"blueprint: '{owner.displayName}' learned the '{item.info.shortname}' blueprint on pickup (workbench level {blueprint.workbenchLevelRequired}).");
+            TryUpgradeBaseTierForLearnedBlueprint(owner, blueprint);
         }
         catch (Exception ex)
         {

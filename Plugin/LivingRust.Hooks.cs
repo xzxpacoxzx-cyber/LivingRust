@@ -150,10 +150,26 @@ public partial class LivingRust
             _hasRolledHomeSiteStrategy.Remove(survivor.Character.Id);
             _homeSiteTarget.Remove(survivor.Character.Id);
 
+            // A death while still mid-immediate-rush (gathering its minimal tool kit, or already
+            // out pursuing the monument itself) permanently disqualifies this survivor from ever
+            // rolling a monument rush again - Lucas's own explicit spec: "it respawns and joins
+            // the rest of the 75% of bots trying to do everything else." Checked BEFORE the
+            // flags below get reset, and only while the attempt hasn't already concluded
+            // (ConcludeMonumentRush already cleared _isImmediateMonumentRush/_pursuingMonumentRushGoal
+            // on a genuine clear or a timeout, so a later, unrelated death doesn't wrongly disqualify).
+            if (_isImmediateMonumentRush.Contains(survivor.Character.Id)
+                && (_pursuingImmediateRushTools.Contains(survivor.Character.Id) || _pursuingMonumentRushGoal.Contains(survivor.Character.Id)))
+            {
+                _disqualifiedFromMonumentRush.Add(survivor.Character.Id);
+                Puts($"monument-rush: '{survivor.Character.Alias}' died mid-immediate-rush - permanently disqualified from future monument rushes, joining the normal checklist population.");
+            }
+
             // Resets the monument-rush roll so the survivor gets a fresh roll next life.
             _hasRolledMonumentRush.Remove(survivor.Character.Id);
             _pursuingMonumentRushGoal.Remove(survivor.Character.Id);
             _monumentRushDeadline.Remove(survivor.Character.Id);
+            _isImmediateMonumentRush.Remove(survivor.Character.Id);
+            _pursuingImmediateRushTools.Remove(survivor.Character.Id);
 
             // _pursuingBaseGatherGoal/_rolledBaseDesign are intentionally not cleared here, so
             // the survivor keeps working toward the same base design across deaths.
@@ -212,11 +228,21 @@ public partial class LivingRust
         // Remembered so RespawnSurvivor can send this survivor back to scavenge its own death
         // bag (and whatever else - a killer's drops, other loose scraps) before resuming
         // whatever it was doing. See TryPursueDeathSiteLoot's own doc comment.
-        _pendingDeathSiteLoot[survivor.Character.Id] = new DeathSiteLoot
+        // A survivor only gets one revisit per death location: dying there again the same way (or
+        // piling up with other bodies, or dying inside a ghost-route-only monument) poisons the
+        // area for ten minutes and skips the trip back entirely.
+        if (RegisterDeathAndAllowRevisit(survivor, player.transform.position, cause))
         {
-            Position = player.transform.position,
-            ExpiresAt = Time.realtimeSinceStartup + DeathSiteLootLifetimeSeconds,
-        };
+            _pendingDeathSiteLoot[survivor.Character.Id] = new DeathSiteLoot
+            {
+                Position = player.transform.position,
+                ExpiresAt = Time.realtimeSinceStartup + DeathSiteLootLifetimeSeconds,
+            };
+        }
+        else
+        {
+            _pendingDeathSiteLoot.Remove(survivor.Character.Id);
+        }
 
         // Tracks the death-loop streak at the moment of death, not in RespawnSurvivor,
         // since its delay would distort how "quick" the succession looks.
@@ -326,13 +352,12 @@ public partial class LivingRust
 
         Vector3 spawnPos = default;
         Quaternion spawnRot = default;
-        bool atOwnedBag = !rescueFromDeathLoop && TryFindOwnedBag(character.BotId, out spawnPos, out spawnRot);
+        bool atOwnedBag = !rescueFromDeathLoop && TryFindOwnedBag(character.BotId, out spawnPos, out spawnRot, character.Home?.Position);
 
         if (!atOwnedBag)
         {
-            BasePlayer.SpawnPoint spawnPoint = ServerMgr.FindSpawnPoint(npc);
-            spawnPos = spawnPoint.pos;
-            spawnRot = spawnPoint.rot;
+            // Re-rolled if another survivor is already standing on the chosen point (see LivingRust.SpawnSpacing.cs).
+            FindUnoccupiedSpawnPosition(npc, character.Id, out spawnPos, out spawnRot);
         }
 
         npc.transform.position = spawnPos;
@@ -353,9 +378,72 @@ public partial class LivingRust
 
         VerbosePuts($"'{character.Alias}' respawned at {spawnPos} ({(atOwnedBag ? "owned sleeping bag" : "beach")}).");
 
+        // Respawned right at its own base (2026-10-03, Lucas's own explicit spec) - runs the same
+        // home-catch-up trip a normal 20-minute base-return does (refuel furnaces, pull better
+        // gear from storage, restock bandages) immediately rather than waiting up to 20 more
+        // minutes for the next scheduled visit, since the survivor is already standing right
+        // there with nothing to show for the trip yet. SleepingBagNearHomeRadius (5m) is what
+        // keeps a base's own bag genuinely close, so this check is the same "is this really a
+        // base-bag spawn" test.
+        bool respawnedAtBaseBag = atOwnedBag && character.Home != null && Vector3.Distance(spawnPos, character.Home.Position) <= SleepingBagNearHomeRadius;
+
+        // Respawned anywhere else with a base standing (beach spawn, or only a far-away bag):
+        // walk home first and kit up there instead of going straight back out with a rock.
+        if (!respawnedAtBaseBag && character.Home != null)
+        {
+            BeginReturnToBaseAfterRespawn(survivor, RunRespawnHomeCatchUp);
+            return;
+        }
+
+        if (respawnedAtBaseBag)
+        {
+            Puts($"'{character.Alias}' respawned at its own base - running a home catch-up (furnaces, storage) before heading back out.");
+            RunRespawnHomeCatchUp(survivor);
+            return;
+        }
+
         // Resumes autonomous behaviour after respawn so the gear-weighted destination
         // roll runs fresh for the survivor's minimal starting gear.
         StartLootForResourcesTask(survivor);
+    }
+
+    private void RunRespawnHomeCatchUp(Survivor survivor)
+    {
+        Character character = survivor.Character;
+
+        if (survivor.Player == null || survivor.Player.IsDestroyed || character.State == CharacterState.Dead)
+        {
+            return;
+        }
+
+        GhostReturnHomeAndDeposit(survivor, () =>
+        {
+            {
+                // 2026-10-03, Lucas's own explicit follow-up: a respawned survivor that lost its
+                // tools/weapon on death should rebuild them before heading back out, not just
+                // pull whatever's already sitting in storage (TryUpgradeGearFromStorage above
+                // only re-equips what's THERE - a genuinely empty cupboard leaves it toolless).
+                // Reuses the real primitive checklist (hatchet/pickaxe/bow/arrows/bandages/bag)
+                // rather than a new parallel system - re-arms _pursuingPrimitiveGoals so
+                // ContinueLootTask's own existing checklist-pursuit branch picks it up and crafts
+                // whichever of those six it's actually missing, same proven chain a fresh spawn
+                // uses. Clothing/armor re-equip is already covered by TryUpgradeGearFromStorage
+                // just above (pulls from storage, same as normal); crafting NEW armor from
+                // scratch isn't something this project does anywhere, including on a fresh
+                // spawn, so it's out of scope here too. Syringes are loot-only (no recipe), so
+                // they're not something "rebuild from materials" can cover either - only
+                // bandages, via the checklist's own bandage goal.
+                BasePlayer liveNpc = survivor.Player;
+
+                if (liveNpc != null && !liveNpc.IsDestroyed && !HasCompletedPrimitiveGoals(survivor, liveNpc))
+                {
+                    _pursuingPrimitiveGoals.Add(character.Id);
+                    Puts($"'{character.Alias}' is missing part of its basic kit after respawning - rebuilding it at the base before resuming normal tasks.");
+                }
+
+                StartLootForResourcesTask(survivor);
+            }
+        });
     }
 
     /// <summary>
@@ -382,9 +470,11 @@ public partial class LivingRust
     /// Searches every SleepingBag entity on the map for one owned by botId, preferring one
     /// off cooldown but falling back to one still on cooldown.
     /// </summary>
-    private bool TryFindOwnedBag(ulong botId, out Vector3 position, out Quaternion rotation)
+    private bool TryFindOwnedBag(ulong botId, out Vector3 position, out Quaternion rotation, Vector3? preferNear = null)
     {
         SleepingBag fallbackBag = null;
+        SleepingBag nearestValid = null;
+        float nearestDistance = float.MaxValue;
 
         foreach (BaseNetworkable entity in BaseNetworkable.serverEntities)
         {
@@ -395,11 +485,32 @@ public partial class LivingRust
 
             if (bag.ValidForPlayer(botId, false))
             {
-                bag.GetSpawnPos(out position, out rotation);
-                return true;
+                // Without a base to prefer, the first valid bag wins as before. With one, the bag
+                // closest to it does - an old far-away bag must not outrank the one at the base.
+                if (preferNear == null)
+                {
+                    bag.GetSpawnPos(out position, out rotation);
+                    return true;
+                }
+
+                float distance = Vector3.Distance(bag.transform.position, preferNear.Value);
+
+                if (distance < nearestDistance)
+                {
+                    nearestDistance = distance;
+                    nearestValid = bag;
+                }
+
+                continue;
             }
 
             fallbackBag ??= bag;
+        }
+
+        if (nearestValid != null)
+        {
+            nearestValid.GetSpawnPos(out position, out rotation);
+            return true;
         }
 
         if (fallbackBag != null)
@@ -419,8 +530,9 @@ public partial class LivingRust
     /// </summary>
     private void GiveStartingKit(BasePlayer npc)
     {
+        // No torch (2026-10-03): a bot doesn't need a light source, and every respawn at the base
+        // used to bank the fresh one in a storage box - bases ended up with dozens of them.
         GiveItem(npc, "rock", 1);
-        GiveItem(npc, "torch", 1);
     }
 
     /// <summary>
@@ -444,17 +556,21 @@ public partial class LivingRust
 
     private void GiveItem(BasePlayer npc, string shortname, int amount)
     {
-        Item item = ItemManager.CreateByName(shortname, amount);
+        ItemDefinition def = ItemManager.FindItemDefinition(shortname);
 
-        if (item == null)
+        if (def == null)
         {
             Puts($"WARNING: couldn't create starting-kit item '{shortname}' - unknown shortname?");
             return;
         }
 
-        if (!npc.inventory.GiveItem(item))
+        // Stack-sized chunks: a single Item above the stack limit never gets split afterward.
+        foreach (Item item in CreateStackSizedItems(def, amount))
         {
-            item.Remove();
+            if (!npc.inventory.GiveItem(item))
+            {
+                item.Remove();
+            }
         }
     }
 }
