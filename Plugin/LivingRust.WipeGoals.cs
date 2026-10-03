@@ -214,12 +214,7 @@ public partial class LivingRust
             return false;
         }
 
-        List<StorageContainer> boxes = FindOwnedStorageBoxesNear(npc, home.Position, HomeStorageSearchRadius);
-
-        bool needsMoreStorage = boxes.Count == 0
-            || boxes.All(b => b.inventory != null && b.inventory.capacity - b.inventory.itemList.Count <= AdditionalStorageFreeSlotThreshold);
-
-        if (!needsMoreStorage)
+        if (!BaseNeedsMoreStorage(npc, home))
         {
             return false;
         }
@@ -847,6 +842,17 @@ public partial class LivingRust
     private const float BoxPlacementRetrySeconds = 900f;
     private readonly Dictionary<Guid, float> _nextBoxPlacementTrip = new();
 
+    /// <summary>
+    /// True when the base has no storage box at all, or every box it owns is nearly full.
+    /// </summary>
+    private bool BaseNeedsMoreStorage(BasePlayer npc, HomeBase home)
+    {
+        List<StorageContainer> boxes = FindOwnedStorageBoxesNear(npc, home.Position, HomeStorageSearchRadius);
+
+        return boxes.Count == 0
+            || boxes.All(b => b.inventory != null && b.inventory.capacity - b.inventory.itemList.Count <= AdditionalStorageFreeSlotThreshold);
+    }
+
     private void TryPlaceAdditionalStorageBoxAtHome(Survivor survivor, BasePlayer npc)
     {
         ItemDefinition boxDef = ItemManager.FindItemDefinition(LargeWoodBoxShortname);
@@ -880,6 +886,14 @@ public partial class LivingRust
         {
             _nextBoxPlacementTrip[survivor.Character.Id] = Time.realtimeSinceStartup + BoxPlacementRetrySeconds;
             VerbosePuts($"wipe-goal: '{survivor.Character.Alias}' is carrying a storage box but isn't at its base - holding it for the next trip.");
+            return;
+        }
+
+        // A spare box is only ever placed when the base is actually out of room (2026-10-04, Lucas: a bot put
+        // a third box down next to two empty ones). Otherwise it just keeps carrying it.
+        if (!BaseNeedsMoreStorage(npc, home))
+        {
+            VerbosePuts($"wipe-goal: '{survivor.Character.Alias}' is carrying a storage box but its base still has room - not placing it.");
             return;
         }
 

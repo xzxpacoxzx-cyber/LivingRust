@@ -259,7 +259,9 @@ public partial class LivingRust
             return true;
         }
 
-        if (TryPursueOneOffToolGoal(survivor, npc, state, LargeWoodBoxShortname, "large wood box"))
+        // Pre-base build material only: a survivor that already owns a base gets extra boxes through
+        // TryPursueAdditionalStorageGoal, and only when its storage is actually full.
+        if (survivor.Character.Home == null && TryPursueOneOffToolGoal(survivor, npc, state, LargeWoodBoxShortname, "large wood box"))
         {
             return true;
         }
