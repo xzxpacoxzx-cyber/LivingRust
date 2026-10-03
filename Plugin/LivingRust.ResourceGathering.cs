@@ -50,11 +50,44 @@ public partial class LivingRust
     /// Checks whether a survivor can attempt this resource type at all before walking
     /// toward a node, so it doesn't walk all the way there with nothing to gather it with.
     /// </summary>
-    private static bool HasAnyGatherCapableTool(BasePlayer npc, string[] toolPriority)
+    private bool HasAnyGatherCapableTool(BasePlayer npc, string[] toolPriority)
+    {
+        bool rockAllowed = IsRockGatheringAllowed(npc);
+
+        return npc.inventory.containerBelt.itemList
+            .Concat(npc.inventory.containerMain.itemList)
+            .Any(item => Array.IndexOf(toolPriority, item.info.shortname) >= 0
+                && (rockAllowed || item.info.shortname != RockShortname));
+    }
+
+    private const string RockShortname = "rock";
+
+    /// <summary>
+    /// A rock is only a gathering tool for a survivor with no base that is still fully naked (the very
+    /// start of its life). Once it owns a base or wears anything it should craft or fetch a real tool
+    /// instead of punching trees and nodes with a rock (2026-10-04, Lucas).
+    /// </summary>
+    private bool IsRockGatheringAllowed(BasePlayer npc)
+    {
+        Survivor survivor = FindSurvivorByPlayer(npc);
+
+        return survivor == null || (survivor.Character.Home == null && npc.inventory.containerWear.itemList.Count == 0);
+    }
+
+    private bool HasRealOreTool(BasePlayer npc)
     {
         return npc.inventory.containerBelt.itemList
             .Concat(npc.inventory.containerMain.itemList)
-            .Any(item => Array.IndexOf(toolPriority, item.info.shortname) >= 0);
+            .Any(item => item.info.shortname != RockShortname && Array.IndexOf(OreGatherToolPriority, item.info.shortname) >= 0);
+    }
+
+    /// <summary>
+    /// Metal / sulfur ore: only for a survivor that already has a base down AND owns a real mining tool
+    /// (never a rock). Nodes that only drop stone are unaffected.
+    /// </summary>
+    private bool CanMineNode(Survivor survivor, BasePlayer npc, OreResourceEntity node)
+    {
+        return !IsEarlyGameRestrictedOre(node) || (survivor.Character.Home != null && HasRealOreTool(npc));
     }
 
     private void ValidateGatherToolPriorityLists()
@@ -747,6 +780,7 @@ public partial class LivingRust
     {
         Guid characterId = survivor.Character.Id;
         bool hasBase = survivor.Character.Home != null;
+        bool canMineMetal = hasBase && HasRealOreTool(npc);
 
         bool Eligible(OreResourceEntity candidate) =>
             !state.Visited.Contains(candidate.net.ID)
@@ -759,7 +793,7 @@ public partial class LivingRust
 
         List<string> order = new();
 
-        if (hasBase)
+        if (canMineMetal)
         {
             order.Add(SulfurOreShortname);
             order.Add(MetalOreShortname);
@@ -781,7 +815,7 @@ public partial class LivingRust
                     candidate => Eligible(candidate)
                         && YieldsContain(GetNodeYields(candidate), wanted)
                         // Pre-base restriction: never a node that also drops metal/sulfur ore.
-                        && (hasBase || !IsEarlyGameRestrictedOre(candidate))))
+                        && (canMineMetal || !IsEarlyGameRestrictedOre(candidate))))
             {
                 state.Visited.Add(node.net.ID);
                 ClaimLootTarget(state, node.net.ID);
@@ -957,7 +991,7 @@ public partial class LivingRust
                         && HasLineOfSight(currentNpc, candidate)
                         && !IsResourceNodePoisoned(candidate)
                         // Same base-only condition as the primary ore search above.
-                        && (survivor.Character.Home != null || !IsEarlyGameRestrictedOre(candidate))))
+                        && CanMineNode(survivor, currentNpc, candidate)))
             {
                 StopExtendedOreSearch(characterId);
                 state.Visited.Add(spottedOre.net.ID);

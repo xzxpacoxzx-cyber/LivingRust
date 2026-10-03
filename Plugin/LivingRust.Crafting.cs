@@ -1163,7 +1163,7 @@ public partial class LivingRust
         // Lucas's live report: bots mining heavy metal/sulfur ore early game) - recycling
         // already supplies metal.fragments without needing a mining trip, and once a base
         // exists this restriction lifts the same way it already does for the other two paths.
-        if (preferredYieldShortname is MetalOreShortname or SulfurOreShortname && survivor.Character.Home == null)
+        if (preferredYieldShortname is MetalOreShortname or SulfurOreShortname && (survivor.Character.Home == null || !HasRealOreTool(npc)))
         {
             return false;
         }
@@ -1206,6 +1206,7 @@ public partial class LivingRust
                 CraftIngredientSearchRadius,
                 out OreResourceEntity ore,
                 candidate => !state.Visited.Contains(candidate.net.ID)
+                    && CanMineNode(survivor, npc, candidate)
                     && !IsLootTargetClaimed(candidate.net.ID)
                     && !IsInPoisonedZone(candidate.transform.position, state)
                     && !IsInThreatFleeZone(survivor.Character.Id, candidate.transform.position)

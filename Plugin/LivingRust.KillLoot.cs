@@ -91,7 +91,7 @@ public partial class LivingRust
     /// A hatchet, jackhammer, bone knife or combat knife (any of them, none preferred) - a rock alone
     /// doesn't make the trip worthwhile.
     /// </summary>
-    private static bool HasAnimalHarvestTool(BasePlayer npc)
+    private bool HasAnimalHarvestTool(BasePlayer npc)
     {
         return HasAnyGatherCapableTool(npc, AnimalHarvestToolPriority.Where(tool => tool != "rock").ToArray());
     }

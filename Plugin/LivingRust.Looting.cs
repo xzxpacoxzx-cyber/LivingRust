@@ -3206,6 +3206,7 @@ public partial class LivingRust
                 EnRouteResourceNodeDetectionRadius,
                 out OreResourceEntity ore,
                 c => !IsLootTargetClaimed(c.net.ID)
+                    && CanMineNode(survivor, npc, c)
                     && IsResourceAllowedForHighGear(survivor, npc, GetNodeYields(c))
                     && IsFarmedResourceWanted(survivor, GetNodeYields(c))
                     && !RecentlyFailedEnRouteLoot(c.net.ID)
