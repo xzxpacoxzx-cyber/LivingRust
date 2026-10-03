@@ -1014,7 +1014,11 @@ public partial class LivingRust
         public string Reason = "";
     }
 
+    private const string BucketHelmetShortname = "bucket.helmet";
+    private readonly HashSet<Guid> _bucketHelmetCraftedThisLife = new();
+
     private const int WorkshopMaxJobsPerVisit = 12;
+    private const float WorkshopBenchMaxDistance = 4f;
     private const float WorkshopCraftTimeScale = 0.25f;
     private const float WorkshopMaxSecondsPerCraft = 8f;
     private const float WorkshopStallExemptionSeconds = 300f;
@@ -1113,7 +1117,7 @@ public partial class LivingRust
     /// slot's wish list that is ranked above what is worn there AND not already covered by a worn
     /// piece of equal or better armor tier. Shared by the workshop planner and the assessment.
     /// </summary>
-    private List<(string Group, string Shortname)> GetUsefulClothingCandidates(BasePlayer npc, int wbLevel)
+    private List<(string Group, string Shortname)> GetUsefulClothingCandidates(BasePlayer npc, int wbLevel, Guid characterId)
     {
         List<(string, string)> result = new();
         List<Item> worn = npc.inventory.containerWear.itemList;
@@ -1139,6 +1143,12 @@ public partial class LivingRust
                 ItemModWearable wearable = def?.GetComponent<ItemModWearable>();
 
                 if (def?.Blueprint == null || wearable == null || def.Blueprint.workbenchLevelRequired > wbLevel)
+                {
+                    continue;
+                }
+
+                // One bucket helmet per life (2026-10-03, Lucas's spec) - they were being made every respawn.
+                if (shortname == BucketHelmetShortname && _bucketHelmetCraftedThisLife.Contains(characterId))
                 {
                     continue;
                 }
@@ -1279,7 +1289,7 @@ public partial class LivingRust
         }
 
         // 2. Clothing / armor: heads out wearing something in every slot it can afford to cover.
-        foreach ((string group, string shortname) in GetUsefulClothingCandidates(npc, wbLevel))
+        foreach ((string group, string shortname) in GetUsefulClothingCandidates(npc, wbLevel, survivor.Character.Id))
         {
             ItemDefinition def = ItemManager.FindItemDefinition(shortname);
 
@@ -1529,8 +1539,31 @@ public partial class LivingRust
 
             jobsDone++;
 
+            // Anything above a level-0 recipe needs a real workbench: the base's bench must exist, the
+            // survivor must get to it, and it must be standing right next to it when the craft starts.
+            // (2026-10-03, Lucas: bucket helmets must only ever be made at a workbench.)
+            bool needsBench = !job.WithdrawOnly && (ItemManager.FindItemDefinition(job.Shortname)?.Blueprint?.workbenchLevelRequired ?? 0) > 0;
+
+            if (needsBench && (workbench == null || workbench.IsDestroyed))
+            {
+                failed.Add(job.Shortname);
+                RunNext();
+                return;
+            }
+
             void Execute()
             {
+                BasePlayer atBenchNpc = survivor.Player;
+
+                if (needsBench && (atBenchNpc == null || atBenchNpc.IsDestroyed
+                    || Vector3.Distance(atBenchNpc.transform.position, workbench.transform.position) > WorkshopBenchMaxDistance))
+                {
+                    VerbosePuts($"workshop: '{survivor.Character.Alias}' isn't at its workbench - not crafting '{job.Shortname}'.");
+                    failed.Add(job.Shortname);
+                    RunNext();
+                    return;
+                }
+
                 atBench = true;
                 ExecuteWorkshopJob(survivor, job, boxes, wbLevel, failed, RunNext);
             }
@@ -1549,7 +1582,23 @@ public partial class LivingRust
                 Vector3 benchPoint = workbench.transform.position + away.normalized * 1.3f;
                 benchPoint.y = workbench.transform.position.y;
 
-                StartPhasingToDestination(survivor, benchPoint, onArrived: Execute, onFailed: Execute);
+                StartPhasingToDestination(
+                    survivor,
+                    benchPoint,
+                    onArrived: Execute,
+                    onFailed: () =>
+                    {
+                        // Couldn't get to the bench: nothing that needs it is crafted this visit.
+                        if (needsBench)
+                        {
+                            failed.Add(job.Shortname);
+                            RunNext();
+                        }
+                        else
+                        {
+                            Execute();
+                        }
+                    });
                 return;
             }
 
@@ -1711,6 +1760,11 @@ public partial class LivingRust
                 {
                     survivor.Character.KnownAmmoTypes.Add(weaponAmmo);
                 }
+            }
+
+            if (job.Shortname == BucketHelmetShortname)
+            {
+                _bucketHelmetCraftedThisLife.Add(survivor.Character.Id);
             }
 
             // A garment is put on straight away, and never crafted twice in one visit even if it
@@ -2415,7 +2469,7 @@ public partial class LivingRust
         // 2. Armour / clothing for any slot it could be wearing something better in.
         int position = 0;
 
-        foreach ((string _, string shortname) in GetUsefulClothingCandidates(npc, wbLevel))
+        foreach ((string _, string shortname) in GetUsefulClothingCandidates(npc, wbLevel, survivor.Character.Id))
         {
             GoalCandidate candidate = Evaluate(shortname, 2, (int)GetArmorTier(shortname) * 100 - position++);
 
