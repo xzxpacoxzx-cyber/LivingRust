@@ -838,6 +838,13 @@ public partial class LivingRust
             return;
         }
 
+        // Nothing is placed inside a monument (its no-build zone); the box stays in the inventory.
+        if (IsInsideMonumentNoBuildZone(npc.transform.position, out string monumentZone))
+        {
+            VerbosePuts($"wipe-goal: '{survivor.Character.Alias}' won't place a storage box here - {monumentZone}.");
+            return;
+        }
+
         Vector3 position;
         Vector3 facing = npc.eyes.BodyForward();
 

@@ -578,6 +578,14 @@ public partial class LivingRust
             return;
         }
 
+        // Never inside a monument (its no-build zone, same test the base-site search uses).
+        if (IsInsideMonumentNoBuildZone(npc.transform.position, out string monumentZone))
+        {
+            VerbosePuts($"craft-task: '{survivor.Character.Alias}' won't place a sleeping bag here - {monumentZone}.");
+            ContinueLootTask(survivor, state, forceLocalScan: true);
+            return;
+        }
+
         if (!npc.CanBuild())
         {
             VerbosePuts($"craft-task: '{survivor.Character.Alias}' can't place a sleeping bag here (no building permission) - will retry once it moves on.");

@@ -6956,6 +6956,13 @@ public partial class LivingRust
             return;
         }
 
+        // Never inside a monument (its no-build zone); the bag stays in the survivor's inventory.
+        if (IsInsideMonumentNoBuildZone(npc.transform.position, out string monumentZone))
+        {
+            Puts($"home-storage: '{survivor.Character.Alias}' won't place a sleeping bag at {npc.transform.position} - {monumentZone}.");
+            return;
+        }
+
         // The survivor is standing on its own base floor (it was just moved to the cupboard), so its
         // own height is the right one - the terrain height below a raised foundation would bury the bag.
         Vector3 position = npc.transform.position;

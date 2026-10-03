@@ -457,6 +457,18 @@ public partial class LivingRust
         SleepingBag nearestValid = null;
         float nearestDistance = float.MaxValue;
 
+        // A bag that ended up inside a monument (placed before bags were barred from monuments) is removed
+        // rather than ever being a respawn point - it kept dropping survivors into scientist territory.
+        foreach (BaseNetworkable entity in BaseNetworkable.serverEntities.ToArray())
+        {
+            if (entity is SleepingBag monumentBag && monumentBag.OwnerID == botId && !monumentBag.IsDestroyed
+                && IsInsideMonumentNoBuildZone(monumentBag.transform.position, out string monumentZone))
+            {
+                Puts($"respawn: removing a sleeping bag of bot {botId} placed inside a monument ({monumentZone}).");
+                monumentBag.Kill();
+            }
+        }
+
         foreach (BaseNetworkable entity in BaseNetworkable.serverEntities)
         {
             if (entity is not SleepingBag bag || bag.OwnerID != botId || bag.IsDestroyed)
