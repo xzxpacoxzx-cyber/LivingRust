@@ -427,7 +427,8 @@ public partial class LivingRust
             .Where(item => Array.IndexOf(CardPuzzleFuseShortnames, item.info.shortname) >= 0)
             .Sum(item => item.amount);
 
-        if (heldFuses < 1)
+        // 50% (lowered from always, 2026-10-03): the fuse is the scarce half of a puzzle kit.
+        if (heldFuses < 1 && UnityEngine.Random.Range(0f, 100f) < FuseRewardChance)
         {
             GiveItem(npc, CardPuzzleFuseShortnames[0], 1);
             granted.Add("fuse");

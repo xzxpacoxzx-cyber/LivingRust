@@ -318,7 +318,12 @@ public partial class LivingRust
     // (2026-10-03, Lucas's spec). Applied once, here and in RollClothingPool, so every caller
     // (normal clears, rush completion, the stacked pools) gets it. Multiplicative: a 10% roll
     // becomes 12%. Capped at 100.
-    private const float MonumentRewardChanceMultiplier = 1.2f;
+    // Later lowered by 10% overall (2026-10-03): 1.2 x 0.9 = 1.08, i.e. a 10% roll is now 10.8%.
+    private const float MonumentRewardChanceMultiplier = 1.2f * 0.9f;
+
+    // The ceiling of the random ammo amount handed over with a weapon reward is multiplied by this
+    // (2026-10-03, Lucas's request to up the ammo amounts).
+    private const float RewardAmmoCeilingMultiplier = 2f;
 
     // ------------------------------------------------------------
     // Reward variety / streak rules (2026-10-03, Lucas's spec)
@@ -422,7 +427,7 @@ public partial class LivingRust
         // 2026-10-03, Lucas's own explicit spec: the stated amount is now a ceiling, not a fixed
         // grant - rolled 0 to that amount inclusive, so sometimes the weapon arrives with no ammo
         // at all.
-        int ammoAmount = UnityEngine.Random.Range(0, reward.AmmoAmount + 1);
+        int ammoAmount = UnityEngine.Random.Range(0, Mathf.CeilToInt(reward.AmmoAmount * RewardAmmoCeilingMultiplier) + 1);
 
         if (ammoAmount > 0)
         {
@@ -775,6 +780,9 @@ public partial class LivingRust
     private const float KeycardBlackoutWindowSeconds = 765f;
 
     private const float KeycardFirstClearFuseAmount = 2;
+
+    // Chance the first-clear keycard comes with its fuses (2026-10-03: lowered from always to 50%).
+    private const float FuseRewardChance = 50f;
     private const float KeycardRewardChanceGeneralLooting = 30f;
 
     /// <summary>
@@ -799,8 +807,15 @@ public partial class LivingRust
             _monumentFirstClearGrantedAt[monumentName] = now;
 
             GiveItem(npc, KeycardShortnames[keycardTier.Value], 1);
-            GiveItem(npc, "fuse", (int)KeycardFirstClearFuseAmount);
-            Puts($"wipe-goal: '{survivor.Character.Alias}' is the first to clear '{monumentName}' this cycle - got a guaranteed '{KeycardShortnames[keycardTier.Value]}' + {KeycardFirstClearFuseAmount:F0}x fuse.");
+
+            bool fusesToo = UnityEngine.Random.Range(0f, 100f) < FuseRewardChance;
+
+            if (fusesToo)
+            {
+                GiveItem(npc, "fuse", (int)KeycardFirstClearFuseAmount);
+            }
+
+            Puts($"wipe-goal: '{survivor.Character.Alias}' is the first to clear '{monumentName}' this cycle - got a guaranteed '{KeycardShortnames[keycardTier.Value]}'{(fusesToo ? $" + {KeycardFirstClearFuseAmount:F0}x fuse" : " (no fuses this time)")}.");
             return;
         }
 
