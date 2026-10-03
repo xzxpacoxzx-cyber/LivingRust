@@ -322,8 +322,9 @@ public partial class LivingRust
     private const float MonumentRewardChanceMultiplier = 1.2f * 0.9f;
 
     // The ceiling of the random ammo amount handed over with a weapon reward is multiplied by this
-    // (2026-10-03, Lucas's request to up the ammo amounts).
-    private const float RewardAmmoCeilingMultiplier = 2f;
+    // (2026-10-03, Lucas's request to up the ammo amounts - then halved again, for every weapon incl. the
+    // double-barrel and waterpipe shells, so the net is back to the listed amounts).
+    private const float RewardAmmoCeilingMultiplier = 2f * 0.5f;
 
     // ------------------------------------------------------------
     // Reward variety / streak rules (2026-10-03, Lucas's spec)
