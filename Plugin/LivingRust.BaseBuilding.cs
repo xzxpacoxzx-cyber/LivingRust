@@ -697,6 +697,10 @@ public partial class LivingRust
             {
                 lastReason = "another survivor has claimed a build site here";
             }
+            else if (ownerId != default && IsCrowdedByOtherBases(candidate, ownerId, BaseSpreadBuildMinDistance * Mathf.Max(0.33f, 1f - 0.05f * _buildSiteLifetimeFailures.GetValueOrDefault(ownerId))))
+            {
+                lastReason = "crowded by another base";
+            }
             else if (IsTooCloseToRoad(candidate))
             {
                 lastReason = "too close to a road";

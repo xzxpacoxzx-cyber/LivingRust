@@ -22,7 +22,10 @@ public partial class LivingRust
     private const float PrimitiveGoalTimeLimitSeconds = 900f;
 
     // Chance a fresh survivor rolls to head inland instead of staying coastal.
-    private const float HomeSiteInlandRollChance = 0.75f;
+    // 2026-10-04 (Lucas: half the population was living on the beach by the spawns): every fresh life now heads to
+    // a spread-out inland site instead of building wherever it spawned; the old 'coastal' roll only remains as the
+    // fallback when no inland site can be found.
+    private const float HomeSiteInlandRollChance = 1f;
 
     // Chance a fresh survivor rushes a monument first, before its checklist/home-site rolls,
     // routing it into the existing gear-weighted destination roll early. See
@@ -222,7 +225,7 @@ public partial class LivingRust
         // baseline for wherever the survivor ends up next after redirecting.
         _coastalProgressSnapshot[characterId] = (UnityEngine.Time.realtimeSinceStartup, currentWood, currentStone, currentCloth);
 
-        if (madeProgress || !TryFindRandomInlandSite(out Vector3 site))
+        if (madeProgress || !TryFindRandomInlandSite(out Vector3 site, characterId))
         {
             return false;
         }
@@ -243,7 +246,80 @@ public partial class LivingRust
     // Keeps a random map coordinate roll away from the very edge of the map (often ocean/border
     // terrain).
     private const float MapEdgeMarginFraction = 0.1f;
-    private const int InlandSiteSearchMaxAttempts = 20;
+    private const int InlandSiteSearchMaxAttempts = 60;
+
+    // Base spreading (2026-10-04): a rolled home site keeps this far from every other base, and from the shore
+    // while the search is young. Both relax as attempts run out so a crowded map still yields a site.
+    private const float BaseSpreadSiteMinDistance = 300f;
+    private const float BaseSpreadBuildMinDistance = 150f;
+    private const float InlandCoastAvoidDistance = 120f;
+
+    /// <summary>
+    /// True when another survivor's base, committed build site or rolled home target lies within minDistance.
+    /// </summary>
+    private bool IsCrowdedByOtherBases(Vector3 candidate, Guid ownerId, float minDistance)
+    {
+        float minSqr = minDistance * minDistance;
+
+        if (_engine != null)
+        {
+            foreach (Survivor other in _engine.SurvivorManager.GetAll())
+            {
+                HomeBase home = other.Character.Home;
+
+                if (home != null && other.Character.Id != ownerId && (home.Position - candidate).sqrMagnitude < minSqr)
+                {
+                    return true;
+                }
+            }
+        }
+
+        float now = UnityEngine.Time.realtimeSinceStartup;
+
+        foreach (KeyValuePair<Guid, (Vector3 Position, float ExpiresAt)> reservation in _buildSiteReservations)
+        {
+            if (reservation.Key != ownerId && reservation.Value.ExpiresAt > now && (reservation.Value.Position - candidate).sqrMagnitude < minSqr)
+            {
+                return true;
+            }
+        }
+
+        foreach (KeyValuePair<Guid, Vector3> target in _homeSiteTarget)
+        {
+            if (target.Key != ownerId && (target.Value - candidate).sqrMagnitude < minSqr)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsNearShore(Vector3 position, float radius)
+    {
+        if (TerrainMeta.HeightMap == null)
+        {
+            return false;
+        }
+
+        for (int ring = 1; ring <= 2; ring++)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                float angle = i * 45f * Mathf.Deg2Rad;
+                Vector3 sample = position + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * (radius * ring / 2f);
+                sample.y = TerrainMeta.HeightMap.GetHeight(sample);
+
+                if (WaterLevel.GetWaterLevel(sample, waves: false) > sample.y - 0.5f)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
 
     // Buffer gathered on top of a design's real construction cost, so the survivor arrives with
     // enough left over to also seed the new tool cupboard's upkeep.
@@ -318,7 +394,7 @@ public partial class LivingRust
 
         BasePlayer npc = survivor.Player;
 
-        if (npc != null && !npc.IsDestroyed && UnityEngine.Random.value < HomeSiteInlandRollChance && TryFindRandomInlandSite(out Vector3 site))
+        if (npc != null && !npc.IsDestroyed && UnityEngine.Random.value < HomeSiteInlandRollChance && TryFindRandomInlandSite(out Vector3 site, characterId))
         {
             _homeSiteTarget[characterId] = site;
 
@@ -370,7 +446,7 @@ public partial class LivingRust
     /// Approximates "inland" as a point well off the map edge rather than a true
     /// distance-from-coastline check.
     /// </summary>
-    private bool TryFindRandomInlandSite(out Vector3 site)
+    private bool TryFindRandomInlandSite(out Vector3 site, Guid ownerId = default)
     {
         float worldSize = ConVar.Server.worldsize;
         float half = worldSize / 2f;
@@ -393,6 +469,16 @@ public partial class LivingRust
             }
 
             if (IsInsideMonumentNoBuildZone(candidate, out _))
+            {
+                continue;
+            }
+
+            // Spread the population out: stay clear of other bases (the gap shrinks as attempts run out) and,
+            // for the first 60% of attempts, of the shoreline where everyone spawns.
+            float progress = attempt / (float)(InlandSiteSearchMaxAttempts - 1);
+
+            if (IsCrowdedByOtherBases(candidate, ownerId, BaseSpreadSiteMinDistance * Mathf.Lerp(1f, 0.25f, progress))
+                || (progress < 0.6f && IsNearShore(candidate, InlandCoastAvoidDistance)))
             {
                 continue;
             }
@@ -429,7 +515,7 @@ public partial class LivingRust
     /// Prefers a random monument within BuildSiteRerollMonumentSearchRadius of origin; falls
     /// back to the single nearest monument on the map if none are that close.
     /// </summary>
-    private bool TryFindRandomSiteNearMonument(Vector3 origin, out Vector3 site)
+    private bool TryFindRandomSiteNearMonument(Vector3 origin, out Vector3 site, Guid ownerId = default)
     {
         site = Vector3.zero;
 
@@ -470,7 +556,8 @@ public partial class LivingRust
                 continue;
             }
 
-            if (IsInsideMonumentNoBuildZone(candidate, out _))
+            if (IsInsideMonumentNoBuildZone(candidate, out _)
+                || IsCrowdedByOtherBases(candidate, ownerId, BaseSpreadBuildMinDistance))
             {
                 continue;
             }
@@ -1298,7 +1385,7 @@ public partial class LivingRust
             _buildSiteLifetimeFailures[characterId] = _buildSiteLifetimeFailures.GetValueOrDefault(characterId) + 1;
 
             if (failureCount >= BuildSiteRerollFailureThreshold
-                && TryFindRandomSiteNearMonument(npc.transform.position, out Vector3 rerolledSite))
+                && TryFindRandomSiteNearMonument(npc.transform.position, out Vector3 rerolledSite, characterId))
             {
                 _homeSiteTarget[characterId] = rerolledSite;
                 _buildSiteSearchFailures.Remove(characterId);
