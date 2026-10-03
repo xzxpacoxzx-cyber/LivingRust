@@ -660,8 +660,10 @@ public partial class LivingRust
             MonumentTier homeMonumentTier = MonumentTier.TierZero;
 
             if (survivor.Character.Home != null
+                && TryGetNearestMonumentToHome(survivor, npc, out MonumentInfo homeMonument)
+                // Halved when it has rolled this same monument more than twice running.
                 && UnityEngine.Random.value < HomeMonumentRollChance
-                && TryGetNearestMonumentToHome(survivor, npc, out MonumentInfo homeMonument))
+                    * (IsMonumentRepeatPenalized(survivor.Character.Id, homeMonument.name) ? RepeatedMonumentWeightFactor : 1f))
             {
                 homeMonumentTier = GetMonumentTier(homeMonument.name);
 
@@ -725,6 +727,7 @@ public partial class LivingRust
             }
 
             RegisterMonumentOccupancy(survivor.Character.Id, destinationLabel);
+            NoteMonumentRolled(survivor, destinationLabel);
 
             StartLongDistanceWalk(
                 survivor,
@@ -818,7 +821,8 @@ public partial class LivingRust
 
         foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
         {
-            if (monument == null || IsMonumentExcludedFromAutonomy(monument) || IsBelowRequiredGearScoreForMonument(npc, monument.name))
+            if (monument == null || IsMonumentExcludedFromAutonomy(monument) || IsBelowRequiredGearScoreForMonument(npc, monument.name)
+                || IsTier0MonumentOnCooldown(survivor, monument.name))
             {
                 continue;
             }
@@ -847,6 +851,7 @@ public partial class LivingRust
     private bool TryPickRandomTierDestination(BasePlayer npc, MonumentTier tier, out Vector3 destination, out string label, MonumentInfo onlyMonument = null)
     {
         List<(Vector3 Position, string Label)> candidates = new();
+        Survivor rollSurvivor = FindSurvivorByPlayer(npc);
 
         if (onlyMonument == null && (tier == MonumentTier.TierZero || tier == MonumentTier.TierOne)
             && _engine.NavigationManager.TryFindNearestRoadPoint(npc.transform.position, TierOneRoadSearchRadius, out Vector3 roadPoint, out _, out _))
@@ -865,6 +870,13 @@ public partial class LivingRust
                 }
 
                 if (IsBelowRequiredGearScoreForMonument(npc, monument.name))
+                {
+                    continue;
+                }
+
+                // A survivor with a base that already rolled a Tier0 monument leaves Tier0 monuments
+                // alone for 15 minutes (roads are a different candidate and stay available).
+                if (rollSurvivor != null && IsTier0MonumentOnCooldown(rollSurvivor, monument.name))
                 {
                     continue;
                 }
@@ -941,6 +953,13 @@ public partial class LivingRust
                 {
                     weights[i] *= HomeMonumentWeightBoost;
                 }
+            }
+
+            // Rolled this same monument more than twice running (recently): half the weight.
+            if (pickingSurvivor != null && candidates[i].Label != "a nearby road"
+                && IsMonumentRepeatPenalized(pickingSurvivor.Character.Id, candidates[i].Label))
+            {
+                weights[i] *= RepeatedMonumentWeightFactor;
             }
 
             totalWeight += weights[i];

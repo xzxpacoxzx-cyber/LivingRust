@@ -346,6 +346,88 @@ public partial class LivingRust
     }
 
     // ============================================================
+    // Monument roll history (repeat penalty and Tier0 cooldown)
+    // ============================================================
+
+    // Rolling the same monument more than twice in a row within this window halves that monument's
+    // chance of being rolled again (2026-10-03, Lucas's spec) - so a survivor isn't forever looting
+    // whichever monument happens to be closest.
+    private const float MonumentRepeatWindowSeconds = 1800f;
+    private const int MonumentRepeatThreshold = 2;
+    private const float RepeatedMonumentWeightFactor = 0.5f;
+
+    // A survivor with a base that has rolled a Tier0 monument won't roll another one (roads excluded)
+    // for this long. Tier1 / 2 / 3 monuments have no such limit.
+    private const float Tier0MonumentCooldownSeconds = 900f;
+
+    private readonly Dictionary<Guid, List<(string Monument, float Time)>> _monumentRollHistory = new();
+    private readonly Dictionary<Guid, float> _tier0MonumentCooldownUntil = new();
+
+    private void NoteMonumentRolled(Survivor survivor, string label)
+    {
+        if (string.IsNullOrEmpty(label) || label == "a nearby road")
+        {
+            return;
+        }
+
+        Guid id = survivor.Character.Id;
+        float now = Time.realtimeSinceStartup;
+
+        if (!_monumentRollHistory.TryGetValue(id, out List<(string Monument, float Time)> history))
+        {
+            history = new List<(string, float)>();
+            _monumentRollHistory[id] = history;
+        }
+
+        history.Add((label, now));
+
+        if (history.Count > 10)
+        {
+            history.RemoveAt(0);
+        }
+
+        if (survivor.Character.Home != null && GetMonumentTier(label) == MonumentTier.TierZero)
+        {
+            _tier0MonumentCooldownUntil[id] = now + Tier0MonumentCooldownSeconds;
+        }
+    }
+
+    /// <summary>
+    /// True when the survivor's most recent rolls (all inside the window) are this same monument more than
+    /// twice running.
+    /// </summary>
+    private bool IsMonumentRepeatPenalized(Guid characterId, string monumentName)
+    {
+        if (!_monumentRollHistory.TryGetValue(characterId, out List<(string Monument, float Time)> history))
+        {
+            return false;
+        }
+
+        float cutoff = Time.realtimeSinceStartup - MonumentRepeatWindowSeconds;
+        int streak = 0;
+
+        for (int i = history.Count - 1; i >= 0; i--)
+        {
+            if (history[i].Time < cutoff || history[i].Monument != monumentName)
+            {
+                break;
+            }
+
+            streak++;
+        }
+
+        return streak > MonumentRepeatThreshold;
+    }
+
+    private bool IsTier0MonumentOnCooldown(Survivor survivor, string monumentName)
+    {
+        return survivor.Character.Home != null
+            && GetMonumentTier(monumentName) == MonumentTier.TierZero
+            && _tier0MonumentCooldownUntil.TryGetValue(survivor.Character.Id, out float until)
+            && Time.realtimeSinceStartup < until;
+    }
+
+    // ============================================================
     // Storage stockpile (cached) and fuel need
     // ============================================================
 
