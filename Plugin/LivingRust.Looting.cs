@@ -6798,7 +6798,7 @@ public partial class LivingRust
     /// own condition is just checked as a natural part of every trip this
     /// causes, rather than needing its own separate periodic trigger.
     /// </summary>
-    private void GhostReturnHomeAndDeposit(Survivor survivor, Action onComplete)
+    private void GhostReturnHomeAndDeposit(Survivor survivor, Action onComplete, bool skipWalkFirst = false)
     {
         HomeBase home = survivor.Character.Home;
         BasePlayer npc = survivor.Player;
@@ -6807,6 +6807,24 @@ public partial class LivingRust
         if (home == null || npc == null || npc.IsDestroyed)
         {
             onComplete?.Invoke();
+            return;
+        }
+
+        // Far from the base: WALK to its edge first (2026-10-04, Lucas: a bot "floating through the air").
+        // The ghost-enter movement phases in a straight line at the survivor's current height, so started
+        // from hundreds of metres away it glides over the terrain - and anything placed on arrival (a bag,
+        // a box) lands at that altitude. Ghost movement is only for the last stretch.
+        if (!skipWalkFirst && Vector3.Distance(npc.transform.position, home.Position) > WalkHomeFirstDistance)
+        {
+            BeginReturnToBaseAfterRespawn(
+                survivor,
+                s => GhostReturnHomeAndDeposit(s, onComplete, skipWalkFirst: true),
+                onAbort: () =>
+                {
+                    VerbosePuts($"home-storage: '{survivor.Character.Alias}' couldn't walk home - skipping this base trip instead of flying there.");
+                    onComplete?.Invoke();
+                },
+                logMessage: $"home-trip: '{survivor.Character.Alias}' is {Vector3.Distance(npc.transform.position, home.Position):F0}m from its base - walking there before the base trip.");
             return;
         }
 

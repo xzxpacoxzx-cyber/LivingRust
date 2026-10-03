@@ -425,7 +425,7 @@ public partial class LivingRust
         // (TryRunBaseWorkshop) rebuilds its kit from storage - a hatchet and pickaxe, then the best
         // firearm it has learned (falling back to a crossbow/bow plus arrows if storage can't pay
         // for one), bandages and clothing - and then it heads straight back out.
-        GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
+        GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor), skipWalkFirst: true);
     }
 
     /// <summary>

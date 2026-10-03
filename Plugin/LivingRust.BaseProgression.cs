@@ -3281,7 +3281,10 @@ public partial class LivingRust
     /// bag) used to just carry on from there with a rock - and run straight back to wherever it
     /// died. It now heads home first (workshop, storage, tools, clothes) and goes out properly kitted.
     /// </summary>
-    private void BeginReturnToBaseAfterRespawn(Survivor survivor, Action<Survivor> runHomeCatchUp)
+    private const float WalkHomeFirstDistance = 35f;
+    private const float WalkHomeFailedMaxDistance = 60f;
+
+    private void BeginReturnToBaseAfterRespawn(Survivor survivor, Action<Survivor> runHomeCatchUp, Action onAbort = null, string logMessage = null)
     {
         HomeBase home = survivor.Character.Home;
         BasePlayer npc = survivor.Player;
@@ -3302,7 +3305,7 @@ public partial class LivingRust
 
         Vector3 outsidePoint = SnapApproachPointToNavMesh(npc, home.Position + fromHome.normalized * (HomeCrossingRadius + 2f));
 
-        Puts($"'{survivor.Character.Alias}' respawned away from its base ({Vector3.Distance(npc.transform.position, home.Position):F0}m) - heading home to kit up before doing anything else.");
+        Puts(logMessage ?? $"'{survivor.Character.Alias}' respawned away from its base ({Vector3.Distance(npc.transform.position, home.Position):F0}m) - heading home to kit up before doing anything else.");
 
         survivor.Character.CurrentTask = TaskType.LootForResources;
 
@@ -3310,6 +3313,24 @@ public partial class LivingRust
             survivor,
             outsidePoint,
             onArrived: () => runHomeCatchUp(survivor),
-            onFailed: () => runHomeCatchUp(survivor));
+            onFailed: () =>
+            {
+                // The ghost-enter phase flies in a straight line at a fixed height, so it is only safe for the
+                // last stretch. A walk that failed far from home is abandoned rather than finished by flying.
+                BasePlayer live = survivor.Player;
+
+                if (live != null && !live.IsDestroyed && Vector3.Distance(live.transform.position, home.Position) <= WalkHomeFailedMaxDistance)
+                {
+                    runHomeCatchUp(survivor);
+                }
+                else if (onAbort != null)
+                {
+                    onAbort();
+                }
+                else
+                {
+                    StartLootForResourcesTask(survivor);
+                }
+            });
     }
 }
