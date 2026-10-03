@@ -232,6 +232,11 @@ public partial class LivingRust
         // Already carrying a spare - go home so the deposit trip's end-of-chain step can place it.
         if (npc.inventory.GetAmount(boxDef.itemid) >= 1)
         {
+            if (_nextBoxPlacementTrip.TryGetValue(survivor.Character.Id, out float retryAt) && Time.realtimeSinceStartup < retryAt)
+            {
+                return false;
+            }
+
             Puts($"wipe-goal: '{survivor.Character.Alias}' is carrying a spare storage box - heading home to place it.");
             GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
             return true;
@@ -815,6 +820,14 @@ public partial class LivingRust
         Puts($"wipe-goal: '{survivor.Character.Alias}' got a keycard reward - '{KeycardShortnames[keycardTier.Value]}' from finishing up at '{monumentName}' (outside the first-clear window).");
     }
 
+    // The survivor must be within this of its cupboard for an extra box to be placed.
+    private const float AdditionalBoxMaxDistanceFromBase = 15f;
+
+    // After a placement that could not happen, a survivor carrying the spare box does not head home for it
+    // again for this long (otherwise it would shuttle home every cycle).
+    private const float BoxPlacementRetrySeconds = 900f;
+    private readonly Dictionary<Guid, float> _nextBoxPlacementTrip = new();
+
     private void TryPlaceAdditionalStorageBoxAtHome(Survivor survivor, BasePlayer npc)
     {
         ItemDefinition boxDef = ItemManager.FindItemDefinition(LargeWoodBoxShortname);
@@ -838,30 +851,33 @@ public partial class LivingRust
             return;
         }
 
+        // Only ever placed AT the base (2026-10-03, Lucas's report: boxes appearing at a survivor's feet
+        // wherever a full inventory happened to stop it). If the base trip didn't actually leave the
+        // survivor at its base - no door routes, a timed-out enter, a missing cupboard - the box simply
+        // stays in the inventory for the next trip.
+        HomeBase home = survivor.Character.Home;
+
+        if (home == null || Vector3.Distance(npc.transform.position, home.Position) > AdditionalBoxMaxDistanceFromBase)
+        {
+            _nextBoxPlacementTrip[survivor.Character.Id] = Time.realtimeSinceStartup + BoxPlacementRetrySeconds;
+            VerbosePuts($"wipe-goal: '{survivor.Character.Alias}' is carrying a storage box but isn't at its base - holding it for the next trip.");
+            return;
+        }
+
         // Nothing is placed inside a monument (its no-build zone); the box stays in the inventory.
         if (IsInsideMonumentNoBuildZone(npc.transform.position, out string monumentZone))
         {
+            _nextBoxPlacementTrip[survivor.Character.Id] = Time.realtimeSinceStartup + BoxPlacementRetrySeconds;
             VerbosePuts($"wipe-goal: '{survivor.Character.Alias}' won't place a storage box here - {monumentZone}.");
             return;
         }
 
-        Vector3 position;
-        Vector3 facing = npc.eyes.BodyForward();
-
-        // Prefer a genuinely clear spot on the base's own floor (nothing overlapping, floor underneath);
-        // the old behaviour - wherever the survivor happens to be standing - is the fallback.
-        if (TryFindFreeStorageSpot(survivor, npc, out Vector3 freeSpot, out Vector3 spotFacing))
+        // A genuinely clear spot on the base's own floor (nothing overlapping, floor underneath). There is
+        // no "wherever the survivor is standing" fallback any more: no clear spot means no placement.
+        if (!TryFindFreeStorageSpot(survivor, npc, out Vector3 position, out Vector3 facing))
         {
-            position = freeSpot;
-            facing = spotFacing;
-        }
-        else if (_engine.NavigationManager.TryGetGroundHeight(npc.transform.position, out float groundHeight))
-        {
-            position = npc.transform.position;
-            position.y = groundHeight;
-        }
-        else
-        {
+            _nextBoxPlacementTrip[survivor.Character.Id] = Time.realtimeSinceStartup + BoxPlacementRetrySeconds;
+            VerbosePuts($"wipe-goal: '{survivor.Character.Alias}' found no clear spot inside its base for another storage box - holding it.");
             return;
         }
 
