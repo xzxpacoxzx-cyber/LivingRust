@@ -690,6 +690,42 @@ public partial class LivingRust
             }
         }
 
+        // 1a. Survival kit from storage (bandages, a bow, arrows). Respawned survivors used to head out
+        // to gather wood/cloth/stone for these with the same materials sitting in their own boxes.
+        ItemDefinition bandageDef = ItemManager.FindItemDefinition(BandageShortname);
+
+        if (bandageDef?.Blueprint != null && !failed.Contains(BandageShortname) && npc.inventory.GetAmount(bandageDef.itemid) < 5)
+        {
+            int batches = MaxAffordableBatches(npc, boxes, bandageDef.Blueprint, BandageMaxBatches);
+
+            if (batches >= 1 && bandageDef.Blueprint.workbenchLevelRequired <= wbLevel)
+            {
+                return new WorkshopJob { Shortname = BandageShortname, Batches = batches, Reason = "bandages from storage" };
+            }
+        }
+
+        bool hasRanged = CountRealFirearms(npc) > 0
+            || NonCombatCapableRangedWeaponShortnames.Any(s => npc.inventory.GetAmount(ItemManager.FindItemDefinition(s)?.itemid ?? -1) > 0);
+        ItemDefinition bowDef = ItemManager.FindItemDefinition(BowShortname);
+
+        if (!hasRanged && bowDef?.Blueprint != null && !failed.Contains(BowShortname) && CanWorkshopCraft(npc, boxes, bowDef, 1, wbLevel))
+        {
+            return new WorkshopJob { Shortname = BowShortname, Reason = "bow from storage" };
+        }
+
+        ItemDefinition arrowDef = ItemManager.FindItemDefinition(ArrowShortname);
+        bool hasBow = bowDef != null && npc.inventory.GetAmount(bowDef.itemid) > 0;
+
+        if (hasBow && arrowDef?.Blueprint != null && !failed.Contains(ArrowShortname) && npc.inventory.GetAmount(arrowDef.itemid) < 20)
+        {
+            int batches = MaxAffordableBatches(npc, boxes, arrowDef.Blueprint, ArrowMaxBatches);
+
+            if (batches >= 1 && arrowDef.Blueprint.workbenchLevelRequired <= wbLevel)
+            {
+                return new WorkshopJob { Shortname = ArrowShortname, Batches = batches, Reason = "arrows from storage" };
+            }
+        }
+
         // 1b. The item this survivor decided it wants next at its last coffer assessment.
         string goal = survivor.Character.CraftGoal;
 

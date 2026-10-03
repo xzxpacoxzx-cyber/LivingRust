@@ -1286,6 +1286,7 @@ public partial class LivingRust
         if (!foundSite)
         {
             int failureCount = _buildSiteSearchFailures[characterId] = _buildSiteSearchFailures.GetValueOrDefault(characterId) + 1;
+            _buildSiteLifetimeFailures[characterId] = _buildSiteLifetimeFailures.GetValueOrDefault(characterId) + 1;
 
             if (failureCount >= BuildSiteRerollFailureThreshold
                 && TryFindRandomSiteNearMonument(npc.transform.position, out Vector3 rerolledSite))
@@ -1328,6 +1329,7 @@ public partial class LivingRust
 
             _pursuingBaseGatherGoal.Remove(characterId);
             _buildSiteSearchFailures.Remove(characterId);
+            _buildSiteLifetimeFailures.Remove(characterId);
 
             if (oldHomeToMigrate != null)
             {

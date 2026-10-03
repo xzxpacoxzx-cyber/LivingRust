@@ -660,11 +660,17 @@ public partial class LivingRust
     // Resets once a site is found.
     private float _terrainRelaxFactor = 1f;
     private readonly Dictionary<Guid, int> _buildSiteSearchFailures = new();
+    private readonly Dictionary<Guid, int> _buildSiteLifetimeFailures = new();
 
     private bool TryFindClearBuildOrigin(Vector3 startPosition, out Vector3 clearOrigin, out float expectedGroundHeight, out string failureReason, string designPath = null, List<Vector3> avoidSites = null, Guid ownerId = default)
     {
-        int failures = ownerId != default && _buildSiteSearchFailures.TryGetValue(ownerId, out int f) ? f : 0;
-        _terrainRelaxFactor = 1f + 0.25f * Mathf.Min(failures / 3, 4);
+        // Counts failures across site REROLLS too (2026-10-03): the per-target counter resets every time
+        // a survivor gives up on a target (after 4 failures), and the relax step only kicked in at 3, so
+        // tolerance never got past x1.25 - 1,500+ failed searches produced only 65 finished bases on the
+        // local server while ~240 bots sat on full hoards. The lifetime count only resets on a finished
+        // build, so tolerance keeps loosening (to x3) until a workable site is accepted.
+        int failures = ownerId != default && _buildSiteLifetimeFailures.TryGetValue(ownerId, out int f) ? f : 0;
+        _terrainRelaxFactor = 1f + 0.25f * Mathf.Min(failures / 2, 8);
 
         try
         {
