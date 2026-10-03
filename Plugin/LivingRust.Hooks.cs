@@ -121,6 +121,7 @@ public partial class LivingRust
         _lifeClearStreak.Remove(survivor.Character.Id);
         _fuelHuntsThisLife.Remove(survivor.Character.Id);
         _bucketHelmetCraftedThisLife.Remove(survivor.Character.Id);
+        _outfitStyle.Remove(survivor.Character.Id);
         _lifeDepositedSinceClear.Remove(survivor.Character.Id);
 
         if (_pendingSleepingBagDeployTimers.TryGetValue(survivor.Character.Id, out Timer pendingBagDeployTimer))

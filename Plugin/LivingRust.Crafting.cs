@@ -231,6 +231,7 @@ public partial class LivingRust
         if (TryPursueLearnedFirearmGoal(survivor, npc, state, allowGather: false)) return true;
         if (TryPursueBowGoal(survivor, npc, state, allowGather: false)) return true;
         if (TryPursueArrowGoal(survivor, npc, state, allowGather: false)) return true;
+        if (TryPursueOutfitCraft(survivor, npc, state)) return true;
 
         if (TryPursueOneOffToolGoal(survivor, npc, state, StoneHatchetShortname, "stone hatchet")) return true;
         if (TryPursueOneOffToolGoal(survivor, npc, state, StonePickaxeShortname, "stone pickaxe")) return true;
@@ -402,6 +403,7 @@ public partial class LivingRust
                 // Drops the rock now that a stone tool exists, or otherwise reorganizes gear after
                 // a craft lands. Harmless no-op for the non-tool one-off goals sharing this function.
                 RunLootHookSafely(survivor, nameof(PerformReorganizationCheck), () => PerformReorganizationCheck(survivor, npc));
+                WearOutfitFromInventory(npc);
 
                 ContinueLootTask(survivor, state, forceLocalScan: true);
                 return;

@@ -1491,6 +1491,23 @@ public partial class LivingRust
             }
         }
 
+        // 2-outfit. A random home-made piece (cloth / burlap / hide / wood / bone) that upgrades a slot, from
+        // whatever materials the survivor or its boxes hold. Wood armour leaves the base's wood stock alone.
+        {
+            ItemDefinition woodDef = ItemManager.FindItemDefinition(WoodShortname);
+
+            string outfitPiece = PickOutfitPiece(survivor, npc, wbLevel, def =>
+                CanWorkshopCraft(npc, boxes, def, 1, wbLevel)
+                && (woodDef == null || !OutfitUsesIngredient(def, WoodShortname)
+                    || CountOwned(npc, boxes, woodDef) >= def.Blueprint.GetIngredients().Where(i => i?.itemDef == woodDef).Sum(i => (int)i.amount) + OutfitWoodArmourStockReserve),
+                failed);
+
+            if (outfitPiece != null)
+            {
+                return new WorkshopJob { Shortname = outfitPiece, Reason = OutfitJobReason };
+            }
+        }
+
         // 2. Clothing / armor: heads out wearing something in every slot it can afford to cover.
         foreach ((string group, string shortname) in GetUsefulClothingCandidates(npc, wbLevel, survivor.Character.Id))
         {
@@ -1986,7 +2003,13 @@ public partial class LivingRust
 
             // A garment is put on straight away, and never crafted twice in one visit even if it
             // turned out not to be an upgrade (the planner would otherwise keep re-planning it).
-            if (def.GetComponent<ItemModWearable>() != null)
+            if (job.Reason == OutfitJobReason)
+            {
+                // Random outfit pieces are worn directly - the protection-score evaluator would swap them back.
+                failed.Add(job.Shortname);
+                WearOutfitFromInventory(liveNpc);
+            }
+            else if (def.GetComponent<ItemModWearable>() != null)
             {
                 failed.Add(job.Shortname);
                 RunLootHookSafely(survivor, nameof(EvaluateAndUpgradeArmor), () => EvaluateAndUpgradeArmor(survivor));

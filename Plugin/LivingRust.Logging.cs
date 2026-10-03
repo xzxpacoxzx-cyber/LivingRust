@@ -25,7 +25,7 @@ public partial class LivingRust
         "ghost-route-only:", "sleeping-bags:", "death-zone:", "death-loop:", "ghostroute:", "card-puzzle:", "early-kit:",
         "monument-rush:", "airdrop", "assess:", "upgrade:", "tier-upgrade:", "wipe-goal:", "base-return:", "windfall:",
         "respawn:", "log-summary:", "debug-", "despawnall:", "giveitem:", "tracebuild:", "claimbag:", "spawncardtest:",
-        "spawnmany:", "checkupgrades:", "test", "kill-loot:", "cooking:", "fuel-hunt:", "home-trip:",
+        "spawnmany:", "checkupgrades:", "test", "kill-loot:", "cooking:", "outfit:", "fuel-hunt:", "home-trip:",
     };
 
     private readonly Dictionary<string, int> _suppressedLogCounts = new();
