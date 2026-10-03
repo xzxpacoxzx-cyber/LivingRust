@@ -348,18 +348,27 @@ public partial class LivingRust
     }
 
     /// <summary>
+    /// A roaming survivor with a base that is carrying its full wood AND stone cap (1000 each) is
+    /// "saturated" (2026-10-03, Lucas's spec): it stops farming ore it hasn't already got, and goes
+    /// purely for monument looting / recycling instead. Always false before a base exists.
+    /// </summary>
+    private bool IsRoamingSaturated(Survivor survivor, BasePlayer npc)
+    {
+        return survivor.Character.Home != null
+            && npc != null && !npc.IsDestroyed
+            && HasReachedGatherCap(survivor, npc, WoodShortname)
+            && HasReachedGatherCap(survivor, npc, StoneShortname);
+    }
+
+    /// <summary>
     /// Once a survivor has a base, wood and stone are only picked up while it carries less than the
-    /// roaming cap (1000 each); metal/sulfur ore is always wanted, and everything else (hemp,
-    /// berries, ...) is unchanged. Pre-base behaviour is untouched (a base needs the wood/stone).
+    /// roaming cap (1000 each); metal/sulfur ore is wanted too - unless the survivor is saturated
+    /// (see IsRoamingSaturated), when it stops picking up MORE of it (what it already carries is no
+    /// issue). Everything else (hemp, berries, ...) is unchanged. Pre-base behaviour is untouched.
     /// </summary>
     private bool IsFarmedResourceWanted(Survivor survivor, IEnumerable<ItemAmount> yields)
     {
         if (survivor?.Character.Home == null || yields == null)
-        {
-            return true;
-        }
-
-        if (YieldsContain(yields, SulfurOreShortname, MetalOreShortname, "hq.metal.ore"))
         {
             return true;
         }
@@ -369,6 +378,11 @@ public partial class LivingRust
         if (npc == null || npc.IsDestroyed)
         {
             return true;
+        }
+
+        if (YieldsContain(yields, SulfurOreShortname, MetalOreShortname, "hq.metal.ore"))
+        {
+            return !IsRoamingSaturated(survivor, npc);
         }
 
         bool atWoodCap = YieldsContain(yields, WoodShortname) && HasReachedGatherCap(survivor, npc, WoodShortname);

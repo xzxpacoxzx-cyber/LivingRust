@@ -635,6 +635,12 @@ public partial class LivingRust
                     tier2 *= 1.5f;
                     tier3 *= 1.5f;
                 }
+                else if (IsRoamingSaturated(survivor, npc))
+                {
+                    // Full wood + stone: monument looting only - no roads, no "search right here".
+                    tierZero = 0f;
+                    local = 0f;
+                }
             }
             (tierZero, tier1, tier2, tier3) = ApplyKeycardTierDestinationBias(npc, tierZero, tier1, tier2, tier3);
 

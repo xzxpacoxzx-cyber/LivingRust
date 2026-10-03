@@ -584,6 +584,13 @@ public partial class LivingRust
         {
             return false;
         }
+        // Carrying its full wood AND stone cap while roaming: no more farming of anything (ore included) -
+        // falls through to monument looting / recycling instead.
+        if (IsRoamingSaturated(survivor, npc))
+        {
+            return false;
+        }
+
         bool? lockedToTree = _resourceGatherTypeLock.TryGetValue(characterId, out bool locked) ? locked : (bool?)null;
 
         // Hitting the wood cap while locked to trees releases the lock so this call falls through to
