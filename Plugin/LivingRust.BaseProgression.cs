@@ -332,10 +332,167 @@ public partial class LivingRust
 
     private bool HasReachedGatherCap(Survivor survivor, BasePlayer npc, string shortname)
     {
+        // More than 5000 wood AND 5000 stone already in base storage: wood and stone count as capped
+        // outright - the survivor stops farming either completely, whatever it is carrying.
+        if ((shortname == WoodShortname || shortname == StoneShortname) && HasWoodStoneStockpile(survivor))
+        {
+            return true;
+        }
+
         ItemDefinition def = ItemManager.FindItemDefinition(shortname);
         int cap = GetGatherCap(survivor, shortname);
 
         return def != null && cap != int.MaxValue && npc.inventory.GetAmount(def.itemid) >= cap;
+    }
+
+    // ============================================================
+    // Storage stockpile (cached) and fuel need
+    // ============================================================
+
+    // More than this much of BOTH wood and stone sitting in base storage = completely done farming
+    // either (2026-10-03, Lucas's spec). Storage never counts toward the 1000-carried roaming cap.
+    private const int StockpileStopAmount = 5000;
+    private const float StorageTotalsCacheSeconds = 60f;
+    private readonly Dictionary<Guid, (float Until, Dictionary<string, int> Totals)> _storageTotalsCache = new();
+
+    /// <summary>
+    /// Item totals across the survivor's own base boxes, cached for a minute - the gather gates that
+    /// need this run per candidate node, and a box scan walks every entity on the map.
+    /// </summary>
+    private Dictionary<string, int> GetStorageTotals(Survivor survivor)
+    {
+        Guid id = survivor.Character.Id;
+        float now = Time.realtimeSinceStartup;
+
+        if (_storageTotalsCache.TryGetValue(id, out (float Until, Dictionary<string, int> Totals) cached) && cached.Until > now)
+        {
+            return cached.Totals;
+        }
+
+        Dictionary<string, int> totals = new();
+        BasePlayer npc = survivor.Player;
+        HomeBase home = survivor.Character.Home;
+
+        if (npc != null && !npc.IsDestroyed && home != null)
+        {
+            foreach (StorageContainer box in FindOwnedStorageBoxesNear(npc, home.Position, HomeStorageSearchRadius))
+            {
+                if (box == null || box.IsDestroyed || box.inventory == null)
+                {
+                    continue;
+                }
+
+                foreach (Item item in box.inventory.itemList)
+                {
+                    totals[item.info.shortname] = totals.GetValueOrDefault(item.info.shortname) + item.amount;
+                }
+            }
+        }
+
+        _storageTotalsCache[id] = (now + StorageTotalsCacheSeconds, totals);
+        return totals;
+    }
+
+    private bool HasWoodStoneStockpile(Survivor survivor)
+    {
+        if (survivor.Character.Home == null)
+        {
+            return false;
+        }
+
+        Dictionary<string, int> totals = GetStorageTotals(survivor);
+        return totals.GetValueOrDefault(WoodShortname) > StockpileStopAmount && totals.GetValueOrDefault(StoneShortname) > StockpileStopAmount;
+    }
+
+    private const int LowGradeFuelTarget = 200;
+    private const string LowGradeFuelShortname = "lowgradefuel";
+    private const string AnimalFatShortname = "fat.animal";
+    private const float FuelHuntRetrySeconds = 120f;
+    private readonly Dictionary<Guid, float> _nextFuelHuntAttempt = new();
+
+    /// <summary>
+    /// A survivor with a base is short of low grade fuel when what it holds (carried + stored) plus what
+    /// its animal fat would craft into (3 fat -> 4 fuel) is under the target.
+    /// </summary>
+    private bool NeedsLowGradeFuel(Survivor survivor, BasePlayer npc)
+    {
+        if (survivor.Character.Home == null)
+        {
+            return false;
+        }
+
+        Dictionary<string, int> totals = GetStorageTotals(survivor);
+        ItemDefinition fuelDef = ItemManager.FindItemDefinition(LowGradeFuelShortname);
+        ItemDefinition fatDef = ItemManager.FindItemDefinition(AnimalFatShortname);
+
+        if (fuelDef == null || fatDef == null)
+        {
+            return false;
+        }
+
+        int fuel = npc.inventory.GetAmount(fuelDef.itemid) + totals.GetValueOrDefault(LowGradeFuelShortname);
+        int fat = npc.inventory.GetAmount(fatDef.itemid) + totals.GetValueOrDefault(AnimalFatShortname);
+
+        return fuel + fat * 4 / 3 < LowGradeFuelTarget;
+    }
+
+    /// <summary>
+    /// Animals are only farmed when low grade fuel is actually needed (they drop the fat it is crafted
+    /// from) - there is no other reason for a based survivor to hunt. Needs a ready ranged weapon and an
+    /// animal in range; otherwise it carries on, retrying later.
+    /// </summary>
+    private bool TryPursueFuelAnimalHunt(Survivor survivor, BasePlayer npc, LootTaskState state)
+    {
+        Guid characterId = survivor.Character.Id;
+
+        if (_activeAnimalHunt.Contains(characterId))
+        {
+            return true;
+        }
+
+        if (survivor.Character.Home == null || !HasReadyRangedWeapon(npc))
+        {
+            return false;
+        }
+
+        float now = Time.realtimeSinceStartup;
+
+        if (_nextFuelHuntAttempt.TryGetValue(characterId, out float next) && now < next)
+        {
+            return false;
+        }
+
+        if (!NeedsLowGradeFuel(survivor, npc))
+        {
+            return false;
+        }
+
+        if (!TryFindNearestHuntableAnimal(npc, AnimalHuntSearchRadius, out BaseCombatEntity animal))
+        {
+            _nextFuelHuntAttempt[characterId] = now + FuelHuntRetrySeconds;
+            return false;
+        }
+
+        _activeAnimalHunt.Add(characterId);
+        Puts($"fuel-hunt: '{survivor.Character.Alias}' is low on low grade fuel - hunting a '{animal.ShortPrefabName}' for animal fat.");
+
+        if (Vector3.Distance(npc.transform.position, animal.transform.position) <= HuntStandoffDistance)
+        {
+            StartAnimalHuntEngagement(survivor, animal, state);
+            return true;
+        }
+
+        StartWalkingWithRecovery(
+            survivor,
+            GetHuntStandoffPoint(npc, animal),
+            onArrived: () => StartAnimalHuntEngagement(survivor, animal, state),
+            onFailed: () =>
+            {
+                _activeAnimalHunt.Remove(characterId);
+                _nextFuelHuntAttempt[characterId] = Time.realtimeSinceStartup + FuelHuntRetrySeconds;
+            });
+
+        return true;
     }
 
     // ============================================================
@@ -890,6 +1047,22 @@ public partial class LivingRust
             }
 
             return new WorkshopJob { Shortname = shortname, Reason = $"{group} clothing" };
+        }
+
+        // 2b. Low grade fuel from animal fat (the point of the fuel hunts): crafted up to the target.
+        ItemDefinition fuelDef = ItemManager.FindItemDefinition(LowGradeFuelShortname);
+
+        if (fuelDef?.Blueprint != null && !failed.Contains(LowGradeFuelShortname)
+            && CountOwned(npc, boxes, fuelDef) < LowGradeFuelTarget && fuelDef.Blueprint.workbenchLevelRequired <= wbLevel)
+        {
+            int perBatch = Mathf.Max(1, (int)fuelDef.Blueprint.amountToCreate);
+            int wantedBatches = Mathf.CeilToInt((LowGradeFuelTarget - CountOwned(npc, boxes, fuelDef)) / (float)perBatch);
+            int batches = MaxAffordableBatches(npc, boxes, fuelDef.Blueprint, Math.Min(wantedBatches, 60));
+
+            if (batches >= 1)
+            {
+                return new WorkshopJob { Shortname = LowGradeFuelShortname, Batches = batches, Reason = "low grade fuel from animal fat" };
+            }
         }
 
         // 3. Gunpowder: sulfur + charcoal sitting around is wasted progression.

@@ -1303,6 +1303,13 @@ public partial class LivingRust
             return;
         }
 
+        // Animals are only farmed when low grade fuel is genuinely needed (they drop the fat it is crafted
+        // from); see TryPursueFuelAnimalHunt.
+        if (TryPursueFuelAnimalHunt(survivor, npc, state))
+        {
+            return;
+        }
+
         // Progression goal layer; see LivingRust.WipeGoals.cs's own doc comment. Falls through to normal looting when nothing is currently blocking progress.
         if (TryPursueWipeGoal(survivor, npc, state))
         {
@@ -3109,11 +3116,7 @@ public partial class LivingRust
     private bool HasEnoughWoodAlready(Survivor survivor, BasePlayer npc)
     {
         // Design cost + 20% pre-base, 1000 carried once roaming with a base (see GetGatherCap).
-        int have = ItemManager.FindItemDefinition(WoodShortname) is ItemDefinition woodDef
-            ? npc.inventory.GetAmount(woodDef.itemid)
-            : 0;
-
-        return have >= GetGatherCap(survivor, WoodShortname);
+        return HasReachedGatherCap(survivor, npc, WoodShortname);
     }
 
     /// <summary>
