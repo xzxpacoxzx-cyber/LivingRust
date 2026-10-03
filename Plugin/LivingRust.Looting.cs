@@ -6828,6 +6828,13 @@ public partial class LivingRust
                     // Tidy up straight after the deposit: like items grouped and stacks merged.
                     OrganizeBaseStorage(survivor);
 
+                    // A base deposit after a monument clear is what arms the guaranteed rewards on the
+                    // NEXT clear this life (see BeginMonumentClearRewards).
+                    if (_lifeClearStreak.GetValueOrDefault(survivor.Character.Id) == 1)
+                    {
+                        _lifeDepositedSinceClear[survivor.Character.Id] = true;
+                    }
+
                     TryFillOwnedFurnaces(survivor, () =>
                     {
                         // C then D (2026-09-19, Lucas's own explicit

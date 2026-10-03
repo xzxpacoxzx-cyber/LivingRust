@@ -702,23 +702,27 @@ public partial class LivingRust
                 Puts($"monument-rush: '{survivor.Character.Alias}' rolled 'tier2/{Path.GetFileNameWithoutExtension(rushDesignPath)}' as its rush-completion base design.");
             }
 
+            BeginMonumentClearRewards(survivor);
             GrantMonumentRushCompletionReward(survivor, npc, tier);
             TryGrantMonumentKeycardReward(survivor, npc, tier, monumentName);
             TryGrantMonumentClothingReward(survivor, npc, tier);
             TryGrantMonumentMedicalReward(survivor, npc, tier);
             TryGrantMonumentToolBonusReward(survivor, npc, tier);
             TryGrantMonumentBlueprintFragmentReward(survivor, npc, tier);
+            EndMonumentClearRewards();
         }
         else
         {
             Puts($"monument-rush: '{survivor.Character.Alias}' finished up at '{monumentName}' without completing a real route - falling back to a normal tier0/tier1 base and normal reward odds.");
 
+            BeginMonumentClearRewards(survivor);
             TryGrantMonumentHandicapReward(survivor, npc, tier, didRealGhostRoute: false, didCardPuzzle: false);
             TryGrantMonumentKeycardReward(survivor, npc, tier, monumentName);
             TryGrantMonumentClothingReward(survivor, npc, tier);
             TryGrantMonumentMedicalReward(survivor, npc, tier);
             TryGrantMonumentToolBonusReward(survivor, npc, tier);
             TryGrantMonumentBlueprintFragmentReward(survivor, npc, tier);
+            EndMonumentClearRewards();
         }
 
         if (!TryStartRecyclingTask(survivor))

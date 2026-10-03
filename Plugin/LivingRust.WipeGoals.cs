@@ -315,16 +315,85 @@ public partial class LivingRust
     // becomes 12%. Capped at 100.
     private const float MonumentRewardChanceMultiplier = 1.2f;
 
-    private static HandicapReward? RollHandicapPool(HandicapReward[] pool, float chancePercent)
-    {
-        chancePercent = Mathf.Min(100f, chancePercent * MonumentRewardChanceMultiplier);
+    // ------------------------------------------------------------
+    // Reward variety / streak rules (2026-10-03, Lucas's spec)
+    //  - An item a survivor has been rewarded is off its reward pools for 120 minutes.
+    //  - Surviving two monument clears in one life with a base deposit in between makes the second
+    //    clear's reward rolls guaranteed (a random item from each pool - not every reward at once).
+    // ------------------------------------------------------------
+    private const float RewardRepeatCooldownSeconds = 7200f;
 
-        if (pool.Length == 0 || UnityEngine.Random.Range(0f, 100f) >= chancePercent)
+    // Set by BeginMonumentClearRewards / the individual reward entry points so the roll helpers know
+    // whose cooldown to check and whether this clear's rolls are guaranteed.
+    private Guid _rewardCharacterId;
+    private bool _guaranteeRewardRolls;
+
+    private readonly Dictionary<Guid, Dictionary<string, float>> _rewardedItemUntil = new();
+    private readonly Dictionary<Guid, int> _lifeClearStreak = new();
+    private readonly Dictionary<Guid, bool> _lifeDepositedSinceClear = new();
+
+    private bool IsRewardOnCooldown(string shortname)
+    {
+        return _rewardedItemUntil.TryGetValue(_rewardCharacterId, out Dictionary<string, float> items)
+            && items.TryGetValue(shortname, out float until)
+            && Time.realtimeSinceStartup < until;
+    }
+
+    private void NoteRewardGranted(Guid characterId, string shortname)
+    {
+        if (!_rewardedItemUntil.TryGetValue(characterId, out Dictionary<string, float> items))
+        {
+            items = new Dictionary<string, float>();
+            _rewardedItemUntil[characterId] = items;
+        }
+
+        items[shortname] = Time.realtimeSinceStartup + RewardRepeatCooldownSeconds;
+    }
+
+    /// <summary>
+    /// Call once at the start of a monument clear's reward block (before the first grant) and pair it
+    /// with EndMonumentClearRewards. Decides whether this clear is the boosted second one.
+    /// </summary>
+    private void BeginMonumentClearRewards(Survivor survivor)
+    {
+        Guid id = survivor.Character.Id;
+        _rewardCharacterId = id;
+
+        bool boosted = _lifeClearStreak.GetValueOrDefault(id) == 1 && _lifeDepositedSinceClear.GetValueOrDefault(id);
+
+        if (boosted)
+        {
+            _lifeClearStreak[id] = 0;
+            _lifeDepositedSinceClear[id] = false;
+            _guaranteeRewardRolls = true;
+            Puts($"wipe-goal: '{survivor.Character.Alias}' survived a second monument clear this life (with a base deposit in between) - this clear's reward rolls are guaranteed.");
+        }
+        else
+        {
+            _lifeClearStreak[id] = 1;
+            _lifeDepositedSinceClear[id] = false;
+            _guaranteeRewardRolls = false;
+        }
+    }
+
+    private void EndMonumentClearRewards()
+    {
+        _guaranteeRewardRolls = false;
+    }
+
+    private HandicapReward? RollHandicapPool(HandicapReward[] pool, float chancePercent)
+    {
+        chancePercent = _guaranteeRewardRolls ? 100f : Mathf.Min(100f, chancePercent * MonumentRewardChanceMultiplier);
+
+        // Anything already rewarded in the last 120 minutes can't come up again.
+        HandicapReward[] available = pool.Where(reward => !IsRewardOnCooldown(reward.WeaponShortname)).ToArray();
+
+        if (available.Length == 0 || UnityEngine.Random.Range(0f, 100f) >= chancePercent)
         {
             return null;
         }
 
-        return pool[UnityEngine.Random.Range(0, pool.Length)];
+        return available[UnityEngine.Random.Range(0, available.Length)];
     }
 
     private void GrantHandicapReward(Survivor survivor, BasePlayer npc, HandicapReward reward)
@@ -355,6 +424,7 @@ public partial class LivingRust
             GiveItem(npc, reward.AmmoShortname, ammoAmount);
         }
 
+        NoteRewardGranted(survivor.Character.Id, reward.WeaponShortname);
         Puts($"wipe-goal: '{survivor.Character.Alias}' got a handicap reward - '{reward.WeaponShortname}' ({weapon.conditionNormalized:P0} durability) + {ammoAmount}x {reward.AmmoShortname}.");
     }
 
@@ -371,6 +441,8 @@ public partial class LivingRust
     /// </summary>
     private void TryGrantMonumentHandicapReward(Survivor survivor, BasePlayer npc, MonumentTier tier, bool didRealGhostRoute, bool didCardPuzzle)
     {
+        _rewardCharacterId = survivor.Character.Id;
+
         float baseMultiplier = didRealGhostRoute ? 1f : 0.5f;
         float puzzleBonus = didCardPuzzle ? 5f : 0f;
         float armedMultiplier = CountRealFirearms(npc) > 0 ? ArmedHandicapRewardMultiplier : 1f;
@@ -437,16 +509,18 @@ public partial class LivingRust
         "metal.facemask", "metal.plate.torso", "largebackpack",
     };
 
-    private static string RollClothingPool(string[] pool, float chancePercent)
+    private string RollClothingPool(string[] pool, float chancePercent)
     {
-        chancePercent = Mathf.Min(100f, chancePercent * MonumentRewardChanceMultiplier);
+        chancePercent = _guaranteeRewardRolls ? 100f : Mathf.Min(100f, chancePercent * MonumentRewardChanceMultiplier);
 
-        if (pool.Length == 0 || UnityEngine.Random.Range(0f, 100f) >= chancePercent)
+        string[] available = pool.Where(shortname => !IsRewardOnCooldown(shortname)).ToArray();
+
+        if (available.Length == 0 || UnityEngine.Random.Range(0f, 100f) >= chancePercent)
         {
             return null;
         }
 
-        return pool[UnityEngine.Random.Range(0, pool.Length)];
+        return available[UnityEngine.Random.Range(0, available.Length)];
     }
 
     /// <summary>
@@ -458,6 +532,7 @@ public partial class LivingRust
     /// </summary>
     private void TryGrantMonumentClothingReward(Survivor survivor, BasePlayer npc, MonumentTier tier)
     {
+        _rewardCharacterId = survivor.Character.Id;
         string shortname = tier switch
         {
             MonumentTier.TierZero => RollClothingPool(Tier0ClothingPool, 10f),
@@ -491,6 +566,7 @@ public partial class LivingRust
             return;
         }
 
+        NoteRewardGranted(survivor.Character.Id, shortname);
         Puts($"wipe-goal: '{survivor.Character.Alias}' got a bonus clothing reward from a monument clear - '{shortname}'.");
     }
 
@@ -501,7 +577,9 @@ public partial class LivingRust
 
     private void TryGrantMonumentMedicalReward(Survivor survivor, BasePlayer npc, MonumentTier tier)
     {
-        if (UnityEngine.Random.Range(0f, 100f) >= MonumentMedicalRewardChance)
+        _rewardCharacterId = survivor.Character.Id;
+
+        if (!_guaranteeRewardRolls && UnityEngine.Random.Range(0f, 100f) >= MonumentMedicalRewardChance)
         {
             return;
         }
@@ -528,6 +606,7 @@ public partial class LivingRust
 
     private void TryGrantMonumentToolBonusReward(Survivor survivor, BasePlayer npc, MonumentTier tier)
     {
+        _rewardCharacterId = survivor.Character.Id;
         string[] pool;
         float chance;
 
@@ -549,12 +628,19 @@ public partial class LivingRust
                 return;
         }
 
-        if (UnityEngine.Random.Range(0f, 100f) >= chance)
+        if (!_guaranteeRewardRolls && UnityEngine.Random.Range(0f, 100f) >= chance)
         {
             return;
         }
 
-        string shortname = pool[UnityEngine.Random.Range(0, pool.Length)];
+        string[] availableTools = pool.Where(tool => !IsRewardOnCooldown(tool)).ToArray();
+
+        if (availableTools.Length == 0)
+        {
+            return;
+        }
+
+        string shortname = availableTools[UnityEngine.Random.Range(0, availableTools.Length)];
         Item item = ItemManager.CreateByName(shortname, 1);
 
         if (item == null)
@@ -574,6 +660,7 @@ public partial class LivingRust
             return;
         }
 
+        NoteRewardGranted(survivor.Character.Id, shortname);
         Puts($"wipe-goal: '{survivor.Character.Alias}' got a bonus tool reward from a monument clear - '{shortname}'.");
     }
 
@@ -626,6 +713,7 @@ public partial class LivingRust
     /// </summary>
     private void GrantMonumentRushCompletionReward(Survivor survivor, BasePlayer npc, MonumentTier tier)
     {
+        _rewardCharacterId = survivor.Character.Id;
         HandicapReward[] pool = tier switch
         {
             MonumentTier.TierZero => Tier1HandicapPool,

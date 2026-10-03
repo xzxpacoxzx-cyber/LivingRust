@@ -117,6 +117,10 @@ public partial class LivingRust
         _resourceGatherTypeLock.Remove(survivor.Character.Id);
         _hasPlacedSleepingBag.Remove(survivor.Character.Id);
 
+        // A death ends the "survived two clears this life" streak.
+        _lifeClearStreak.Remove(survivor.Character.Id);
+        _lifeDepositedSinceClear.Remove(survivor.Character.Id);
+
         if (_pendingSleepingBagDeployTimers.TryGetValue(survivor.Character.Id, out Timer pendingBagDeployTimer))
         {
             pendingBagDeployTimer.Destroy();
