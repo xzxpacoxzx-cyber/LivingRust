@@ -683,7 +683,7 @@ public partial class LivingRust
 
     /// <summary>
     /// Blueprint-fragment reward for finishing a monument loot run or ghost route (tiers are the
-    /// project's own 0-indexed MonumentTier): Tier1 0-2 basic fragments, Tier2 1-3 basic fragments,
+    /// project's own 0-indexed MonumentTier): Tier1 0-2 basic fragments, Tier2 0-3 basic fragments,
     /// Tier3 exactly 1 advanced fragment, each only BlueprintFragmentRewardChance% of the time;
     /// Tier0 has none.
     /// </summary>
@@ -705,7 +705,7 @@ public partial class LivingRust
                 break;
             case MonumentTier.TierTwo:
                 shortname = "basicblueprintfragment";
-                amount = UnityEngine.Random.Range(1, 4);
+                amount = UnityEngine.Random.Range(0, 4);
                 break;
             case MonumentTier.TierThree:
                 shortname = "advancedblueprintfragment";
@@ -781,7 +781,7 @@ public partial class LivingRust
     // last ~15% of the cycle, just proportionally shorter (135s instead of 270s).
     private const float KeycardBlackoutWindowSeconds = 765f;
 
-    private const float KeycardFirstClearFuseAmount = 2;
+    private const float KeycardFirstClearFuseAmount = 1;
 
     // Chance the first-clear keycard comes with its fuses (2026-10-03: lowered from always to 50%).
     private const float FuseRewardChance = 50f;
