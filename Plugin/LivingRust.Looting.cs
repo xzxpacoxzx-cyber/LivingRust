@@ -6825,6 +6825,9 @@ public partial class LivingRust
 
                     VerbosePuts($"home-storage: '{survivor.Character.Alias}' deposited {deposited} item stack(s) into its own base storage.");
 
+                    // Tidy up straight after the deposit: like items grouped and stacks merged.
+                    OrganizeBaseStorage(survivor);
+
                     TryFillOwnedFurnaces(survivor, () =>
                     {
                         // C then D (2026-09-19, Lucas's own explicit

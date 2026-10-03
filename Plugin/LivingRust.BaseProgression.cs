@@ -1086,6 +1086,241 @@ public partial class LivingRust
     }
 
     // ============================================================
+    // Storage organisation
+    // ============================================================
+
+    private const int StorageRowWidth = 6;
+
+    private static readonly string[] ProcessedMetalOrder = { "metal.fragments", "metal.ore", "metal.refined", "hq.metal.ore" };
+    private static readonly string[] SulfurGroupOrder = { "sulfur.ore", "sulfur", "charcoal", "gunpowder" };
+
+    /// <summary>
+    /// Which shelf a stored item belongs on. Items in the same group end up next to each other,
+    /// sorted by name within it: scrap, components, metal (fragments/ore/refined), sulfur and its
+    /// by-products, wood, stone, other raw resources, then ammo, weapons, attire, tools,
+    /// medical, food, electrical, construction and everything else.
+    /// </summary>
+    private static (int Group, int Order) GetStorageSortKey(Item item)
+    {
+        string shortname = item.info.shortname;
+
+        if (shortname == ScrapShortname)
+        {
+            return (0, 0);
+        }
+
+        if (item.info.category == ItemCategory.Component)
+        {
+            return (1, 0);
+        }
+
+        int metal = Array.IndexOf(ProcessedMetalOrder, shortname);
+
+        if (metal >= 0)
+        {
+            return (2, metal);
+        }
+
+        int sulfur = Array.IndexOf(SulfurGroupOrder, shortname);
+
+        if (sulfur >= 0)
+        {
+            return (3, sulfur);
+        }
+
+        if (shortname == WoodShortname)
+        {
+            return (4, 0);
+        }
+
+        if (shortname == StoneShortname)
+        {
+            return (5, 0);
+        }
+
+        return item.info.category switch
+        {
+            ItemCategory.Resources => (6, 0),
+            ItemCategory.Ammunition => (7, 0),
+            ItemCategory.Weapon => (8, 0),
+            ItemCategory.Attire => (9, 0),
+            ItemCategory.Tool => (10, 0),
+            ItemCategory.Medical => (11, 0),
+            ItemCategory.Food => (12, 0),
+            ItemCategory.Electrical => (13, 0),
+            ItemCategory.Construction => (14, 0),
+            _ => (15, 0),
+        };
+    }
+
+    /// <summary>
+    /// Plain stackables only: no condition, no nested contents (attachments/backpack contents),
+    /// no per-instance blueprint/data - safe to fold into one pile.
+    /// </summary>
+    private static bool IsMergeableStack(Item item)
+    {
+        return item.info.stackable > 1 && !item.hasCondition && item.contents == null && item.instanceData == null;
+    }
+
+    /// <summary>
+    /// Tidies a survivor's boxes: merges partial stacks into full ones, then re-lays everything
+    /// grouped by GetStorageSortKey, each group starting on a fresh row when there is room for
+    /// that (packed tightly when there isn't). Synchronous and all-or-nothing in spirit: every
+    /// detached item is put back somewhere, or dropped at the base as a last resort.
+    /// </summary>
+    private void OrganizeBaseStorage(Survivor survivor)
+    {
+        HomeBase home = survivor.Character.Home;
+        BasePlayer npc = survivor.Player;
+
+        if (home == null || npc == null || npc.IsDestroyed)
+        {
+            return;
+        }
+
+        List<StorageContainer> boxes = FindOwnedStorageBoxesNear(npc, home.Position, HomeStorageSearchRadius)
+            .Where(b => b != null && !b.IsDestroyed && b.inventory != null)
+            .ToList();
+
+        if (boxes.Count == 0)
+        {
+            return;
+        }
+
+        List<Item> detached = new();
+
+        try
+        {
+            foreach (StorageContainer box in boxes)
+            {
+                foreach (Item item in new List<Item>(box.inventory.itemList))
+                {
+                    item.RemoveFromContainer();
+                    detached.Add(item);
+                }
+            }
+
+            if (detached.Count == 0)
+            {
+                return;
+            }
+
+            // Fold plain stackables of the same item into as few, fuller stacks as possible,
+            // reusing the existing Item objects (the extras are destroyed).
+            List<Item> arranged = new();
+
+            foreach (IGrouping<(int ItemId, ulong Skin), Item> group in detached.Where(IsMergeableStack).GroupBy(i => (i.info.itemid, i.skin)))
+            {
+                List<Item> pile = group.ToList();
+                int total = pile.Sum(i => i.amount);
+                int stack = pile[0].info.stackable;
+
+                foreach (Item item in pile)
+                {
+                    if (total <= 0)
+                    {
+                        item.Remove();
+                        continue;
+                    }
+
+                    item.amount = Math.Min(total, stack);
+                    item.MarkDirty();
+                    total -= item.amount;
+                    arranged.Add(item);
+                }
+            }
+
+            arranged.AddRange(detached.Where(i => !IsMergeableStack(i)));
+
+            List<List<Item>> shelves = arranged
+                .OrderBy(i => GetStorageSortKey(i).Group)
+                .ThenBy(i => GetStorageSortKey(i).Order)
+                .ThenBy(i => i.info.shortname, StringComparer.Ordinal)
+                .ThenByDescending(i => i.amount)
+                .GroupBy(i => GetStorageSortKey(i).Group)
+                .Select(g => g.ToList())
+                .ToList();
+
+            int[] capacities = boxes.Select(b => b.inventory.capacity).ToArray();
+            int totalCapacity = capacities.Sum();
+            int paddedNeed = shelves.Sum(s => (int)Math.Ceiling(s.Count / (double)StorageRowWidth) * StorageRowWidth);
+            bool padRows = paddedNeed <= totalCapacity;
+
+            int slot = 0;
+            List<Item> unplaced = new();
+
+            foreach (List<Item> shelf in shelves)
+            {
+                foreach (Item item in shelf)
+                {
+                    if (!TryPlaceAtGlobalSlot(boxes, capacities, slot, item))
+                    {
+                        unplaced.Add(item);
+                    }
+
+                    slot++;
+                }
+
+                if (padRows && slot % StorageRowWidth != 0)
+                {
+                    slot += StorageRowWidth - slot % StorageRowWidth;
+                }
+            }
+
+            // Anything that didn't land on its planned slot goes in the first free space anywhere.
+            foreach (Item item in unplaced)
+            {
+                if (!boxes.Any(b => item.MoveToContainer(b.inventory)))
+                {
+                    item.Drop(home.Position + Vector3.up, Vector3.zero);
+                }
+            }
+
+            detached.Clear();
+            VerbosePuts($"home-storage: '{survivor.Character.Alias}' organised {arranged.Count} stack(s) across {boxes.Count} box(es).");
+        }
+        catch (Exception ex)
+        {
+            Puts($"WARNING: home-storage: organising '{survivor.Character.Alias}' base storage failed ({ex.Message}) - putting everything back.");
+        }
+        finally
+        {
+            // Whatever is still detached (an exception mid-way) goes back into any box with room.
+            foreach (Item item in detached)
+            {
+                try
+                {
+                    if (item.parent == null && !boxes.Any(b => item.MoveToContainer(b.inventory)))
+                    {
+                        item.Drop(home.Position + Vector3.up, Vector3.zero);
+                    }
+                }
+                catch (Exception)
+                {
+                    // An item already destroyed by the stack-merge step - nothing to restore.
+                }
+            }
+        }
+    }
+
+    private static bool TryPlaceAtGlobalSlot(List<StorageContainer> boxes, int[] capacities, int globalSlot, Item item)
+    {
+        int remaining = globalSlot;
+
+        for (int i = 0; i < boxes.Count; i++)
+        {
+            if (remaining < capacities[i])
+            {
+                return item.MoveToContainer(boxes[i].inventory, remaining, allowStack: false);
+            }
+
+            remaining -= capacities[i];
+        }
+
+        return false;
+    }
+
+    // ============================================================
     // Coffer assessment (every 5th recycler trip)
     // ============================================================
 
