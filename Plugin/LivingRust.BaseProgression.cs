@@ -2788,7 +2788,7 @@ public partial class LivingRust
     // Monuments where bots may ONLY run the authored loot / card-puzzle ghost routes. Ambient
     // looting there got dozens of bots killed (they wandered between containers in the open);
     // with no route available they leave rather than fall back to general looting.
-    private static readonly string[] GhostRouteOnlyMonumentSubstrings = { "launch_site" };
+    private static readonly string[] GhostRouteOnlyMonumentSubstrings = { "launch_site", "nuclear_missile_silo" };
 
     private const float GhostRouteOnlyAreaPadding = 30f;
     private List<MonumentInfo> _ghostRouteOnlyMonuments;
@@ -2809,6 +2809,11 @@ public partial class LivingRust
             }
 
             _ghostRouteOnlyMonuments = MonumentAccess.GetAllMonuments().Where(IsGhostRouteOnlyMonument).ToList();
+
+            foreach (MonumentInfo found in _ghostRouteOnlyMonuments)
+            {
+                Puts($"ghost-route-only: '{found.name}' at {found.transform.position} - ambient looting closed within its bounds (size {found.Bounds.size}) + {GhostRouteOnlyAreaPadding:F0}m.");
+            }
         }
 
         return _ghostRouteOnlyMonuments;

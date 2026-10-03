@@ -1018,7 +1018,11 @@ public partial class LivingRust
 
         foreach (MonumentInfo candidate in MonumentAccess.GetAllMonuments())
         {
+            // IsBelowRequiredGearScoreForMonument: this last-resort "nearest known zone" walk used to skip
+            // every gear floor, so under-geared survivors strolled into the Missile Silo / Launch Site /
+            // Military Base as a fallback and died to the scientists there.
             if (candidate == null || IsMonumentExcludedFromAutonomy(candidate) || IsGhostRouteOnlyMonument(candidate)
+                || IsBelowRequiredGearScoreForMonument(npc, candidate.name)
                 || (!HasCompletedEarlyGameMilestones(survivor) && IsNearEarlyGameRestrictedMonument(candidate.transform.position))
                 || (ShouldAvoidInventoryOrPrepGatedMonument(survivor) && IsNearInventoryOrPrepGatedMonument(candidate.transform.position))
                 || !_monumentLootZones.TryGetValue(candidate.name, out List<MonumentLootZone> zones) || zones.Count == 0)
