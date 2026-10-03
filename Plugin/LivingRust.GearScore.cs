@@ -649,7 +649,34 @@ public partial class LivingRust
 
             MonumentTier? chosenTier;
 
-            if (roll < local)
+            // A survivor with a base often just heads for the monument nearest it (a higher weighted
+            // roll than any other single monument gets), so bots aren't sent 3000m away at random
+            // when something comparable lives close to home. Skipped while it is hunting a blueprint
+            // unless that nearby monument is a high-tier one, and falls back to the normal roll when
+            // the nearest monument can't give it a destination.
+            Vector3 destination = default;
+            string destinationLabel = null;
+            bool homeMonumentPicked = false;
+            MonumentTier homeMonumentTier = MonumentTier.TierZero;
+
+            if (survivor.Character.Home != null
+                && UnityEngine.Random.value < HomeMonumentRollChance
+                && TryGetNearestMonumentToHome(survivor, npc, out MonumentInfo homeMonument))
+            {
+                homeMonumentTier = GetMonumentTier(homeMonument.name);
+
+                if ((homeMonumentTier >= MonumentTier.TierTwo || !HasWantedBlueprints(survivor))
+                    && TryPickRandomTierDestination(npc, homeMonumentTier, out destination, out destinationLabel, homeMonument))
+                {
+                    homeMonumentPicked = true;
+                }
+            }
+
+            if (homeMonumentPicked)
+            {
+                chosenTier = homeMonumentTier;
+            }
+            else if (roll < local)
             {
                 chosenTier = null;
             }
@@ -670,7 +697,7 @@ public partial class LivingRust
                 chosenTier = MonumentTier.TierThree;
             }
 
-            if (chosenTier == null || !TryPickRandomTierDestination(npc, chosenTier.Value, out Vector3 destination, out string destinationLabel))
+            if (!homeMonumentPicked && (chosenTier == null || !TryPickRandomTierDestination(npc, chosenTier.Value, out destination, out destinationLabel)))
             {
                 VerbosePuts($"loot-task: '{survivor.Character.Alias}' (gear score {gearScore}) starting its search right here.");
                 ContinueLootTask(survivor, new LootTaskState(), forceLocalScan: true);
@@ -764,11 +791,64 @@ public partial class LivingRust
         return false;
     }
 
-    private bool TryPickRandomTierDestination(BasePlayer npc, MonumentTier tier, out Vector3 destination, out string label)
+    // How likely a survivor with a base is to simply head for the monument nearest that base on any given
+    // destination roll (2026-10-03, Lucas's spec) - and, on top of that, every monument's pick weight now
+    // falls off with its distance from the BASE, so bots stop running 3000m for a monument when a
+    // comparable one sits close to home.
+    private const float HomeMonumentRollChance = 0.35f;
+    private const float HomeDistanceWeightScale = 2000f;
+    private const float HomeMonumentWeightBoost = 4f;
+
+    /// <summary>
+    /// The closest eligible monument to the survivor's base: not excluded from autonomy, passes the gear
+    /// floor, and actually has something to do there (loot zones, or a free ghost route for a
+    /// ghost-route-only monument).
+    /// </summary>
+    private bool TryGetNearestMonumentToHome(Survivor survivor, BasePlayer npc, out MonumentInfo nearest)
+    {
+        nearest = null;
+        HomeBase home = survivor.Character.Home;
+
+        if (home == null)
+        {
+            return false;
+        }
+
+        float bestDistance = float.MaxValue;
+
+        foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
+        {
+            if (monument == null || IsMonumentExcludedFromAutonomy(monument) || IsBelowRequiredGearScoreForMonument(npc, monument.name))
+            {
+                continue;
+            }
+
+            bool usable = IsGhostRouteOnlyMonument(monument)
+                ? TryGetAvailableGhostRouteStart(monument, survivor.Character.Id, out Vector3 _)
+                : _monumentLootZones.TryGetValue(monument.name, out List<MonumentLootZone> zones) && zones.Count > 0;
+
+            if (!usable)
+            {
+                continue;
+            }
+
+            float distance = Vector3.Distance(monument.transform.position, home.Position);
+
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                nearest = monument;
+            }
+        }
+
+        return nearest != null;
+    }
+
+    private bool TryPickRandomTierDestination(BasePlayer npc, MonumentTier tier, out Vector3 destination, out string label, MonumentInfo onlyMonument = null)
     {
         List<(Vector3 Position, string Label)> candidates = new();
 
-        if ((tier == MonumentTier.TierZero || tier == MonumentTier.TierOne)
+        if (onlyMonument == null && (tier == MonumentTier.TierZero || tier == MonumentTier.TierOne)
             && _engine.NavigationManager.TryFindNearestRoadPoint(npc.transform.position, TierOneRoadSearchRadius, out Vector3 roadPoint, out _, out _))
         {
             candidates.Add((roadPoint, "a nearby road"));
@@ -778,7 +858,8 @@ public partial class LivingRust
         {
             foreach (MonumentInfo monument in MonumentAccess.GetAllMonuments())
             {
-                if (monument == null || IsMonumentExcludedFromAutonomy(monument) || GetMonumentTier(monument.name) != tier)
+                if (monument == null || IsMonumentExcludedFromAutonomy(monument)
+                    || (onlyMonument != null ? monument != onlyMonument : GetMonumentTier(monument.name) != tier))
                 {
                     continue;
                 }
@@ -839,10 +920,29 @@ public partial class LivingRust
         float[] weights = new float[candidates.Count];
         float totalWeight = 0f;
 
+        // A survivor with a base prefers monuments close to it: weight falls off with the candidate's
+        // distance from the BASE, and the monument nearest the base gets a boost on top.
+        Survivor pickingSurvivor = FindSurvivorByPlayer(npc);
+        HomeBase pickingHome = pickingSurvivor?.Character.Home;
+        string nearestHomeMonumentName = pickingHome != null && TryGetNearestMonumentToHome(pickingSurvivor, npc, out MonumentInfo nearestToHome)
+            ? nearestToHome.name
+            : null;
+
         for (int i = 0; i < candidates.Count; i++)
         {
             int occupants = candidates[i].Label == "a nearby road" ? 0 : GetMonumentOccupancy(candidates[i].Label);
             weights[i] = Mathf.Max(0.05f, 1f - occupants / (float)occupancyCap);
+
+            if (pickingHome != null && candidates[i].Label != "a nearby road")
+            {
+                weights[i] /= 1f + Vector3.Distance(candidates[i].Position, pickingHome.Position) / HomeDistanceWeightScale;
+
+                if (candidates[i].Label == nearestHomeMonumentName)
+                {
+                    weights[i] *= HomeMonumentWeightBoost;
+                }
+            }
+
             totalWeight += weights[i];
         }
 
