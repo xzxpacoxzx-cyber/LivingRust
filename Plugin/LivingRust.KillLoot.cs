@@ -58,7 +58,7 @@ public partial class LivingRust
         // An animal kill is worth a special trip too, purely for the harvest (cloth/meat for
         // bandages) - an animal corpse is the same entity, not a LootableCorpse, so it's only
         // worth the trip when the survivor actually owns a tool that can harvest it.
-        if (IsHuntablePredator(victim) && HasAnyGatherCapableTool(killer.Player, TreeGatherToolPriority))
+        if (IsAnyAnimal(victim) && HasAnimalHarvestTool(killer.Player))
         {
             _priorityKillLoot[killer.Character.Id] = new PriorityKillLoot
             {
@@ -68,6 +68,70 @@ public partial class LivingRust
 
             VerbosePuts($"kill-loot: '{killer.Character.Alias}' just killed a '{victim.ShortPrefabName}' - going to harvest it.");
         }
+    }
+
+    /// <summary>
+    /// Any wild animal (2026-10-04, Lucas's spec: harvest EVERY animal it kills, not just predators): the
+    /// older BaseAnimalNPC family (chicken, boar, stag, wolf, bear, ...) and the Gen2 animals.
+    /// </summary>
+    private static bool IsAnyAnimal(BaseEntity entity)
+    {
+        return entity is BaseAnimalNPC
+            || entity is Rust.Ai.Gen2.Bear
+            || entity is Rust.Ai.Gen2.PolarBear
+            || entity is Rust.Ai.Gen2.Boar
+            || entity is Rust.Ai.Gen2.Stag
+            || entity is Rust.Ai.Gen2.Wolf2
+            || entity is Rust.Ai.Gen2.Crocodile
+            || entity is Rust.Ai.Gen2.Panther
+            || entity is Rust.Ai.Gen2.Tiger;
+    }
+
+    /// <summary>
+    /// A hatchet, jackhammer, bone knife or combat knife (any of them, none preferred) - a rock alone
+    /// doesn't make the trip worthwhile.
+    /// </summary>
+    private static bool HasAnimalHarvestTool(BasePlayer npc)
+    {
+        return HasAnyGatherCapableTool(npc, AnimalHarvestToolPriority.Where(tool => tool != "rock").ToArray());
+    }
+
+    /// <summary>
+    /// Older-style animals (chicken, boar, stag...) leave a harvestable BaseCorpse, not a lootable body.
+    /// Player and scientist corpses are LootableCorpse and are excluded here.
+    /// </summary>
+    private bool TryFindNearestAnimalBaseCorpse(Vector3 position, float radius, out BaseCorpse corpse)
+    {
+        List<BaseCorpse> candidates = Pool.Get<List<BaseCorpse>>();
+        corpse = null;
+        float nearestDistanceSqr = float.MaxValue;
+
+        try
+        {
+            Vis.Entities(position, radius, candidates);
+
+            foreach (BaseCorpse candidate in candidates)
+            {
+                if (candidate == null || candidate.IsDestroyed || candidate is LootableCorpse)
+                {
+                    continue;
+                }
+
+                float distanceSqr = (candidate.transform.position - position).sqrMagnitude;
+
+                if (distanceSqr < nearestDistanceSqr)
+                {
+                    nearestDistanceSqr = distanceSqr;
+                    corpse = candidate;
+                }
+            }
+        }
+        finally
+        {
+            Pool.FreeUnmanaged(ref candidates);
+        }
+
+        return corpse != null;
     }
 
     /// <summary>
@@ -117,7 +181,7 @@ public partial class LivingRust
     }
 
     // Capped low since a corpse harvest is a bonus, not a full gather session.
-    private const int MaxHitsPerAnimalCorpse = 6;
+    private const int MaxHitsPerAnimalCorpse = 10;
 
     /// <summary>
     /// Swing loop against a just-killed animal's corpse, same DoAttackShared pipeline as
@@ -135,7 +199,7 @@ public partial class LivingRust
             return;
         }
 
-        BaseMelee melee = EquipBestGatherToolForType(survivor, TreeGatherToolPriority);
+        BaseMelee melee = EquipBestGatherToolForType(survivor, AnimalHarvestToolPriority);
 
         if (melee == null)
         {
@@ -184,6 +248,11 @@ public partial class LivingRust
             AimAtPlayer(currentNpc, corpse);
 
             hits++;
+
+            if (melee is Jackhammer harvestJackhammer)
+            {
+                harvestJackhammer.SetEngineStatus(true);
+            }
 
             melee.ServerUse();
             melee.CancelInvoke(melee.ServerUse_Strike);
@@ -335,6 +404,22 @@ public partial class LivingRust
                 survivor,
                 GetApproachPoint(deadAnimal, npc, standoffDistance: MeleeEngagementRange),
                 onArrived: () => StartHarvestingAnimalCorpse(survivor, deadAnimal, state),
+                onFailed: () => ContinueLootTask(survivor, state));
+            return true;
+        }
+
+        // 0b. A dead older-style animal (chicken, boar, stag...) - a harvestable BaseCorpse - hit with the
+        // same melee pipeline: cloth, raw meat, leather, bone fragments and animal fat.
+        if (HasAnimalHarvestTool(npc) && TryFindNearestAnimalBaseCorpse(entry.Position, PriorityKillLootSearchRadius, out BaseCorpse animalCorpse))
+        {
+            StartWalkingWithRecovery(
+                survivor,
+                GetApproachPoint(animalCorpse, npc),
+                onArrived: () => StartHarvestingCorpse(survivor, animalCorpse, () =>
+                {
+                    _priorityKillLoot.Remove(characterId);
+                    ContinueLootTask(survivor, state);
+                }),
                 onFailed: () => ContinueLootTask(survivor, state));
             return true;
         }

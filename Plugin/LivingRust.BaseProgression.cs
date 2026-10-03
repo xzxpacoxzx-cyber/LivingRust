@@ -884,6 +884,12 @@ public partial class LivingRust
             return false;
         }
 
+        // Raw meat is carried through the deposit step so it can be cooked at the campfire afterwards.
+        if (IsRawMeat(item))
+        {
+            return false;
+        }
+
         // A bag being carried gets placed at the base before it's ever banked.
         if (item.info.shortname == SleepingBagShortname)
         {
@@ -1343,6 +1349,20 @@ public partial class LivingRust
             {
                 return new WorkshopJob { Shortname = LowGradeFuelShortname, Batches = batches, Reason = "low grade fuel from animal fat" };
             }
+        }
+
+        // 2c. A campfire (100 wood) for cooking raw meat - only when the survivor is actually carrying some, has
+        // no campfire standing at its base and none in hand or in storage.
+        ItemDefinition campfireDefinition = ItemManager.FindItemDefinition(CampfireShortname);
+
+        if (campfireDefinition?.Blueprint != null && !failed.Contains(CampfireShortname)
+            && npc.inventory.containerMain.itemList.Concat(npc.inventory.containerBelt.itemList).Any(IsRawMeat)
+            && CountOwned(npc, boxes, campfireDefinition) == 0
+            && survivor.Character.Home != null
+            && FindOwnedCampfire(npc, survivor.Character.Home.Position, HomeStorageSearchRadius) == null
+            && CanWorkshopCraft(npc, boxes, campfireDefinition, 1, wbLevel))
+        {
+            return new WorkshopJob { Shortname = CampfireShortname, Reason = "campfire for cooking its meat" };
         }
 
         // 3. Gunpowder: sulfur + charcoal sitting around is wasted progression.
@@ -1825,7 +1845,7 @@ public partial class LivingRust
     /// CSV involvement at all - the base's layout was a fixed trace replay, but the extra box is
     /// a free-form bolt-on placed by looking at what is physically there.
     /// </summary>
-    private bool TryFindFreeStorageSpot(Survivor survivor, BasePlayer npc, out Vector3 position, out Vector3 facing)
+    private bool TryFindFreeStorageSpot(Survivor survivor, BasePlayer npc, out Vector3 position, out Vector3 facing, Vector3? halfExtents = null)
     {
         position = default;
         facing = Vector3.forward;
@@ -1858,10 +1878,10 @@ public partial class LivingRust
                     continue;
                 }
 
-                Vector3 center = floorHit.point + Vector3.up * (StorageBoxHalfExtents.y + 0.05f);
+                Vector3 center = floorHit.point + Vector3.up * ((halfExtents ?? StorageBoxHalfExtents).y + 0.05f);
                 Quaternion orientation = Quaternion.LookRotation(new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)));
 
-                if (Physics.CheckBox(center, StorageBoxHalfExtents, orientation, mask, QueryTriggerInteraction.Ignore))
+                if (Physics.CheckBox(center, halfExtents ?? StorageBoxHalfExtents, orientation, mask, QueryTriggerInteraction.Ignore))
                 {
                     continue;
                 }

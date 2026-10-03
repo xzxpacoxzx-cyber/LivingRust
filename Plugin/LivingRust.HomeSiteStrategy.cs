@@ -860,6 +860,8 @@ public partial class LivingRust
     private static readonly string[] AnimalHarvestToolPriority =
     {
         "knife.skinning",
+        "jackhammer",
+        "knife.bone",
         "hatchet",
         "stonehatchet",
         "lumberjack.hatchet",
@@ -1232,6 +1234,11 @@ public partial class LivingRust
             }
 
             hits++;
+
+            if (melee is Jackhammer corpseJackhammer)
+            {
+                corpseJackhammer.SetEngineStatus(true);
+            }
 
             melee.ServerUse();
             melee.CancelInvoke(melee.ServerUse_Strike);

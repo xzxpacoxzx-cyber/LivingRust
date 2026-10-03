@@ -730,7 +730,8 @@ public partial class LivingRust
             .Concat(npc.inventory.containerBelt.itemList)
             .Where(item => item.info.category == ItemCategory.Food
                 && item.info.shortname != WaterBottleShortname
-                && item.info.shortname != WormShortname)
+                && item.info.shortname != WormShortname
+                && !IsRawMeat(item))
             .ToList();
 
         foreach (Item item in foodItems)
@@ -6883,6 +6884,7 @@ public partial class LivingRust
                             // gunpowder, ammo, firearms from researched blueprints, and the
                             // sheet-metal base upgrade - all standing at the workbench.
                             TryRunBaseWorkshop(survivor, () =>
+                            TryCookMeatAtBase(survivor, () =>
                             TryStockBandagesBeforeLeaving(survivor, () =>
                             {
                                 TryPlaceSleepingBagAtBase(survivor, () =>
@@ -6923,7 +6925,7 @@ public partial class LivingRust
 
                             TryPursueTierUpgrade(survivor, () => TeleportOutsideHomeIfInside(survivor, home, onComplete));
                                 });
-                            }));
+                            })));
                         });
                     });
                 });
