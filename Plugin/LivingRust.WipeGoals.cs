@@ -664,14 +664,24 @@ public partial class LivingRust
         Puts($"wipe-goal: '{survivor.Character.Alias}' got a bonus tool reward from a monument clear - '{shortname}'.");
     }
 
+    // Chance that finishing a monument pays out any blueprint fragments at all (2026-10-03: lowered from
+    // 100% to 30% at Lucas's request). Flat - the +20% reward boost and the guaranteed second clear
+    // do not apply to it.
+    private const float BlueprintFragmentRewardChance = 30f;
+
     /// <summary>
-    /// Guaranteed blueprint-fragment reward for finishing a monument loot run or ghost route
-    /// (2026-10-03, Lucas's spec; tiers are the project's own 0-indexed MonumentTier): Tier1
-    /// 0-2 basic fragments, Tier2 1-3 basic fragments, Tier3 exactly 1 advanced fragment.
-    /// 100% chance in every case; Tier0 has none.
+    /// Blueprint-fragment reward for finishing a monument loot run or ghost route (tiers are the
+    /// project's own 0-indexed MonumentTier): Tier1 0-2 basic fragments, Tier2 1-3 basic fragments,
+    /// Tier3 exactly 1 advanced fragment, each only BlueprintFragmentRewardChance% of the time;
+    /// Tier0 has none.
     /// </summary>
     private void TryGrantMonumentBlueprintFragmentReward(Survivor survivor, BasePlayer npc, MonumentTier tier)
     {
+        if (UnityEngine.Random.Range(0f, 100f) >= BlueprintFragmentRewardChance)
+        {
+            return;
+        }
+
         string shortname;
         int amount;
 
