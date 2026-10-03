@@ -492,6 +492,12 @@ public partial class LivingRust
     private const float FuelHuntRetrySeconds = 120f;
     private readonly Dictionary<Guid, float> _nextFuelHuntAttempt = new();
 
+    // At most this many fuel hunts per life, and a pause between them - most survivors sit under the fuel
+    // target, so without this half the population would be chasing animals at any moment.
+    private const int FuelHuntsPerLife = 3;
+    private const float FuelHuntCooldownSeconds = 600f;
+    private readonly Dictionary<Guid, int> _fuelHuntsThisLife = new();
+
     /// <summary>
     /// A survivor with a base is short of low grade fuel when what it holds (carried + stored) plus what
     /// its animal fat would craft into (3 fat -> 4 fuel) is under the target.
@@ -532,7 +538,7 @@ public partial class LivingRust
             return true;
         }
 
-        if (survivor.Character.Home == null || !HasReadyRangedWeapon(npc))
+        if (survivor.Character.Home == null || !HasReadyRangedWeapon(npc) || _fuelHuntsThisLife.GetValueOrDefault(characterId) >= FuelHuntsPerLife)
         {
             return false;
         }
@@ -556,6 +562,8 @@ public partial class LivingRust
         }
 
         _activeAnimalHunt.Add(characterId);
+        _fuelHuntsThisLife[characterId] = _fuelHuntsThisLife.GetValueOrDefault(characterId) + 1;
+        _nextFuelHuntAttempt[characterId] = now + FuelHuntCooldownSeconds;
         Puts($"fuel-hunt: '{survivor.Character.Alias}' is low on low grade fuel - hunting a '{animal.ShortPrefabName}' for animal fat.");
 
         if (Vector3.Distance(npc.transform.position, animal.transform.position) <= HuntStandoffDistance)
