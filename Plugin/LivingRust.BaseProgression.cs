@@ -305,16 +305,24 @@ public partial class LivingRust
             homeOwners[survivor.Character.BotId] = survivor;
         }
 
-        if (homeOwners.Count == 0)
-        {
-            return;
-        }
-
         int closed = 0;
+        int closedWorld = 0;
+        HashSet<ulong> stillOpenWorld = new();
 
         foreach (BaseNetworkable entity in BaseNetworkable.serverEntities)
         {
-            if (entity is not Door door || door.IsDestroyed || !door.IsOpen() || !homeOwners.TryGetValue(door.OwnerID, out Survivor owner))
+            if (entity is not Door door || door.IsDestroyed || !door.IsOpen())
+            {
+                continue;
+            }
+
+            if (door.OwnerID == 0UL)
+            {
+                closedWorld += SweepWorldDoor(door, now, stillOpenWorld);
+                continue;
+            }
+
+            if (!homeOwners.TryGetValue(door.OwnerID, out Survivor owner))
             {
                 continue;
             }
@@ -338,11 +346,107 @@ public partial class LivingRust
             closed++;
         }
 
-        if (closed > 0)
+        // Forget doors that are no longer open (closed by the game, a player, or the sweep).
+        foreach (ulong id in _worldDoorOpenSince.Keys.Where(k => !stillOpenWorld.Contains(k)).ToList())
         {
-            VerbosePuts($"door-sweep: closed {closed} open base door(s).");
+            _worldDoorOpenSince.Remove(id);
+            _botOpenedWorldDoors.Remove(id);
+        }
+
+        if (closed > 0 || closedWorld > 0)
+        {
+            VerbosePuts($"door-sweep: closed {closed} open base door(s) and {closedWorld} monument door(s).");
         }
     }
+
+    // ============================================================
+    // Monument doors (unowned world doors)
+    // ============================================================
+
+    // Doors a bot opened in the world (stuck-recovery) - nothing ever closed them again.
+    private readonly HashSet<ulong> _botOpenedWorldDoors = new();
+
+    // First sweep at which each unowned door was seen open.
+    private readonly Dictionary<ulong, float> _worldDoorOpenSince = new();
+
+    private const float WorldDoorPersonClearance = 5f;
+
+    private void NoteBotOpenedWorldDoor(Door door)
+    {
+        if (door != null && door.net != null && door.OwnerID == 0UL)
+        {
+            _botOpenedWorldDoors.Add(door.net.ID.Value);
+        }
+    }
+
+    /// <summary>
+    /// A door only a circuit can open: Rust marks hand-openable doors with canHandOpen, and keycard /
+    /// fuse-powered puzzle rooms are driven by a card reader or door manipulator sitting next to them.
+    /// </summary>
+    private static bool IsPowerControlledDoor(Door door)
+    {
+        if (door == null || door.IsDestroyed)
+        {
+            return false;
+        }
+
+        if (!door.canHandOpen)
+        {
+            return true;
+        }
+
+        foreach (Collider hit in Physics.OverlapSphere(door.transform.position, 3f, CardReaderLayerMask, QueryTriggerInteraction.Collide))
+        {
+            if (hit.GetComponentInParent<CardReader>() != null || hit.GetComponentInParent<DoorManipulator>() != null)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Closes an open, unowned monument door once nobody is near it: a bot-opened one after 15s, a
+    /// power-controlled one that has stayed open across two sweeps (its fuse / card timer ran out but
+    /// the door never swung shut). Returns 1 when it closed the door.
+    /// </summary>
+    private int SweepWorldDoor(Door door, float now, HashSet<ulong> stillOpenWorld)
+    {
+        ulong id = door.net.ID.Value;
+        bool botOpened = _botOpenedWorldDoors.Contains(id);
+        bool seenBefore = _worldDoorOpenSince.TryGetValue(id, out float since);
+
+        if (!seenBefore)
+        {
+            since = now;
+            _worldDoorOpenSince[id] = now;
+        }
+
+        stillOpenWorld.Add(id);
+
+        bool dueBot = botOpened && now - since >= 15f;
+        bool duePowered = seenBefore && now - since >= DoorSweepIntervalSeconds * 1.5f && IsPowerControlledDoor(door);
+
+        if (!dueBot && !duePowered)
+        {
+            return 0;
+        }
+
+        foreach (BasePlayer player in BasePlayer.allPlayerList)
+        {
+            if (player != null && !player.IsDead() && Vector3.Distance(player.transform.position, door.transform.position) < WorldDoorPersonClearance)
+            {
+                return 0;
+            }
+        }
+
+        door.SetOpen(false);
+        door.SendNetworkUpdate();
+        stillOpenWorld.Remove(id);
+        return 1;
+    }
+
 
     // ============================================================
     // Workshop exemption (the stall watchdog must not rescue a bot standing at its workbench)

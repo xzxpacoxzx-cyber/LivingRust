@@ -215,6 +215,13 @@ public partial class LivingRust
 
     private bool CanOpenDoor(BasePlayer npc, Door door)
     {
+        // Powered / puzzle doors (keycard rooms, fuse-powered loot rooms) can only be opened by their
+        // electrics - a bot has no business forcing one open (2026-10-04, Lucas: Junkyard's powered room).
+        if (door.OwnerID != npc.userID && IsPowerControlledDoor(door))
+        {
+            return false;
+        }
+
         BaseLock doorLock = door.GetSlot(BaseEntity.Slot.Lock) as BaseLock;
 
         if (doorLock == null || !doorLock.IsLocked())
@@ -7977,6 +7984,7 @@ public partial class LivingRust
         {
             blockingDoor.SetOpen(true);
             blockingDoor.SendNetworkUpdate();
+            NoteBotOpenedWorldDoor(blockingDoor);
 
             int doorContinuationTier = recoveryTier == 0 ? 1 : recoveryTier;
 
@@ -8049,6 +8057,7 @@ public partial class LivingRust
                 {
                     blockingDoor.SetOpen(true);
                     blockingDoor.SendNetworkUpdate();
+                    NoteBotOpenedWorldDoor(blockingDoor);
                 }
 
                 VerbosePuts($"'{survivor.Character.Alias}' opened a closed door that was blocking its path.");
