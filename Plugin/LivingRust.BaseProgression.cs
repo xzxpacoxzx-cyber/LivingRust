@@ -690,6 +690,48 @@ public partial class LivingRust
             }
         }
 
+        // 1-firearm. A learned firearm comes first after the tools (2026-10-03, Lucas's spec): best unlocked
+        // blueprint its bench and stores can build; only if none can be built does step 6 fall back to a
+        // crossbow/bow.
+        bool ownsFirearm = CountRealFirearms(npc) > 0
+            || boxes.Any(b => b != null && !b.IsDestroyed && b.inventory != null
+                && b.inventory.itemList.Any(i => WeaponAmmoType.ContainsKey(i.info.shortname)));
+
+        if (!ownsFirearm)
+        {
+            string wantedWeapon = null;
+            int wantedScore = int.MinValue;
+
+            foreach (string shortname in WeaponAmmoType.Keys.OrderByDescending(k => WeaponGearScore.TryGetValue(k, out int sc) ? sc : 0))
+            {
+                ItemDefinition def = ItemManager.FindItemDefinition(shortname);
+                ItemBlueprint bp = def?.Blueprint;
+
+                if (bp == null || !bp.userCraftable || failed.Contains(shortname) || !npc.blueprints.IsUnlocked(def) || bp.workbenchLevelRequired > wbLevel)
+                {
+                    continue;
+                }
+
+                if (CanWorkshopCraft(npc, boxes, def, 1, wbLevel))
+                {
+                    return new WorkshopJob { Shortname = shortname, Reason = "firearm from a researched blueprint" };
+                }
+
+                int score = WeaponGearScore.TryGetValue(shortname, out int s) ? s : 0;
+
+                if (wantedWeapon == null || score > wantedScore)
+                {
+                    wantedWeapon = shortname;
+                    wantedScore = score;
+                }
+            }
+
+            if (wantedWeapon != null)
+            {
+                LogWantedRecipe(survivor, npc, boxes, ItemManager.FindItemDefinition(wantedWeapon));
+            }
+        }
+
         // 1a. Survival kit from storage (bandages, a bow, arrows). Respawned survivors used to head out
         // to gather wood/cloth/stone for these with the same materials sitting in their own boxes.
         ItemDefinition bandageDef = ItemManager.FindItemDefinition(BandageShortname);
@@ -704,27 +746,7 @@ public partial class LivingRust
             }
         }
 
-        bool hasRanged = CountRealFirearms(npc) > 0
-            || NonCombatCapableRangedWeaponShortnames.Any(s => npc.inventory.GetAmount(ItemManager.FindItemDefinition(s)?.itemid ?? -1) > 0);
-        ItemDefinition bowDef = ItemManager.FindItemDefinition(BowShortname);
-
-        if (!hasRanged && bowDef?.Blueprint != null && !failed.Contains(BowShortname) && CanWorkshopCraft(npc, boxes, bowDef, 1, wbLevel))
-        {
-            return new WorkshopJob { Shortname = BowShortname, Reason = "bow from storage" };
-        }
-
-        ItemDefinition arrowDef = ItemManager.FindItemDefinition(ArrowShortname);
-        bool hasBow = bowDef != null && npc.inventory.GetAmount(bowDef.itemid) > 0;
-
-        if (hasBow && arrowDef?.Blueprint != null && !failed.Contains(ArrowShortname) && npc.inventory.GetAmount(arrowDef.itemid) < 20)
-        {
-            int batches = MaxAffordableBatches(npc, boxes, arrowDef.Blueprint, ArrowMaxBatches);
-
-            if (batches >= 1 && arrowDef.Blueprint.workbenchLevelRequired <= wbLevel)
-            {
-                return new WorkshopJob { Shortname = ArrowShortname, Batches = batches, Reason = "arrows from storage" };
-            }
-        }
+        // (Bow / crossbow + arrows are step 6 at the bottom: a learned firearm comes first.)
 
         // 1b. The item this survivor decided it wants next at its last coffer assessment.
         string goal = survivor.Character.CraftGoal;
@@ -811,43 +833,41 @@ public partial class LivingRust
             }
         }
 
-        // 5. A firearm, if it has none: best unlocked blueprint its bench and stores can build.
-        bool ownsFirearm = CountRealFirearms(npc) > 0
-            || boxes.Any(b => b != null && !b.IsDestroyed && b.inventory != null
-                && b.inventory.itemList.Any(i => WeaponAmmoType.ContainsKey(i.info.shortname)));
-
-        if (!ownsFirearm)
+        // 6. Fallback ranged kit (2026-10-03, Lucas's spec): no firearm could be built from what the
+        // storage holds, so it makes a crossbow if it has learned and can afford one, otherwise a
+        // bow - plus arrows for it. A survivor that already owns a firearm doesn't need this.
+        if (CountRealFirearms(npc) == 0)
         {
-            string wantedWeapon = null;
-            int wantedScore = int.MinValue;
+            ItemDefinition crossbowDef = ItemManager.FindItemDefinition("crossbow");
+            ItemDefinition bowDef = ItemManager.FindItemDefinition(BowShortname);
+            bool hasCrossbow = crossbowDef != null && npc.inventory.GetAmount(crossbowDef.itemid) > 0;
+            bool hasBow = bowDef != null && npc.inventory.GetAmount(bowDef.itemid) > 0;
 
-            foreach (string shortname in WeaponAmmoType.Keys.OrderByDescending(k => WeaponGearScore.TryGetValue(k, out int sc) ? sc : 0))
+            if (!hasCrossbow && !hasBow)
             {
-                ItemDefinition def = ItemManager.FindItemDefinition(shortname);
-                ItemBlueprint bp = def?.Blueprint;
-
-                if (bp == null || !bp.userCraftable || failed.Contains(shortname) || !npc.blueprints.IsUnlocked(def) || bp.workbenchLevelRequired > wbLevel)
+                if (crossbowDef?.Blueprint != null && !failed.Contains("crossbow") && npc.blueprints.IsUnlocked(crossbowDef)
+                    && CanWorkshopCraft(npc, boxes, crossbowDef, 1, wbLevel))
                 {
-                    continue;
+                    return new WorkshopJob { Shortname = "crossbow", Reason = "fallback crossbow from storage" };
                 }
 
-                if (CanWorkshopCraft(npc, boxes, def, 1, wbLevel))
+                if (bowDef?.Blueprint != null && !failed.Contains(BowShortname) && CanWorkshopCraft(npc, boxes, bowDef, 1, wbLevel))
                 {
-                    return new WorkshopJob { Shortname = shortname, Reason = "firearm from a researched blueprint" };
-                }
-
-                int score = WeaponGearScore.TryGetValue(shortname, out int s) ? s : 0;
-
-                if (wantedWeapon == null || score > wantedScore)
-                {
-                    wantedWeapon = shortname;
-                    wantedScore = score;
+                    return new WorkshopJob { Shortname = BowShortname, Reason = "fallback bow from storage" };
                 }
             }
 
-            if (wantedWeapon != null)
+            ItemDefinition arrowDef = ItemManager.FindItemDefinition(ArrowShortname);
+
+            if ((hasCrossbow || hasBow) && arrowDef?.Blueprint != null && !failed.Contains(ArrowShortname)
+                && npc.inventory.GetAmount(arrowDef.itemid) < 20 && arrowDef.Blueprint.workbenchLevelRequired <= wbLevel)
             {
-                LogWantedRecipe(survivor, npc, boxes, ItemManager.FindItemDefinition(wantedWeapon));
+                int batches = MaxAffordableBatches(npc, boxes, arrowDef.Blueprint, ArrowMaxBatches);
+
+                if (batches >= 1)
+                {
+                    return new WorkshopJob { Shortname = ArrowShortname, Batches = batches, Reason = "arrows from storage" };
+                }
             }
         }
 

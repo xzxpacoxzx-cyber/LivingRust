@@ -409,41 +409,17 @@ public partial class LivingRust
 
     private void RunRespawnHomeCatchUp(Survivor survivor)
     {
-        Character character = survivor.Character;
-
-        if (survivor.Player == null || survivor.Player.IsDestroyed || character.State == CharacterState.Dead)
+        if (survivor.Player == null || survivor.Player.IsDestroyed || survivor.Character.State == CharacterState.Dead)
         {
             return;
         }
 
-        GhostReturnHomeAndDeposit(survivor, () =>
-        {
-            {
-                // 2026-10-03, Lucas's own explicit follow-up: a respawned survivor that lost its
-                // tools/weapon on death should rebuild them before heading back out, not just
-                // pull whatever's already sitting in storage (TryUpgradeGearFromStorage above
-                // only re-equips what's THERE - a genuinely empty cupboard leaves it toolless).
-                // Reuses the real primitive checklist (hatchet/pickaxe/bow/arrows/bandages/bag)
-                // rather than a new parallel system - re-arms _pursuingPrimitiveGoals so
-                // ContinueLootTask's own existing checklist-pursuit branch picks it up and crafts
-                // whichever of those six it's actually missing, same proven chain a fresh spawn
-                // uses. Clothing/armor re-equip is already covered by TryUpgradeGearFromStorage
-                // just above (pulls from storage, same as normal); crafting NEW armor from
-                // scratch isn't something this project does anywhere, including on a fresh
-                // spawn, so it's out of scope here too. Syringes are loot-only (no recipe), so
-                // they're not something "rebuild from materials" can cover either - only
-                // bandages, via the checklist's own bandage goal.
-                BasePlayer liveNpc = survivor.Player;
-
-                if (liveNpc != null && !liveNpc.IsDestroyed && !HasCompletedPrimitiveGoals(survivor, liveNpc))
-                {
-                    _pursuingPrimitiveGoals.Add(character.Id);
-                    Puts($"'{character.Alias}' is missing part of its basic kit after respawning - rebuilding it at the base before resuming normal tasks.");
-                }
-
-                StartLootForResourcesTask(survivor);
-            }
-        });
+        // No primitive-checklist rebuild here (2026-10-03, Lucas's spec): a survivor that owns a base
+        // does NOT redo the from-scratch checklist after dying. The base trip's workshop
+        // (TryRunBaseWorkshop) rebuilds its kit from storage - a hatchet and pickaxe, then the best
+        // firearm it has learned (falling back to a crossbow/bow plus arrows if storage can't pay
+        // for one), bandages and clothing - and then it heads straight back out.
+        GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
     }
 
     /// <summary>
