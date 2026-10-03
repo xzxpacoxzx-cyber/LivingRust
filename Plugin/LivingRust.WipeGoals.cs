@@ -82,9 +82,11 @@ public partial class LivingRust
     /// </summary>
     private bool TryPursueAmmoCraftGoal(Survivor survivor, BasePlayer npc, LootTaskState state)
     {
-        List<string> known = survivor.Character.KnownAmmoTypes;
+        // Only for the firearms it is carrying RIGHT NOW (2026-10-03, Lucas's spec) - KnownAmmoTypes never
+        // shrinks, so it kept crafting ammo for guns the survivor no longer had.
+        HashSet<string> known = GetCarriedFirearmAmmoTypes(npc);
 
-        if (known == null || known.Count == 0)
+        if (known.Count == 0)
         {
             return false;
         }

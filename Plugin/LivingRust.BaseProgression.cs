@@ -1105,6 +1105,26 @@ public partial class LivingRust
         return bp != null && bp.userCraftable && bp.workbenchLevelRequired <= workbenchLevel && MaxAffordableBatches(npc, boxes, bp, batches) >= batches;
     }
 
+    /// <summary>
+    /// The ammo types of the firearms a survivor is actually carrying right now (main + belt). Ammo is only
+    /// ever crafted for these (2026-10-03, Lucas's spec: no ammo "for the sake of it") - not for weapons
+    /// it used to hold, nor for ones sitting in storage.
+    /// </summary>
+    private static HashSet<string> GetCarriedFirearmAmmoTypes(BasePlayer npc)
+    {
+        HashSet<string> types = new();
+
+        foreach (Item item in npc.inventory.containerMain.itemList.Concat(npc.inventory.containerBelt.itemList))
+        {
+            if (WeaponAmmoType.TryGetValue(item.info.shortname, out string ammo))
+            {
+                types.Add(ammo);
+            }
+        }
+
+        return types;
+    }
+
     private static bool HasToolBeyondStone(BasePlayer npc, string[] family)
     {
         return npc.inventory.containerMain.itemList.Concat(npc.inventory.containerBelt.itemList)
@@ -1324,7 +1344,7 @@ public partial class LivingRust
 
         if (gunpowderDef?.Blueprint != null && sulfurDef != null && charcoalDef != null && !failed.Contains("gunpowder"))
         {
-            int threshold = survivor.Character.KnownAmmoTypes != null && survivor.Character.KnownAmmoTypes.Count > 0 ? 100 : 300;
+            int threshold = GetCarriedFirearmAmmoTypes(npc).Count > 0 ? 100 : 300;
 
             if (CountOwned(npc, boxes, gunpowderDef) < GunpowderStockCap
                 && CountOwned(npc, boxes, sulfurDef) >= threshold
@@ -2356,7 +2376,14 @@ public partial class LivingRust
             .ToList();
 
         int ownedBestWeaponScore = 0;
-        HashSet<string> ownedAmmoTypes = new(survivor.Character.KnownAmmoTypes ?? new List<string>());
+        // Ammo goals only for guns it is actually carrying (not stored, not ones it once held).
+        HashSet<string> ownedAmmoTypes = GetCarriedFirearmAmmoTypes(npc);
+
+        if (npc.inventory.containerMain.itemList.Concat(npc.inventory.containerBelt.itemList).Any(i => i.info.shortname == "crossbow"))
+        {
+            ownedAmmoTypes.Add(ArrowShortname);
+        }
+
 
         foreach (Item item in everything)
         {
@@ -2368,15 +2395,6 @@ public partial class LivingRust
             }
 
             ownedBestWeaponScore = Math.Max(ownedBestWeaponScore, WeaponGearScore.TryGetValue(shortname, out int s) ? s : 1);
-
-            if (WeaponAmmoType.TryGetValue(shortname, out string ammo))
-            {
-                ownedAmmoTypes.Add(ammo);
-            }
-            else if (shortname == "crossbow")
-            {
-                ownedAmmoTypes.Add(ArrowShortname);
-            }
         }
 
         GoalCandidate Evaluate(string shortname, int category, int score)
