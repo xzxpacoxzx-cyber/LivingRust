@@ -614,6 +614,9 @@ public partial class LivingRust
     // additionally reward at Tier1 monument rewards however with a 60% chance."
     private const float Tier2ToolBonusChance = 60f;
 
+    // Every tool-bonus chance is 15% lower (2026-10-03, Lucas's request), relative: 40% -> 34%, 60% -> 51%.
+    private const float ToolBonusChanceMultiplier = 0.85f;
+
     private void TryGrantMonumentToolBonusReward(Survivor survivor, BasePlayer npc, MonumentTier tier)
     {
         _rewardCharacterId = survivor.Character.Id;
@@ -637,6 +640,8 @@ public partial class LivingRust
             default:
                 return;
         }
+
+        chance *= ToolBonusChanceMultiplier;
 
         if (!_guaranteeRewardRolls && UnityEngine.Random.Range(0f, 100f) >= chance)
         {
