@@ -496,15 +496,23 @@ public partial class LivingRust
                 continue;
             }
 
+            // Only dropped onto a real surface directly beneath the survivor, set down just above it with no
+            // throw: the old forward-and-up toss could spawn the stack inside geometry or over a missing
+            // collider, and it then fell to the world floor and was destroyed ("Invalid Position ... wood
+            // (destroying)" in the console, y about -500).
+            if (!Physics.Raycast(npc.transform.position + Vector3.up * 0.5f, Vector3.down, out RaycastHit groundHit, 2.5f, GravityGroundMask, QueryTriggerInteraction.Ignore))
+            {
+                continue;
+            }
+
             List<Item> toDrop = new();
             npc.inventory.Take(toDrop, def.itemid, excess);
 
-            Vector3 dropPosition = npc.transform.position + Vector3.up * 1f + npc.eyes.BodyForward() * 0.5f;
-            Vector3 dropVelocity = npc.eyes.BodyForward() * 0.5f + Vector3.up * 0.5f;
+            Vector3 dropPosition = groundHit.point + Vector3.up * 0.4f;
 
             foreach (Item item in toDrop)
             {
-                item.Drop(dropPosition, dropVelocity);
+                item.Drop(dropPosition, Vector3.zero);
             }
 
             Puts($"gather-cap: '{survivor.Character.Alias}' was carrying {excess} more {shortname} than its cap ({GetGatherCap(survivor, shortname)}) - dropped the excess.");
