@@ -291,6 +291,54 @@ public partial class LivingRust
     }
 
     // ============================================================
+    // Gather caps
+    // ============================================================
+
+    // Spare on top of a base design's cost (2026-10-03, Lucas's spec): wood, stone and metal fragments
+    // are gathered up to the design's requirement + 20%, the extra going into the tool cupboard.
+    private const float BaseGatherBufferFraction = 0.2f;
+
+    // While roaming with a base standing, wood and stone stop being gathered at this much carried.
+    // Metal ore / sulfur ore are never capped - they only stop when the survivor decides to go home.
+    private const int RoamingWoodStoneCap = 1000;
+
+    private static int GetBaseGatherTarget(string shortname, int designCost)
+    {
+        return shortname == WoodShortname || shortname == StoneShortname || shortname == "metal.fragments"
+            ? Mathf.CeilToInt(designCost * (1f + BaseGatherBufferFraction))
+            : designCost;
+    }
+
+    /// <summary>
+    /// How much of a raw resource this survivor should be carrying before it stops gathering it:
+    /// pre-base, its rolled design's requirement + 20% (a flat fallback before a design is rolled);
+    /// with a base, 1000 for wood/stone and no cap for ore.
+    /// </summary>
+    private int GetGatherCap(Survivor survivor, string shortname)
+    {
+        if (survivor.Character.Home != null)
+        {
+            return shortname == WoodShortname || shortname == StoneShortname ? RoamingWoodStoneCap : int.MaxValue;
+        }
+
+        if (_rolledBaseDesign.TryGetValue(survivor.Character.Id, out (string Tier, string DesignPath, Dictionary<string, int> Cost) rolled)
+            && rolled.Cost != null && rolled.Cost.TryGetValue(shortname, out int cost))
+        {
+            return GetBaseGatherTarget(shortname, cost);
+        }
+
+        return EnRoutePreDesignWoodCap;
+    }
+
+    private bool HasReachedGatherCap(Survivor survivor, BasePlayer npc, string shortname)
+    {
+        ItemDefinition def = ItemManager.FindItemDefinition(shortname);
+        int cap = GetGatherCap(survivor, shortname);
+
+        return def != null && cap != int.MaxValue && npc.inventory.GetAmount(def.itemid) >= cap;
+    }
+
+    // ============================================================
     // Resource-farming policy
     // ============================================================
 
@@ -300,10 +348,9 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Once a survivor has a base, bulk wood/stone farming (trees, stone nodes, wood/stone piles)
-    /// is dropped entirely - the bases were swimming in both while having no scrap, components or
-    /// guns. Metal/sulfur ore stays wanted, and everything else (hemp, berries, ...) is unchanged.
-    /// Pre-base behaviour is untouched (a base needs the wood/stone).
+    /// Once a survivor has a base, wood and stone are only picked up while it carries less than the
+    /// roaming cap (1000 each); metal/sulfur ore is always wanted, and everything else (hemp,
+    /// berries, ...) is unchanged. Pre-base behaviour is untouched (a base needs the wood/stone).
     /// </summary>
     private bool IsFarmedResourceWanted(Survivor survivor, IEnumerable<ItemAmount> yields)
     {
@@ -317,7 +364,17 @@ public partial class LivingRust
             return true;
         }
 
-        return !YieldsContain(yields, WoodShortname, StoneShortname);
+        BasePlayer npc = survivor.Player;
+
+        if (npc == null || npc.IsDestroyed)
+        {
+            return true;
+        }
+
+        bool atWoodCap = YieldsContain(yields, WoodShortname) && HasReachedGatherCap(survivor, npc, WoodShortname);
+        bool atStoneCap = YieldsContain(yields, StoneShortname) && HasReachedGatherCap(survivor, npc, StoneShortname);
+
+        return !atWoodCap && !atStoneCap;
     }
 
     // ============================================================
@@ -372,6 +429,29 @@ public partial class LivingRust
     // ============================================================
     // Deposit filter wrapper
     // ============================================================
+
+    /// <summary>
+    /// Moves every gunpowder stack the survivor is carrying (main, belt, worn backpack) into its boxes.
+    /// </summary>
+    private void BankCarriedGunpowder(BasePlayer npc, List<StorageContainer> boxes)
+    {
+        List<Item> carried = npc.inventory.containerMain.itemList
+            .Concat(npc.inventory.containerBelt.itemList)
+            .Concat(GetWornBackpack(npc)?.contents?.itemList ?? new List<Item>())
+            .Where(i => i.info.shortname == "gunpowder")
+            .ToList();
+
+        foreach (Item item in carried)
+        {
+            foreach (StorageContainer box in boxes)
+            {
+                if (box != null && !box.IsDestroyed && box.inventory != null && item.MoveToContainer(box.inventory))
+                {
+                    break;
+                }
+            }
+        }
+    }
 
     private bool ShouldDepositAtBaseFor(Survivor survivor, Item item)
     {
@@ -472,13 +552,13 @@ public partial class LivingRust
             string goal = survivor.Character.CraftGoal;
             ItemDefinition goalDef = string.IsNullOrEmpty(goal) ? null : ItemManager.FindItemDefinition(goal);
 
-            if (goalDef?.Blueprint != null && IsWeaponGoal(goal) && !npc.blueprints.IsUnlocked(goalDef)
+            if (goalDef?.Blueprint != null && RequiresResearchedBlueprint(goal) && !npc.blueprints.IsUnlocked(goalDef)
                 && goalDef.Blueprint.userCraftable && goalDef.Blueprint.workbenchLevelRequired <= workbenchLevel)
             {
                 target = goal;
             }
 
-            foreach (string shortname in target != null ? Array.Empty<string>() : WeaponGoalShortnames)
+            foreach (string shortname in target != null ? Array.Empty<string>() : WeaponAmmoType.Keys.ToArray())
             {
                 ItemDefinition def = ItemManager.FindItemDefinition(shortname);
                 ItemBlueprint bp = def?.Blueprint;
@@ -539,6 +619,7 @@ public partial class LivingRust
     private const int AmmoWorkshopRefillBelow = 120;
     private const int GunpowderStockCap = 1000;
     private const int GunpowderMaxBatchesPerJob = 40;
+    private const float GunpowderMaxCraftSeconds = 240f;
 
     // Missing recipe components for the best unlocked-but-unbuildable firearm, logged so it's
     // visible what each bot is waiting on (and which pickups the base is saving up for).
@@ -765,7 +846,7 @@ public partial class LivingRust
                 survivor.Character.CraftGoal = null;
             }
             else if (!failed.Contains(goal) && goalDef.category != ItemCategory.Ammunition
-                && (npc.blueprints.IsUnlocked(goalDef) || !IsWeaponGoal(goal))
+                && (npc.blueprints.IsUnlocked(goalDef) || !RequiresResearchedBlueprint(goal))
                 && CanWorkshopCraft(npc, boxes, goalDef, 1, wbLevel))
             {
                 return new WorkshopJob { Shortname = goal, Reason = "assessed craft goal" };
@@ -799,7 +880,7 @@ public partial class LivingRust
                 && CountOwned(npc, boxes, charcoalDef) >= threshold
                 && gunpowderDef.Blueprint.workbenchLevelRequired <= wbLevel)
             {
-                int batches = MaxAffordableBatches(npc, boxes, gunpowderDef.Blueprint, GunpowderMaxBatchesPerJob);
+                int batches = MaxAffordableBatches(npc, boxes, gunpowderDef.Blueprint, Math.Min(GunpowderMaxBatchesPerJob, Mathf.Max(1, Mathf.FloorToInt(GunpowderMaxCraftSeconds / Mathf.Max(0.5f, gunpowderDef.Blueprint.time)))));
 
                 if (batches >= 1)
                 {
@@ -845,7 +926,7 @@ public partial class LivingRust
 
             if (!hasCrossbow && !hasBow)
             {
-                if (crossbowDef?.Blueprint != null && !failed.Contains("crossbow") && npc.blueprints.IsUnlocked(crossbowDef)
+                if (crossbowDef?.Blueprint != null && !failed.Contains("crossbow")
                     && CanWorkshopCraft(npc, boxes, crossbowDef, 1, wbLevel))
                 {
                     return new WorkshopJob { Shortname = "crossbow", Reason = "fallback crossbow from storage" };
@@ -955,6 +1036,13 @@ public partial class LivingRust
                 RunLootHookSafely(survivor, nameof(EquipBestWeaponForDisplay), () => EquipBestWeaponForDisplay(survivor));
             }
 
+            // Gunpowder never leaves the base in the inventory: whatever is still carried (looted, or left
+            // over from a craft) is banked before the survivor goes back out.
+            if (endNpc != null && !endNpc.IsDestroyed)
+            {
+                BankCarriedGunpowder(endNpc, boxes);
+            }
+
             TryUpgradeBaseToMetal(survivor, boxes, () =>
             {
                 _workshopUntil.Remove(characterId);
@@ -1055,7 +1143,7 @@ public partial class LivingRust
         // Free research where the spec allows it: metal tools, basic clothing and gunpowder. Firearms
         // only come from the scrap-gated research, and ammunition blueprints are never free - both
         // have to be looted at monuments (picking the item up teaches the blueprint).
-        if (!npc.blueprints.IsUnlocked(def) && !IsWeaponGoal(job.Shortname) && def.category != ItemCategory.Ammunition)
+        if (!npc.blueprints.IsUnlocked(def) && !RequiresResearchedBlueprint(job.Shortname) && def.category != ItemCategory.Ammunition)
         {
             FreeUnlock(npc, def, job.Reason, survivor.Character.Alias);
         }
@@ -1109,8 +1197,24 @@ public partial class LivingRust
             }
         }
 
-        float delay = Mathf.Clamp(bp.time * job.Batches * WorkshopCraftTimeScale, 1f, WorkshopMaxSecondsPerCraft);
+        // Gunpowder is crafted for its REAL duration (2026-10-03, Lucas's spec) - the survivor stands at
+        // the bench for the whole batch - and the finished amount goes straight into storage, never the
+        // inventory. Everything else keeps the compressed craft time.
+        bool isGunpowder = job.Shortname == "gunpowder";
+        float delay = isGunpowder
+            ? Mathf.Max(1f, bp.time * job.Batches)
+            : Mathf.Clamp(bp.time * job.Batches * WorkshopCraftTimeScale, 1f, WorkshopMaxSecondsPerCraft);
         int produced = Mathf.Max(1, (int)bp.amountToCreate) * job.Batches;
+
+        // A long craft must not look like a stall to the watchdog or an abandoned door to the sweeper.
+        float exemptUntil = Time.realtimeSinceStartup + delay + 60f;
+        _workshopUntil[survivor.Character.Id] = Mathf.Max(_workshopUntil.GetValueOrDefault(survivor.Character.Id), exemptUntil);
+        _baseTripUntil[survivor.Character.Id] = Mathf.Max(_baseTripUntil.GetValueOrDefault(survivor.Character.Id), exemptUntil);
+
+        if (isGunpowder)
+        {
+            Puts($"workshop: '{survivor.Character.Alias}' is crafting {produced}x gunpowder - waiting {delay:F0}s for it to finish before banking it.");
+        }
 
         timer.Once(delay, () =>
         {
@@ -1124,13 +1228,18 @@ public partial class LivingRust
 
             foreach (Item crafted in CreateStackSizedItems(def, produced))
             {
+                if (isGunpowder && boxes.Any(b => b != null && !b.IsDestroyed && b.inventory != null && crafted.MoveToContainer(b.inventory)))
+                {
+                    continue;
+                }
+
                 if (!liveNpc.inventory.GiveItem(crafted))
                 {
                     crafted.Drop(liveNpc.transform.position + Vector3.up, Vector3.zero);
                 }
             }
 
-            Puts($"workshop: '{survivor.Character.Alias}' crafted {produced}x '{job.Shortname}' at its workbench ({job.Reason}).");
+            Puts($"workshop: '{survivor.Character.Alias}' crafted {produced}x '{job.Shortname}' at its workbench ({job.Reason}){(isGunpowder ? " and banked it in storage" : "")}.");
 
             // A garment is put on straight away, and never crafted twice in one visit even if it
             // turned out not to be an upgrade (the planner would otherwise keep re-planning it).
@@ -1559,6 +1668,16 @@ public partial class LivingRust
         return Array.IndexOf(WeaponGoalShortnames, shortname) >= 0;
     }
 
+    /// <summary>
+    /// Firearms need their blueprint researched or looted. The crossbow does not - it is craftable
+    /// from scratch at a tier-1 workbench (2 rope, 200 wood, 75 metal fragments) - so it is free-unlocked
+    /// like the other basics and never waits on research.
+    /// </summary>
+    private static bool RequiresResearchedBlueprint(string shortname)
+    {
+        return WeaponAmmoType.ContainsKey(shortname);
+    }
+
     private static bool IsCraftGoalSatisfied(BasePlayer npc, List<StorageContainer> boxes, ItemDefinition def)
     {
         if (def.category == ItemCategory.Ammunition)
@@ -1763,7 +1882,7 @@ public partial class LivingRust
 
             // Blueprints it doesn't have yet: a weapon needs its own (unless the scrap entitlement can
             // cover that) AND its ammunition's - ammo is never free research, it has to be looted.
-            if (category == 0 && !npc.blueprints.IsUnlocked(def) && researchLeft <= 0)
+            if (category == 0 && RequiresResearchedBlueprint(shortname) && !npc.blueprints.IsUnlocked(def) && researchLeft <= 0)
             {
                 candidate.MissingBlueprints.Add(shortname);
             }

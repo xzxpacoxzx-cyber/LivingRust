@@ -1715,7 +1715,7 @@ public partial class LivingRust
 
                 // Brings the first base trip forward (2026-10-03): the held checklist sleeping bag
                 // gets placed at the new base and the workshop (metal tools, clothing) gets its
-                // first run within ~45s instead of waiting out the usual 20-minute cycle.
+                // first run within ~45s instead of waiting out the usual 15-minute cycle.
                 _nextBaseReturnTime[survivor.Character.Id] = Time.realtimeSinceStartup + 30f;
 
                 // Once set, this flag is never cleared, so a tier0/tier1 build satisfies the

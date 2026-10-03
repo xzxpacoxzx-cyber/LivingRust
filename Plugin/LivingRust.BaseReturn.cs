@@ -13,7 +13,7 @@ public partial class LivingRust
     // bank its loot, so it doesn't stay out in the open too long. The trip is
     // skipped and re-assessed later whenever the survivor is looting a monument, in
     // a fight, or building. Any trip home restarts the cycle.
-    private const float BaseReturnCycleSeconds = 1200f;
+    private const float BaseReturnCycleSeconds = 900f;
     private const float BaseReturnDeferSeconds = 300f;
     private const float BaseReturnCheckIntervalSeconds = 15f;
     private const float BaseReturnMonumentMargin = 15f;
@@ -120,7 +120,7 @@ public partial class LivingRust
 
             MarkBaseVisit(characterId);
 
-            Puts($"base-return: '{survivor.Character.Alias}' is heading back to base on its 20-minute cycle.");
+            Puts($"base-return: '{survivor.Character.Alias}' is heading back to base on its 15-minute cycle.");
 
             CancelActiveMovement(survivor);
             CancelActiveAttack(characterId);

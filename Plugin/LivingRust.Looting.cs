@@ -3108,18 +3108,12 @@ public partial class LivingRust
     /// </summary>
     private bool HasEnoughWoodAlready(Survivor survivor, BasePlayer npc)
     {
+        // Design cost + 20% pre-base, 1000 carried once roaming with a base (see GetGatherCap).
         int have = ItemManager.FindItemDefinition(WoodShortname) is ItemDefinition woodDef
             ? npc.inventory.GetAmount(woodDef.itemid)
             : 0;
 
-        if (_rolledBaseDesign.TryGetValue(survivor.Character.Id, out (string Tier, string DesignPath, Dictionary<string, int> Cost) rolled)
-            && rolled.Cost != null
-            && rolled.Cost.TryGetValue(WoodShortname, out int designWoodCost))
-        {
-            return have >= designWoodCost + BaseGatherResourceBuffer;
-        }
-
-        return have >= EnRoutePreDesignWoodCap;
+        return have >= GetGatherCap(survivor, WoodShortname);
     }
 
     /// <summary>

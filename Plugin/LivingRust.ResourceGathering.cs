@@ -584,32 +584,19 @@ public partial class LivingRust
         {
             return false;
         }
-        // With a base standing (2026-10-03, Lucas's live audit: bases swimming in wood/stone with no
-        // scrap, components or guns) the last-resort gather no longer fells trees or mines plain
-        // stone at all - only sulfur (preferred) and metal ore, so a bot with nothing nearby to loot
-        // moves on to monuments/roads instead of grinding bulk resources.
-        bool postBase = survivor.Character.Home != null;
-
-        if (postBase)
-        {
-            _resourceGatherTypeLock.Remove(characterId);
-        }
-
         bool? lockedToTree = _resourceGatherTypeLock.TryGetValue(characterId, out bool locked) ? locked : (bool?)null;
 
-        // Unlike the ore quota below, hitting the wood quota while locked to trees releases
-        // the lock so this call falls through to the ore branch. HasEnoughWoodAlready is
-        // checked alongside WoodQuota since WoodQuota is blind to wood gained elsewhere.
-        if (lockedToTree == true && (HasReachedWoodQuota(characterId) || HasEnoughWoodAlready(survivor, npc)))
+        // Hitting the wood cap while locked to trees releases the lock so this call falls through to
+        // the ore branch. The cap is the rolled design's requirement + 20% before a base exists, and
+        // 1000 carried once roaming with one (see GetGatherCap) - not a flat per-life quota.
+        if (lockedToTree == true && HasEnoughWoodAlready(survivor, npc))
         {
-            Puts($"gather-task: '{survivor.Character.Alias}' has enough wood for now ({_totalWoodGathered.GetValueOrDefault(characterId):F0} gathered via this fallback) - switching to mining ore instead.");
+            Puts($"gather-task: '{survivor.Character.Alias}' has enough wood for now - switching to mining ore instead.");
             _resourceGatherTypeLock.Remove(characterId);
             lockedToTree = null;
         }
 
         if (lockedToTree != false
-            && !postBase
-            && !HasReachedWoodQuota(characterId)
             && !HasEnoughWoodAlready(survivor, npc)
             && HasAnyGatherCapableTool(npc, TreeGatherToolPriority)
             && _engine.NavigationManager.TryFindNearestTreeEntity(
@@ -637,43 +624,21 @@ public partial class LivingRust
             return false;
         }
 
-        if (postBase)
-        {
-            return TryStartPostBaseOreFallback(survivor, npc, state);
-        }
-
-        if (HasReachedOreQuota(survivor.Character.Id) || !HasAnyGatherCapableTool(npc, OreGatherToolPriority))
+        if (!HasAnyGatherCapableTool(npc, OreGatherToolPriority))
         {
             return false;
         }
 
-        if (_engine.NavigationManager.TryFindNearestOreResourceEntity(
-                npc.transform.position,
-                ResourceNodeSearchRadius,
-                out OreResourceEntity ore,
-                candidate => !state.Visited.Contains(candidate.net.ID)
-                    && !IsLootTargetClaimed(candidate.net.ID)
-                    && !IsInPoisonedZone(candidate.transform.position, state)
-                    && !IsInThreatFleeZone(survivor.Character.Id, candidate.transform.position)
-                    && !IsInMonumentAvoidZone(candidate.transform.position)
-                        && !IsBelowSafeLootDepth(candidate.transform.position)
-                    && !IsResourceNodePoisoned(candidate)
-                    // Ore restriction only needs the survivor to have a base, not a
-                    // completed deposit trip.
-                    && (survivor.Character.Home != null || !IsEarlyGameRestrictedOre(candidate))))
+        if (TryStartOreFallback(survivor, npc, state))
         {
-            state.Visited.Add(ore.net.ID);
-            ClaimLootTarget(state, ore.net.ID);
             _resourceGatherTypeLock[characterId] = false;
-            VerbosePuts($"gather-task: '{survivor.Character.Alias}' found nothing left to loot nearby - heading to a nearby ore node to mine instead.");
-            GatherOreAndContinue(survivor, ore, state);
             return true;
         }
 
         // Nothing within the normal search radius, so head toward the nearest monument
         // specifically, since quarries/mining outposts have dense ore clusters. See
         // StartExtendedOreSearch. Restricted to survivors pursuing base-gathering.
-        if (_pursuingBaseGatherGoal.Contains(characterId))
+        if (_pursuingBaseGatherGoal.Contains(characterId) && !HasReachedGatherCap(survivor, npc, StoneShortname))
         {
             StartExtendedOreSearch(survivor, npc, state);
             return true;
@@ -719,36 +684,16 @@ public partial class LivingRust
             && (y.itemDef.shortname == MetalOreShortname || y.itemDef.shortname == SulfurOreShortname));
     }
 
-    /// <summary>
-    /// Cumulative per-resource quota so raw resource farming doesn't crowd out
-    /// container/monument looting. Lifetime totals per survivor, tracked via
-    /// OnDispenserGathered and reset on death/respawn.
-    /// </summary>
-    private const float OreQuotaStone = 1000f;
-
-    private const float OreQuotaMetalOre = 1000f;
-
-    private const float OreQuotaSulfurOre = 1000f;
-
-    /// <summary>
-    /// Cumulative wood quota, tracked separately from the ore quotas since reaching it
-    /// releases the tree/ore lock and hands off to ore rather than just stopping.
-    /// </summary>
-    private const float WoodQuota = 1000f;
-
+    // Lifetime gathered totals per survivor (updated by OnDispenserGathered). No longer used for caps -
+    // gathering now stops on what is CARRIED against GetGatherCap - but still handy for diagnostics.
     private readonly Dictionary<Guid, float> _totalStoneGathered = new();
     private readonly Dictionary<Guid, float> _totalMetalOreGathered = new();
     private readonly Dictionary<Guid, float> _totalSulfurOreGathered = new();
     private readonly Dictionary<Guid, float> _totalWoodGathered = new();
 
-    private bool HasReachedWoodQuota(Guid characterId)
-    {
-        return _totalWoodGathered.GetValueOrDefault(characterId) >= WoodQuota;
-    }
-
     /// <summary>
     /// Carbon/Oxide hook that fires for every resource handed to a player. Tracks lifetime
-    /// stone/metal/sulfur ore and wood totals per survivor for the quota checks.
+    /// stone/metal/sulfur ore and wood totals per survivor.
     /// </summary>
     private void OnDispenserGathered(BasePlayer player, ItemAmount item, float f1, float f2, AttackEntity entity)
     {
@@ -784,19 +729,17 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// Post-base last-resort ore farming: sulfur first, then metal ore, each against its OWN quota
-    /// (the old shared HasReachedOreQuota stopped ALL mining the moment any one type hit 1000 -
-    /// plain stone, being everywhere, always won that race, which is why bases had piles of stone
-    /// and next to no metal or sulfur). Plain stone is never mined once a base exists.
+    /// Last-resort ore farming (2026-10-03, Lucas's spec). With a base: sulfur first, then metal ore -
+    /// neither capped, they only stop when the survivor decides to go home - then plain stone, which
+    /// stops at the 1000-carried roaming cap. Before a base: stone only (metal/sulfur stay restricted
+    /// until a base exists), up to the rolled design's stone requirement + 20%. This replaces the old
+    /// shared per-life 1000 quota, which let plain stone stop ALL mining and capped stone far below
+    /// what a base design actually costs.
     /// </summary>
-    private bool TryStartPostBaseOreFallback(Survivor survivor, BasePlayer npc, LootTaskState state)
+    private bool TryStartOreFallback(Survivor survivor, BasePlayer npc, LootTaskState state)
     {
         Guid characterId = survivor.Character.Id;
-
-        if (!HasAnyGatherCapableTool(npc, OreGatherToolPriority))
-        {
-            return false;
-        }
+        bool hasBase = survivor.Character.Home != null;
 
         bool Eligible(OreResourceEntity candidate) =>
             !state.Visited.Contains(candidate.net.ID)
@@ -807,43 +750,41 @@ public partial class LivingRust
             && !IsBelowSafeLootDepth(candidate.transform.position)
             && !IsResourceNodePoisoned(candidate);
 
-        (string Ore, float Total, float Quota)[] order =
-        {
-            (SulfurOreShortname, _totalSulfurOreGathered.GetValueOrDefault(characterId), OreQuotaSulfurOre),
-            (MetalOreShortname, _totalMetalOreGathered.GetValueOrDefault(characterId), OreQuotaMetalOre),
-        };
+        List<string> order = new();
 
-        foreach ((string ore, float total, float quota) in order)
+        if (hasBase)
         {
-            if (total >= quota)
-            {
-                continue;
-            }
+            order.Add(SulfurOreShortname);
+            order.Add(MetalOreShortname);
+        }
 
+        if (!HasReachedGatherCap(survivor, npc, StoneShortname))
+        {
+            order.Add(StoneShortname);
+        }
+
+        foreach (string ore in order)
+        {
             string wanted = ore;
 
             if (_engine.NavigationManager.TryFindNearestOreResourceEntity(
                     npc.transform.position,
                     ResourceNodeSearchRadius,
                     out OreResourceEntity node,
-                    candidate => Eligible(candidate) && YieldsContain(GetNodeYields(candidate), wanted)))
+                    candidate => Eligible(candidate)
+                        && YieldsContain(GetNodeYields(candidate), wanted)
+                        // Pre-base restriction: never a node that also drops metal/sulfur ore.
+                        && (hasBase || !IsEarlyGameRestrictedOre(candidate))))
             {
                 state.Visited.Add(node.net.ID);
                 ClaimLootTarget(state, node.net.ID);
-                VerbosePuts($"gather-task: '{survivor.Character.Alias}' found nothing left to loot nearby - heading to a nearby {ore} node (post-base: sulfur/metal only).");
+                VerbosePuts($"gather-task: '{survivor.Character.Alias}' found nothing left to loot nearby - heading to a nearby {ore} node.");
                 GatherOreAndContinue(survivor, node, state);
                 return true;
             }
         }
 
         return false;
-    }
-
-    private bool HasReachedOreQuota(Guid characterId)
-    {
-        return _totalStoneGathered.GetValueOrDefault(characterId) >= OreQuotaStone
-            || _totalMetalOreGathered.GetValueOrDefault(characterId) >= OreQuotaMetalOre
-            || _totalSulfurOreGathered.GetValueOrDefault(characterId) >= OreQuotaSulfurOre;
     }
 
     private readonly Dictionary<Guid, Timer> _extendedOreSearchTimers = new();
@@ -986,12 +927,12 @@ public partial class LivingRust
                 return;
             }
 
-            if (HasReachedOreQuota(characterId))
+            if (HasReachedGatherCap(survivor, currentNpc, StoneShortname))
             {
                 StopExtendedOreSearch(characterId);
                 CancelActiveMovement(survivor);
-                survivor.Character.CurrentTask = TaskType.None;
-                Puts($"gather-task: '{survivor.Character.Alias}' reached its ore quota (stone {_totalStoneGathered.GetValueOrDefault(characterId):F0}, metal {_totalMetalOreGathered.GetValueOrDefault(characterId):F0}, sulfur {_totalSulfurOreGathered.GetValueOrDefault(characterId):F0}) - idling in place.");
+                Puts($"gather-task: '{survivor.Character.Alias}' has all the stone its base design needs (+20%) - ending its ore search and carrying on.");
+                ContinueLootTask(survivor, state, forceLocalScan: true);
                 return;
             }
 

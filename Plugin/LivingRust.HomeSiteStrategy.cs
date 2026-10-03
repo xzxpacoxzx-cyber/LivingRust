@@ -247,7 +247,7 @@ public partial class LivingRust
 
     // Buffer gathered on top of a design's real construction cost, so the survivor arrives with
     // enough left over to also seed the new tool cupboard's upkeep.
-    private const int BaseGatherResourceBuffer = 1000;
+    // (The old flat BaseGatherResourceBuffer of 1000 is gone: targets are the design cost + 20%, see GetBaseGatherTarget.)
 
     // HammerShortname itself already exists (LivingRust.SpawnKits.cs) - reused, not redeclared.
     private const string BuildingPlannerShortname = "building.planner";
@@ -789,9 +789,7 @@ public partial class LivingRust
 
         foreach (KeyValuePair<string, int> requirement in rolled.Cost)
         {
-            int target = requirement.Key == "wood" || requirement.Key == "stones"
-                ? requirement.Value + BaseGatherResourceBuffer
-                : requirement.Value;
+            int target = GetBaseGatherTarget(requirement.Key, requirement.Value);
 
             int itemId = ItemManager.FindItemDefinition(requirement.Key)?.itemid ?? 0;
             int have = itemId != 0 ? npc.inventory.GetAmount(itemId) : 0;
@@ -1393,9 +1391,7 @@ public partial class LivingRust
 
         foreach (KeyValuePair<string, int> requirement in rolled.Cost)
         {
-            int target = requirement.Key == "wood" || requirement.Key == "stones"
-                ? requirement.Value + BaseGatherResourceBuffer
-                : requirement.Value;
+            int target = GetBaseGatherTarget(requirement.Key, requirement.Value);
 
             int itemId = ItemManager.FindItemDefinition(requirement.Key)?.itemid ?? 0;
 
