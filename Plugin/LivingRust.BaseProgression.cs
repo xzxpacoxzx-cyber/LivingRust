@@ -615,8 +615,8 @@ public partial class LivingRust
         ("hands", new[] { "roadsign.gloves", "burlap.gloves" }),
     };
 
-    private const int AmmoWorkshopStockTarget = 200;
-    private const int AmmoWorkshopRefillBelow = 120;
+    private const int AmmoWorkshopStockTarget = 120;
+    private const int AmmoWorkshopRefillBelow = 60;
     private const int GunpowderStockCap = 1000;
     private const int GunpowderMaxBatchesPerJob = 40;
     private const float GunpowderMaxCraftSeconds = 240f;
@@ -771,14 +771,22 @@ public partial class LivingRust
             }
         }
 
-        // 1-firearm. A learned firearm comes first after the tools (2026-10-03, Lucas's spec): best unlocked
-        // blueprint its bench and stores can build; only if none can be built does step 6 fall back to a
-        // crossbow/bow.
-        bool ownsFirearm = CountRealFirearms(npc) > 0
-            || boxes.Any(b => b != null && !b.IsDestroyed && b.inventory != null
-                && b.inventory.itemList.Any(i => WeaponAmmoType.ContainsKey(i.info.shortname)));
+        // 1-firearm. A learned firearm comes first after the tools (2026-10-03, Lucas's spec): the HIGHEST
+        // gear-scored one its bench and stores can build, and only a step up on what it already owns - so
+        // a survivor that has learned the AK never wants a revolver unless it can't pay for the AK. If
+        // none can be built, step 6 falls back to a crossbow/bow.
+        int ownedBestFirearmScore = 0;
 
-        if (!ownsFirearm)
+        foreach (Item owned in npc.inventory.containerMain.itemList
+            .Concat(npc.inventory.containerBelt.itemList)
+            .Concat(boxes.Where(b => b != null && !b.IsDestroyed && b.inventory != null).SelectMany(b => b.inventory.itemList)))
+        {
+            if (WeaponAmmoType.ContainsKey(owned.info.shortname))
+            {
+                ownedBestFirearmScore = Math.Max(ownedBestFirearmScore, WeaponGearScore.TryGetValue(owned.info.shortname, out int ownedScore) ? ownedScore : 1);
+            }
+        }
+
         {
             string wantedWeapon = null;
             int wantedScore = int.MinValue;
@@ -787,6 +795,12 @@ public partial class LivingRust
             {
                 ItemDefinition def = ItemManager.FindItemDefinition(shortname);
                 ItemBlueprint bp = def?.Blueprint;
+                int score = WeaponGearScore.TryGetValue(shortname, out int s) ? s : 0;
+
+                if (score <= ownedBestFirearmScore)
+                {
+                    break;
+                }
 
                 if (bp == null || !bp.userCraftable || failed.Contains(shortname) || !npc.blueprints.IsUnlocked(def) || bp.workbenchLevelRequired > wbLevel)
                 {
@@ -797,8 +811,6 @@ public partial class LivingRust
                 {
                     return new WorkshopJob { Shortname = shortname, Reason = "firearm from a researched blueprint" };
                 }
-
-                int score = WeaponGearScore.TryGetValue(shortname, out int s) ? s : 0;
 
                 if (wantedWeapon == null || score > wantedScore)
                 {
@@ -889,15 +901,27 @@ public partial class LivingRust
             }
         }
 
-        // 4. Ammunition for every ammo type the survivor's guns use.
+        // 4. Ammunition: never leaves the base with fewer than 60 of the ammo type of each firearm it is
+        // carrying (it doesn't need ammo for guns it isn't using), topped up toward 120.
         TryUnlockAmmoTypesFromWeapons(survivor, npc);
 
-        foreach (string ammoShortname in survivor.Character.KnownAmmoTypes ?? new List<string>())
+        HashSet<string> carriedAmmoTypes = new();
+
+        foreach (Item carriedItem in npc.inventory.containerMain.itemList.Concat(npc.inventory.containerBelt.itemList))
+        {
+            if (WeaponAmmoType.TryGetValue(carriedItem.info.shortname, out string carriedAmmo))
+            {
+                carriedAmmoTypes.Add(carriedAmmo);
+            }
+        }
+
+        foreach (string ammoShortname in carriedAmmoTypes)
         {
             ItemDefinition ammoDef = ItemManager.FindItemDefinition(ammoShortname);
             ItemBlueprint bp = ammoDef?.Blueprint;
 
-            // Ammo needs its blueprint LEARNED (looted at a monument) - never free research.
+            // Ammo needs its blueprint LEARNED - free only for the ammo of a weapon the survivor crafted
+            // itself (see ExecuteWorkshopJob), otherwise looted at a monument.
             if (bp == null || failed.Contains(ammoShortname) || !npc.blueprints.IsUnlocked(ammoDef)
                 || npc.inventory.GetAmount(ammoDef.itemid) >= AmmoWorkshopRefillBelow || bp.workbenchLevelRequired > wbLevel)
             {
@@ -1240,6 +1264,25 @@ public partial class LivingRust
             }
 
             Puts($"workshop: '{survivor.Character.Alias}' crafted {produced}x '{job.Shortname}' at its workbench ({job.Reason}){(isGunpowder ? " and banked it in storage" : "")}.");
+
+            // Crafting a firearm teaches its ammunition for free (revolver -> pistol bullets, semi-auto rifle /
+            // AK -> 5.56), so the survivor can then make ammo for the gun it just built.
+            if (WeaponAmmoType.TryGetValue(job.Shortname, out string weaponAmmo))
+            {
+                ItemDefinition weaponAmmoDef = ItemManager.FindItemDefinition(weaponAmmo);
+
+                if (weaponAmmoDef != null)
+                {
+                    FreeUnlock(liveNpc, weaponAmmoDef, $"crafted a {job.Shortname}", survivor.Character.Alias);
+                }
+
+                survivor.Character.KnownAmmoTypes ??= new List<string>();
+
+                if (!survivor.Character.KnownAmmoTypes.Contains(weaponAmmo))
+                {
+                    survivor.Character.KnownAmmoTypes.Add(weaponAmmo);
+                }
+            }
 
             // A garment is put on straight away, and never crafted twice in one visit even if it
             // turned out not to be an upgrade (the planner would otherwise keep re-planning it).
@@ -1887,7 +1930,9 @@ public partial class LivingRust
                 candidate.MissingBlueprints.Add(shortname);
             }
 
-            string neededAmmo = category == 0 ? GetAmmoShortnameForWeapon(shortname) : category == 1 ? shortname : null;
+            // A firearm's own ammo blueprint is NOT a missing one: crafting the weapon teaches it for free.
+            // Only an ammunition goal (ammo for a weapon it already owns) can still be waiting on one.
+            string neededAmmo = category == 1 ? shortname : null;
             ItemDefinition neededAmmoDef = neededAmmo != null ? ItemManager.FindItemDefinition(neededAmmo) : null;
 
             if (neededAmmoDef != null && !npc.blueprints.IsUnlocked(neededAmmoDef) && !candidate.MissingBlueprints.Contains(neededAmmo))
