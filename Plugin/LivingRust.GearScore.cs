@@ -623,6 +623,18 @@ public partial class LivingRust
                 tierZero *= 0.3f;
                 tier1 *= 0.7f;
                 local *= 0.25f;
+
+                // Still missing a weapon / ammunition blueprint its craft goal needs: those only
+                // come from looting, so monuments become priority #1 - no roadside scavenging, no
+                // "search right here", and the bigger monuments (richest loot) lean heavier.
+                if (HasWantedBlueprints(survivor))
+                {
+                    tierZero = 0f;
+                    local = 0f;
+                    tier1 *= 0.5f;
+                    tier2 *= 1.5f;
+                    tier3 *= 1.5f;
+                }
             }
             (tierZero, tier1, tier2, tier3) = ApplyKeycardTierDestinationBias(npc, tierZero, tier1, tier2, tier3);
 

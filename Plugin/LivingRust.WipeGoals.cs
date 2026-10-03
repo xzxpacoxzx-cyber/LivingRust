@@ -735,14 +735,32 @@ public partial class LivingRust
 
         ItemModDeployable modDeployable = boxDef.GetComponent<ItemModDeployable>();
 
-        if (modDeployable == null || !_engine.NavigationManager.TryGetGroundHeight(npc.transform.position, out float groundHeight))
+        if (modDeployable == null)
         {
             return;
         }
 
-        Vector3 position = npc.transform.position;
-        position.y = groundHeight;
-        Quaternion rotation = Quaternion.LookRotation(Vector3.up, npc.eyes.BodyForward()) * Quaternion.Euler(90f, 0f, 0f);
+        Vector3 position;
+        Vector3 facing = npc.eyes.BodyForward();
+
+        // Prefer a genuinely clear spot on the base's own floor (nothing overlapping, floor underneath);
+        // the old behaviour - wherever the survivor happens to be standing - is the fallback.
+        if (TryFindFreeStorageSpot(survivor, npc, out Vector3 freeSpot, out Vector3 spotFacing))
+        {
+            position = freeSpot;
+            facing = spotFacing;
+        }
+        else if (_engine.NavigationManager.TryGetGroundHeight(npc.transform.position, out float groundHeight))
+        {
+            position = npc.transform.position;
+            position.y = groundHeight;
+        }
+        else
+        {
+            return;
+        }
+
+        Quaternion rotation = Quaternion.LookRotation(Vector3.up, facing) * Quaternion.Euler(90f, 0f, 0f);
 
         BaseEntity boxEntity = GameManager.server.CreateEntity(modDeployable.entityPrefab.resourcePath, position, rotation);
 

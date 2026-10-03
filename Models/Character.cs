@@ -160,6 +160,13 @@ namespace LivingRust.Models
         public string CraftGoal { get; set; }
 
         /// <summary>
+        /// Blueprints (shortnames) the craft goal still needs that this character doesn't know -
+        /// the weapon's own and/or its ammunition's. While any are outstanding it prioritises
+        /// looting monuments, where picking up a weapon/ammo/tool/attire teaches its blueprint.
+        /// </summary>
+        public List<string> WantedBlueprints { get; set; } = new();
+
+        /// <summary>
         /// Last place this character died and what killed it, used to stop it revisiting a
         /// death site that killed it the same way twice. Persisted so a reload doesn't forget.
         /// </summary>

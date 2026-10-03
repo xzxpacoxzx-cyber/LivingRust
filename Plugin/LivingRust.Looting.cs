@@ -6708,6 +6708,9 @@ public partial class LivingRust
 
             moved += DepositUpkeepPortion(arrivedNpc, cupboard);
 
+            // Then topped up to the standing upkeep minimums from what it carries and what its boxes hold.
+            moved += TopUpCupboardUpkeep(survivor, arrivedNpc, cupboard);
+
             onComplete?.Invoke(moved);
         },
         onFailed: () => onComplete?.Invoke(0));

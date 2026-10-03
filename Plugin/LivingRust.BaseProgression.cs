@@ -758,7 +758,9 @@ public partial class LivingRust
             ItemDefinition ammoDef = ItemManager.FindItemDefinition(ammoShortname);
             ItemBlueprint bp = ammoDef?.Blueprint;
 
-            if (bp == null || failed.Contains(ammoShortname) || npc.inventory.GetAmount(ammoDef.itemid) >= AmmoWorkshopRefillBelow || bp.workbenchLevelRequired > wbLevel)
+            // Ammo needs its blueprint LEARNED (looted at a monument) - never free research.
+            if (bp == null || failed.Contains(ammoShortname) || !npc.blueprints.IsUnlocked(ammoDef)
+                || npc.inventory.GetAmount(ammoDef.itemid) >= AmmoWorkshopRefillBelow || bp.workbenchLevelRequired > wbLevel)
             {
                 continue;
             }
@@ -994,9 +996,10 @@ public partial class LivingRust
             return;
         }
 
-        // Free research where the spec allows it: metal tools, basic clothing, gunpowder and ammo for
-        // guns it actually owns. Firearms are never unlocked here - those cost scrap-gated research.
-        if (!npc.blueprints.IsUnlocked(def) && !IsWeaponGoal(job.Shortname))
+        // Free research where the spec allows it: metal tools, basic clothing and gunpowder. Firearms
+        // only come from the scrap-gated research, and ammunition blueprints are never free - both
+        // have to be looted at monuments (picking the item up teaches the blueprint).
+        if (!npc.blueprints.IsUnlocked(def) && !IsWeaponGoal(job.Shortname) && def.category != ItemCategory.Ammunition)
         {
             FreeUnlock(npc, def, job.Reason, survivor.Character.Alias);
         }
@@ -1083,6 +1086,169 @@ public partial class LivingRust
 
             next();
         });
+    }
+
+    // ============================================================
+    // Finding room for another storage box
+    // ============================================================
+
+    // Rough footprint of a large wooden box (half extents), used to test a candidate spot for clearance.
+    private static readonly Vector3 StorageBoxHalfExtents = new(0.65f, 0.3f, 0.45f);
+    private const float StorageSpotMinRadius = 1.6f;
+    private const float StorageSpotRadiusStep = 0.8f;
+    private const int StorageSpotAngleSteps = 16;
+    private const float StorageSpotFloorTolerance = 0.5f;
+
+    /// <summary>
+    /// Searches in widening rings around the base's tool cupboard for a spot where a new box fits:
+    /// real floor underneath at the cupboard's own height (so it stays inside the base on the same
+    /// storey), nothing solid in its footprint, and not on top of an existing box. This needs no
+    /// CSV involvement at all - the base's layout was a fixed trace replay, but the extra box is
+    /// a free-form bolt-on placed by looking at what is physically there.
+    /// </summary>
+    private bool TryFindFreeStorageSpot(Survivor survivor, BasePlayer npc, out Vector3 position, out Vector3 facing)
+    {
+        position = default;
+        facing = Vector3.forward;
+
+        HomeBase home = survivor.Character.Home;
+
+        if (home == null)
+        {
+            return false;
+        }
+
+        BuildingPrivlidge cupboard = FindOwnedCupboard(home);
+        Vector3 origin = cupboard != null ? cupboard.transform.position : home.Position;
+        int mask = LayerMask.GetMask("Construction", "Deployed", "World", "Terrain", "Default");
+        int floorMask = LayerMask.GetMask("Construction", "Terrain", "World");
+
+        for (float radius = StorageSpotMinRadius; radius <= HomeInteriorRadius; radius += StorageSpotRadiusStep)
+        {
+            // A random starting angle so successive boxes don't all stack in the same corner.
+            float startAngle = UnityEngine.Random.Range(0f, 360f);
+
+            for (int step = 0; step < StorageSpotAngleSteps; step++)
+            {
+                float angle = (startAngle + step * (360f / StorageSpotAngleSteps)) * Mathf.Deg2Rad;
+                Vector3 probe = origin + new Vector3(Mathf.Cos(angle) * radius, 1.2f, Mathf.Sin(angle) * radius);
+
+                if (!Physics.Raycast(probe, Vector3.down, out RaycastHit floorHit, 2.5f, floorMask, QueryTriggerInteraction.Ignore)
+                    || Mathf.Abs(floorHit.point.y - origin.y) > StorageSpotFloorTolerance + 0.3f)
+                {
+                    continue;
+                }
+
+                Vector3 center = floorHit.point + Vector3.up * (StorageBoxHalfExtents.y + 0.05f);
+                Quaternion orientation = Quaternion.LookRotation(new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)));
+
+                if (Physics.CheckBox(center, StorageBoxHalfExtents, orientation, mask, QueryTriggerInteraction.Ignore))
+                {
+                    continue;
+                }
+
+                position = floorHit.point;
+                facing = (origin - position).normalized;
+                facing.y = 0f;
+
+                if (facing.sqrMagnitude < 0.01f)
+                {
+                    facing = Vector3.forward;
+                }
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // ============================================================
+    // Tool cupboard upkeep top-up
+    // ============================================================
+
+    // What the tool cupboard is kept stocked with on every return trip (2026-10-03, Lucas's spec).
+    // "Top up TO", not "add this much each trip": a cupboard already at the level is left alone.
+    private static readonly (string Shortname, int Target)[] CupboardUpkeepTargets =
+    {
+        ("stones", 500),
+        ("metal.fragments", 100),
+        ("metal.refined", 5),
+        ("wood", 500),
+    };
+
+    /// <summary>
+    /// Tops the survivor's tool cupboard up to CupboardUpkeepTargets, drawing first on what the
+    /// survivor is carrying (it's just come home with it) and then on its own storage boxes. Only
+    /// uses what it actually owns - a base with no high-quality metal simply skips that line.
+    /// Returns how many stacks went in.
+    /// </summary>
+    private int TopUpCupboardUpkeep(Survivor survivor, BasePlayer npc, BuildingPrivlidge cupboard)
+    {
+        HomeBase home = survivor.Character.Home;
+
+        if (home == null || cupboard == null || cupboard.IsDestroyed || cupboard.inventory == null)
+        {
+            return 0;
+        }
+
+        List<StorageContainer> boxes = FindOwnedStorageBoxesNear(npc, home.Position, HomeStorageSearchRadius);
+        int moved = 0;
+
+        foreach ((string shortname, int target) in CupboardUpkeepTargets)
+        {
+            ItemDefinition def = ItemManager.FindItemDefinition(shortname);
+
+            if (def == null || !cupboard.allowedConstructionItems.Contains(def))
+            {
+                continue;
+            }
+
+            int need = target - cupboard.inventory.GetAmount(def.itemid, onlyUsableAmounts: false);
+
+            if (need <= 0)
+            {
+                continue;
+            }
+
+            // 1. What the survivor is carrying.
+            List<Item> carried = new();
+            npc.inventory.Take(carried, def.itemid, need);
+
+            foreach (Item item in carried)
+            {
+                int amount = item.amount;
+
+                if (item.MoveToContainer(cupboard.inventory))
+                {
+                    need -= amount;
+                    moved++;
+                }
+                else
+                {
+                    // Cupboard slot full: hand it back rather than lose it.
+                    item.MoveToContainer(npc.inventory.containerMain);
+                }
+            }
+
+            // 2. Whatever is still short comes out of its own storage.
+            if (need > 0)
+            {
+                int withdrawn = WithdrawUpToAmount(boxes, shortname, need, cupboard.inventory);
+
+                if (withdrawn > 0)
+                {
+                    moved++;
+                }
+            }
+        }
+
+        if (moved > 0)
+        {
+            VerbosePuts($"home-storage: '{survivor.Character.Alias}' topped its tool cupboard up ({moved} stack(s) added).");
+        }
+
+        return moved;
     }
 
     // ============================================================
@@ -1393,6 +1559,65 @@ public partial class LivingRust
         public int Score;
         public bool Affordable;
         public List<string> Missing = new();
+        public List<string> MissingBlueprints = new();
+    }
+
+    private static string GetAmmoShortnameForWeapon(string weapon)
+    {
+        if (WeaponAmmoType.TryGetValue(weapon, out string ammo))
+        {
+            return ammo;
+        }
+
+        return weapon == "crossbow" ? ArrowShortname : null;
+    }
+
+    /// <summary>
+    /// Drops wanted blueprints the survivor has since learned, and says whether any are still
+    /// outstanding. While they are, it prioritises monument looting (see
+    /// TryStartWithGearWeightedDestination).
+    /// </summary>
+    private bool HasWantedBlueprints(Survivor survivor)
+    {
+        List<string> wanted = survivor.Character.WantedBlueprints;
+        BasePlayer npc = survivor.Player;
+
+        if (wanted == null || wanted.Count == 0 || npc == null || npc.IsDestroyed || npc.blueprints == null)
+        {
+            return false;
+        }
+
+        wanted.RemoveAll(shortname =>
+        {
+            ItemDefinition def = ItemManager.FindItemDefinition(shortname);
+            return def == null || npc.blueprints.IsUnlocked(def);
+        });
+
+        return wanted.Count > 0;
+    }
+
+    /// <summary>
+    /// Called when a survivor learns a blueprint from a pickup (LivingRust.Blueprints.cs). Once the
+    /// last blueprint its craft goal was waiting on arrives, it is due home to craft it.
+    /// </summary>
+    private void NoteBlueprintLearned(Survivor survivor, ItemDefinition learned)
+    {
+        List<string> wanted = survivor.Character.WantedBlueprints;
+
+        if (wanted == null || !wanted.Remove(learned.shortname))
+        {
+            return;
+        }
+
+        if (wanted.Count == 0 && survivor.Character.Home != null)
+        {
+            _nextBaseReturnTime[survivor.Character.Id] = Time.realtimeSinceStartup + 30f;
+            Puts($"assess: '{survivor.Character.Alias}' just learned the last blueprint its craft goal '{survivor.Character.CraftGoal}' was waiting on ('{learned.shortname}') - due home to craft it.");
+        }
+        else
+        {
+            Puts($"assess: '{survivor.Character.Alias}' learned a blueprint its craft goal was waiting on ('{learned.shortname}'); {wanted.Count} still outstanding.");
+        }
     }
 
     /// <summary>
@@ -1480,7 +1705,22 @@ public partial class LivingRust
                 }
             }
 
-            candidate.Affordable = candidate.Missing.Count == 0;
+            // Blueprints it doesn't have yet: a weapon needs its own (unless the scrap entitlement can
+            // cover that) AND its ammunition's - ammo is never free research, it has to be looted.
+            if (category == 0 && !npc.blueprints.IsUnlocked(def) && researchLeft <= 0)
+            {
+                candidate.MissingBlueprints.Add(shortname);
+            }
+
+            string neededAmmo = category == 0 ? GetAmmoShortnameForWeapon(shortname) : category == 1 ? shortname : null;
+            ItemDefinition neededAmmoDef = neededAmmo != null ? ItemManager.FindItemDefinition(neededAmmo) : null;
+
+            if (neededAmmoDef != null && !npc.blueprints.IsUnlocked(neededAmmoDef) && !candidate.MissingBlueprints.Contains(neededAmmo))
+            {
+                candidate.MissingBlueprints.Add(neededAmmo);
+            }
+
+            candidate.Affordable = candidate.Missing.Count == 0 && candidate.MissingBlueprints.Count == 0;
             return candidate;
         }
 
@@ -1492,7 +1732,7 @@ public partial class LivingRust
             int score = WeaponGearScore.TryGetValue(shortname, out int s) ? s : 1;
             ItemDefinition def = ItemManager.FindItemDefinition(shortname);
 
-            if (def == null || score <= ownedBestWeaponScore || (!npc.blueprints.IsUnlocked(def) && researchLeft <= 0))
+            if (def == null || score <= ownedBestWeaponScore)
             {
                 continue;
             }
@@ -1542,6 +1782,7 @@ public partial class LivingRust
         {
             chosen = pool.Where(c => c.Category == category)
                 .OrderByDescending(c => c.Affordable)
+                .ThenBy(c => c.MissingBlueprints.Count)
                 .ThenBy(c => c.Missing.Count)
                 .ThenByDescending(c => c.Score)
                 .FirstOrDefault();
@@ -1552,11 +1793,13 @@ public partial class LivingRust
         if (chosen == null)
         {
             survivor.Character.CraftGoal = null;
+            survivor.Character.WantedBlueprints = new List<string>();
             Puts($"{header} - nothing worth aiming for with what it has and can research right now.");
             return;
         }
 
         survivor.Character.CraftGoal = chosen.Shortname;
+        survivor.Character.WantedBlueprints = new List<string>(chosen.MissingBlueprints);
 
         if (chosen.Category == 1 && survivor.Character.KnownAmmoTypes != null && !survivor.Character.KnownAmmoTypes.Contains(chosen.Shortname))
         {
@@ -1565,7 +1808,14 @@ public partial class LivingRust
 
         string[] categoryNames = { "weapon", "ammunition", "armour/clothing" };
 
-        if (chosen.Affordable)
+        if (chosen.MissingBlueprints.Count > 0)
+        {
+            // Blueprints can't be bought: the survivor has to go and find them. Picking up a weapon /
+            // ammo / tool / attire at a monument teaches it on the spot, so monument looting becomes
+            // its first priority (TryStartWithGearWeightedDestination) until they turn up.
+            Puts($"{header} - wants a {categoryNames[chosen.Category]} next: '{chosen.Shortname}', but doesn't know the blueprint(s) for {string.Join(", ", chosen.MissingBlueprints)} - going out to loot monuments for them as its first priority{(chosen.Missing.Count > 0 ? $"; will also need {string.Join(", ", chosen.Missing)}" : "")}.");
+        }
+        else if (chosen.Affordable)
         {
             _nextBaseReturnTime[survivor.Character.Id] = Time.realtimeSinceStartup + 10f;
             Puts($"{header} - wants a {categoryNames[chosen.Category]} next: '{chosen.Shortname}', and it can afford it now - heading home to craft it.");

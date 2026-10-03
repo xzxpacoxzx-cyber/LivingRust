@@ -1,4 +1,5 @@
 using System;
+using LivingRust.Models;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -64,6 +65,13 @@ public partial class LivingRust
             owner.blueprints.Unlock(item.info);
             Puts($"blueprint: '{owner.displayName}' learned the '{item.info.shortname}' blueprint on pickup (workbench level {blueprint.workbenchLevelRequired}).");
             TryUpgradeBaseTierForLearnedBlueprint(owner, blueprint);
+
+            Survivor learner = FindSurvivorByPlayer(owner);
+
+            if (learner != null)
+            {
+                NoteBlueprintLearned(learner, item.info);
+            }
         }
         catch (Exception ex)
         {
