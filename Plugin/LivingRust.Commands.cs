@@ -1494,7 +1494,13 @@ public partial class LivingRust
         // Re-syncs the agent's position via Warp before it is reused, so a stale disabled agent doesn't snap the survivor to an outdated tracked position.
         // Only warps when a real on-mesh point exists nearby, so a survivor standing off-mesh (e.g. inside their own base) is left untouched and the hand-built fallback takes over instead.
         // Only enables the agent once real navmesh coverage is confirmed, to avoid a spurious "no valid NavMesh" warning; otherwise it stays disabled and the hand-built fallback takes over.
-        if (NavMesh.SamplePosition(npc.transform.position, out NavMeshHit onMeshHit, NativeAgentWarpMaxSnapDistance, NavMesh.AllAreas))
+        // Sampled for the FOLLOW agent type specifically (2026-10-04): the plain AllAreas overload checks the
+        // default agent type, so a spot with default-type navmesh but none for FollowAgentTypeID passed, the
+        // agent was enabled anyway, and Unity logged "Failed to create agent because there is no valid NavMesh"
+        // (hundreds of times a minute across the population).
+        NavMeshQueryFilter followFilter = new() { agentTypeID = FollowAgentTypeID, areaMask = FollowAgentAreaMask };
+
+        if (NavMesh.SamplePosition(npc.transform.position, out NavMeshHit onMeshHit, NativeAgentWarpMaxSnapDistance, followFilter))
         {
             unityAgent.enabled = true;
             unityAgent.Warp(npc.transform.position);

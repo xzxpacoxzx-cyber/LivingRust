@@ -85,6 +85,9 @@ public partial class LivingRust : CarbonPlugin
         // Lets stationary survivors fall back to the ground (floating-bot fix).
         StartGravitySweep();
 
+        // One-line-a-minute summary of the routine log lines that are no longer printed individually.
+        StartLogSummary();
+
         // Drives the crafting queue, since a disconnected survivor's own
         // ItemCrafter needs this manual push.
         StartCraftQueueDriver();
@@ -132,6 +135,7 @@ public partial class LivingRust : CarbonPlugin
         StopBaseReturnScheduler();
         StopDoorSweeper();
         StopGravitySweep();
+        StopLogSummary();
         StopCraftQueueDriver();
 
         // Captures every spawned survivor's live position/health/inventory into its
