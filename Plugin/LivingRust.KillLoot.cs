@@ -88,12 +88,13 @@ public partial class LivingRust
     }
 
     /// <summary>
-    /// A hatchet, jackhammer, bone knife or combat knife (any of them, none preferred) - a rock alone
-    /// doesn't make the trip worthwhile.
+    /// A hatchet, jackhammer, bone knife or combat knife (any of them, none preferred). A rock alone only
+    /// counts for a naked, base-less survivor - the one that most needs the cloth, meat and fat, and is
+    /// allowed to gather with a rock anyway (HasAnyGatherCapableTool). Everyone else crafts a real tool.
     /// </summary>
     private bool HasAnimalHarvestTool(BasePlayer npc)
     {
-        return HasAnyGatherCapableTool(npc, AnimalHarvestToolPriority.Where(tool => tool != "rock").ToArray());
+        return HasAnyGatherCapableTool(npc, AnimalHarvestToolPriority);
     }
 
     /// <summary>
