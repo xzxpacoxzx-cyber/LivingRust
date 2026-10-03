@@ -166,6 +166,7 @@ public partial class LivingRust
         foreach (ItemContainer container in all)
         {
             torches += PurgeTorches(container);
+            PurgeUnholdableItems(container);
             splits += SplitOversizedStacks(container, home.Position, overflowTargets);
         }
 
@@ -175,12 +176,76 @@ public partial class LivingRust
         }
 
         torches += PurgeTorches(npc.inventory.containerMain) + PurgeTorches(npc.inventory.containerBelt);
+        PurgeUnholdableItems(npc);
         splits += SplitOversizedStacks(npc.inventory.containerMain, npc.transform.position, overflowTargets);
         splits += SplitOversizedStacks(npc.inventory.containerBelt, npc.transform.position, overflowTargets);
 
         if (torches > 0 || splits > 0)
         {
             Puts($"home-storage: '{survivor.Character.Alias}' base cleanup - destroyed {torches} torch(es), split {splits} oversized stack(s).");
+        }
+    }
+
+    // ============================================================
+    // Items bots must never hold
+    // ============================================================
+
+    // Impossible for a real player to loot (the outbreak scientist suit), so no bot keeps one: refused at
+    // pickup (NeverLootShortnames), removed the moment one lands in a bot's inventory, and swept out of
+    // every survivor and every base box at startup / on each base trip.
+    private static readonly string[] UnholdableItemShortnames = { "oubreak_scientist" };
+
+    private static bool IsUnholdableItem(Item item)
+    {
+        return item?.info != null && Array.IndexOf(UnholdableItemShortnames, item.info.shortname) >= 0;
+    }
+
+    private static int PurgeUnholdableItems(ItemContainer container)
+    {
+        if (container == null)
+        {
+            return 0;
+        }
+
+        int removed = 0;
+
+        foreach (Item item in new List<Item>(container.itemList))
+        {
+            if (IsUnholdableItem(item))
+            {
+                item.Remove();
+                removed++;
+            }
+        }
+
+        return removed;
+    }
+
+    private int PurgeUnholdableItems(BasePlayer npc)
+    {
+        if (npc == null || npc.IsDestroyed)
+        {
+            return 0;
+        }
+
+        return PurgeUnholdableItems(npc.inventory.containerMain)
+            + PurgeUnholdableItems(npc.inventory.containerBelt)
+            + PurgeUnholdableItems(npc.inventory.containerWear)
+            + PurgeUnholdableItems(GetWornBackpack(npc)?.contents);
+    }
+
+    private void PurgeUnholdableItemsFromAllSurvivors()
+    {
+        int removed = 0;
+
+        foreach (Survivor survivor in _engine.SurvivorManager.GetAll())
+        {
+            removed += PurgeUnholdableItems(survivor.Player);
+        }
+
+        if (removed > 0)
+        {
+            Puts($"unholdable: removed {removed} outbreak scientist suit(s) from survivors' inventories.");
         }
     }
 

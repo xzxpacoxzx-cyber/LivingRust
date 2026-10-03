@@ -31,6 +31,19 @@ public partial class LivingRust
             return;
         }
 
+        if (IsUnholdableItem(item) && FindSurvivorByPlayer(owner) != null)
+        {
+            // Removed shortly after - destroying an item from inside its own add hook is unsafe.
+            timer.Once(0.1f, () =>
+            {
+                if (item != null && item.parent == container)
+                {
+                    item.Remove();
+                }
+            });
+            return;
+        }
+
         ItemBlueprint blueprint = item.info.Blueprint;
 
         if (blueprint == null

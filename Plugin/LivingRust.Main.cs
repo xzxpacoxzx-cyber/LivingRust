@@ -72,6 +72,9 @@ public partial class LivingRust : CarbonPlugin
         // Clears out any bot-owned sleeping bags left hanging in the air by earlier placements.
         RemoveFloatingBotBags(new HashSet<ulong>(_engine.SurvivorManager.GetAll().Select(s => s.Character.BotId)));
 
+        // Outbreak scientist suits are impossible for players to loot, so no bot keeps one.
+        PurgeUnholdableItemsFromAllSurvivors();
+
         // Starts on-sight combat detection.
         StartOnSightDetection();
 

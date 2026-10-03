@@ -4694,6 +4694,9 @@ public partial class LivingRust
         "bone.fragments", "humanmeat.raw", "skull.human", "grub", "worm",
         "heavy.plate.helmet", "heavy.plate.jacket", "heavy.plate.pants",
         "rock", "binoculars", "smallwaterbottle", "egg",
+        // The outbreak scientist suit (Rust's own spelling) - impossible for a real player to loot, so bots
+        // never pick it up or keep it either (2026-10-04, Lucas: TwistedWanderer was wearing one).
+        "oubreak_scientist",
     };
 
     /// <summary>
