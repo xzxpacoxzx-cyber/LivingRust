@@ -103,7 +103,8 @@ public partial class LivingRust
             total++;
 
             // Dry land only: a dropped crate that sank into the sea, or sits at an oil rig, is not worth a trip.
-            if (crate.wasDropped && !crate.IsFullyHacked()
+            // Not parented to anything: a cargo ship crate rides the ship and is not a drop to wait at.
+            if (crate.wasDropped && !crate.IsFullyHacked() && crate.GetParentEntity() == null
                 && WaterLevel.GetWaterLevel(crate.transform.position, waves: false) <= crate.transform.position.y + 0.3f)
             {
                 RegisterChinookCrate(crate, 0f);
