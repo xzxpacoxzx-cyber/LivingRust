@@ -25,7 +25,7 @@ public partial class LivingRust
     private const float ChinookCrateSourceRadius = 150f;
 
     // Upper bound on a whole hack event (hack timer plus the loot scramble) before participants give up.
-    private const float AirdropHackEventLifetimeSeconds = 1500f;
+    private const float AirdropHackEventLifetimeSeconds = 2700f;
 
     private void OnHackableCrateSpawned(HackableLockedCrate crate)
     {

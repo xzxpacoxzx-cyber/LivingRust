@@ -230,7 +230,10 @@ public partial class LivingRust
                 continue;
             }
 
-            if (!info.Landed && info.Participants.Count < AirdropMaxParticipants && RecruitForAirdrop(info, maxNew: 1) > 0)
+            // A hack event lasts 15+ minutes, so a lost participant is replaced even after the crate has landed.
+            bool stillRecruiting = !info.Landed || (info.Drop is HackableLockedCrate crate && !IsHackComplete(crate));
+
+            if (stillRecruiting && info.Participants.Count < AirdropMaxParticipants && RecruitForAirdrop(info, maxNew: 1) > 0)
             {
                 Puts($"airdrop: a runner was lost - the next survivor in the queue is heading out ({info.Participants.Count}/{AirdropMaxParticipants}).");
             }
@@ -317,6 +320,13 @@ public partial class LivingRust
 
         if (IsBaseBuildInFlight(survivor.Character.Id) || _activeCombat.ContainsKey(survivor.Character.Id))
         {
+            if (info.Drop is HackableLockedCrate)
+            {
+                // A hack event is long: finish the fight, then set out.
+                timer.Once(5f, () => BeginAirdropJourney(survivor, info, rally, scheduledNpc));
+                return;
+            }
+
             // Mid-build or mid-fight: sits this drop out rather than abandoning it.
             info.Participants.Remove(survivor.Character.Id);
             return;
@@ -360,6 +370,7 @@ public partial class LivingRust
         Puts($"airdrop: '{survivor.Character.Alias}' setting out for the drop zone ({Vector3.Distance(npc.transform.position, rally):F0}m to its rally point).");
 
         bool arrived = false;
+        int journeyRetries = 0;
         Guid characterId = survivor.Character.Id;
 
         void StartJourneyWalk()
@@ -375,10 +386,19 @@ public partial class LivingRust
                 },
                 onFailed: () =>
                 {
-                    if (!arrived)
+                    if (arrived)
                     {
-                        EndAirdropParticipation(survivor, resume: true);
+                        return;
                     }
+
+                    // A hack event is worth a few more tries before giving up on the walk.
+                    if (info.Drop is HackableLockedCrate && !info.Done && ++journeyRetries <= 4)
+                    {
+                        timer.Once(3f, StartJourneyWalk);
+                        return;
+                    }
+
+                    EndAirdropParticipation(survivor, resume: true);
                 });
         }
 
@@ -651,6 +671,16 @@ public partial class LivingRust
                 leaveTimer.Destroy();
                 EquipBestWeaponForDisplay(survivor);
                 Puts($"airdrop: '{survivor.Character.Alias}' has what it came for - leaving the drop zone.");
+
+                if (info.Drop is HackableLockedCrate && survivor.Character.Home != null)
+                {
+                    // The haul goes home and into storage (the normal base trip also handles gear upgrades).
+                    EndAirdropParticipation(survivor, resume: false);
+                    Puts($"chinook-crate: '{survivor.Character.Alias}' is taking the crate loot home.");
+                    GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
+                    return;
+                }
+
                 EndAirdropParticipation(survivor, resume: true);
             }
         });
