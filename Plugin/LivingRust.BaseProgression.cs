@@ -1977,9 +1977,9 @@ public partial class LivingRust
 
                 if (!liveNpc.inventory.GiveItem(crafted))
                 {
-                    if (crafted.info.GetComponent<ItemModWearable>() != null && IsLowTierArmor(crafted.info.shortname))
+                    if (crafted.info.GetComponent<ItemModWearable>() != null)
                     {
-                        crafted.Remove();
+                        DisposeOfSpareClothing(liveNpc, crafted);
                     }
                     else
                     {

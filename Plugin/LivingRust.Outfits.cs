@@ -153,7 +153,7 @@ public partial class LivingRust
 
     /// <summary>
     /// Puts on every catalogue garment sitting in the inventory that outranks what it would replace. The
-    /// displaced cheap clothing is destroyed rather than carried around.
+    /// displaced clothing is banked or dropped rather than carried around.
     /// </summary>
     private void WearOutfitFromInventory(BasePlayer npc)
     {
@@ -183,11 +183,38 @@ public partial class LivingRust
 
             foreach (Item displaced in conflicting)
             {
-                displaced.Remove();
+                DisposeOfSpareClothing(npc, displaced);
             }
 
             carried.MoveToContainer(npc.inventory.containerWear);
         }
+    }
+
+    /// <summary>
+    /// A spare garment: banked in a storage box when the survivor is at its base (and one has room), dropped on the
+    /// ground when it is out in the field (2026-10-04, Lucas's spec).
+    /// </summary>
+    private void DisposeOfSpareClothing(BasePlayer npc, Item item)
+    {
+        if (npc == null || npc.IsDestroyed || item == null)
+        {
+            return;
+        }
+
+        HomeBase home = FindSurvivorByPlayer(npc)?.Character.Home;
+
+        if (home != null && Vector3.Distance(npc.transform.position, home.Position) <= HomeStorageSearchRadius)
+        {
+            foreach (StorageContainer box in FindOwnedStorageBoxesNear(npc, home.Position, HomeStorageSearchRadius))
+            {
+                if (box != null && !box.IsDestroyed && box.inventory != null && item.MoveToContainer(box.inventory))
+                {
+                    return;
+                }
+            }
+        }
+
+        item.Drop(npc.transform.position + Vector3.up + npc.eyes.BodyForward() * 0.5f, npc.eyes.BodyForward() * 0.5f + Vector3.up * 0.5f);
     }
 
     /// <summary>
@@ -223,7 +250,7 @@ public partial class LivingRust
 
         foreach (Item displaced in conflicting)
         {
-            displaced.Remove();
+            DisposeOfSpareClothing(npc, displaced);
         }
 
         return crafted.MoveToContainer(npc.inventory.containerWear);

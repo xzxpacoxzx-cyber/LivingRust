@@ -4430,19 +4430,10 @@ public partial class LivingRust
                 VerbosePuts($"loot-task: '{survivor.Character.Alias}' equipped '{candidate.info.shortname}' (protection {candidateScore:F2} vs {conflictingScore:F2}) - replacing: {replacedNote}.");
 
                 // Drops the outclassed pieces for real instead of letting them pile up as clutter in main inventory.
+                // At its base the spare goes into a storage box, out in the field it is dropped (2026-10-04, Lucas).
                 foreach (Item displaced in conflicting)
                 {
-                    // Cheap clothing is simply discarded - it was being left lying around inside bases (2026-10-04).
-                    if (IsLowTierArmor(displaced.info.shortname))
-                    {
-                        displaced.Remove();
-                        continue;
-                    }
-
-                    Vector3 dropPosition = npc.transform.position + Vector3.up * 1f + npc.eyes.BodyForward() * 0.5f;
-                    Vector3 dropVelocity = npc.eyes.BodyForward() * 0.5f + Vector3.up * 0.5f;
-
-                    displaced.Drop(dropPosition, dropVelocity);
+                    DisposeOfSpareClothing(npc, displaced);
                 }
             }
         }
@@ -4486,18 +4477,7 @@ public partial class LivingRust
                 continue;
             }
 
-            if (IsLowTierArmor(item.info.shortname))
-            {
-                // Cheap clothing is discarded rather than dropped as litter on the ground.
-                item.Remove();
-            }
-            else
-            {
-                Vector3 dropPosition = npc.transform.position + Vector3.up * 1f + npc.eyes.BodyForward() * 0.5f;
-                Vector3 dropVelocity = npc.eyes.BodyForward() * 0.5f + Vector3.up * 0.5f;
-
-                item.Drop(dropPosition, dropVelocity);
-            }
+            DisposeOfSpareClothing(npc, item);
 
             string reason = lowTierDuplicateOfWorn ? "a low-tier duplicate of what's already worn" : "worse than what's already worn";
             VerbosePuts($"'{survivor.Character.Alias}' dropped redundant '{item.info.shortname}' - {reason}.");
