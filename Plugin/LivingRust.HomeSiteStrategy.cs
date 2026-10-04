@@ -250,7 +250,7 @@ public partial class LivingRust
 
     // Base spreading (2026-10-04): a rolled home site keeps this far from every other base, and from the shore
     // while the search is young. Both relax as attempts run out so a crowded map still yields a site.
-    private const float BaseSpreadSiteMinDistance = 300f;
+    private const float BaseSpreadSiteMinDistance = 50f;
     private const float BaseSpreadBuildMinDistance = 150f;
     private const float InlandCoastAvoidDistance = 120f;
 
