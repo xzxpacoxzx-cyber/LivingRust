@@ -85,12 +85,79 @@ public partial class LivingRust
     /// </summary>
     private void AdoptExistingDroppedCrates()
     {
+        int total = 0;
+        int adopted = 0;
+
         foreach (BaseNetworkable networkable in BaseNetworkable.serverEntities.ToList())
         {
-            if (networkable is HackableLockedCrate crate && !crate.IsDestroyed && crate.wasDropped && crate.IsLocked())
+            if (networkable is not HackableLockedCrate crate || crate.IsDestroyed)
+            {
+                continue;
+            }
+
+            total++;
+
+            if (crate.wasDropped && crate.IsLocked())
             {
                 RegisterChinookCrate(crate, 0f);
+                adopted++;
             }
+        }
+
+        Puts($"chinook-crate: startup scan found {total} hackable crate(s), adopted {adopted} dropped locked one(s).");
+    }
+
+    [ChatCommand("lr.debug.crates")]
+    private void CmdDebugCrates(BasePlayer player, string command, string[] args)
+    {
+        RunDebugCrates(player, args.Length > 0 && args[0].Equals("adopt", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [ConsoleCommand("lr.debug.crates")]
+    private void CmdDebugCratesConsole(ConsoleSystem.Arg arg)
+    {
+        BasePlayer player = arg.Player();
+
+        if (player != null)
+        {
+            RunDebugCrates(player, arg.HasArgs() && arg.Args[0].Equals("adopt", StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    /// <summary>
+    /// Lists every hackable crate (position, distance, dropped / locked / hacking) and, with "adopt", registers the
+    /// nearest locked one as a Chinook-crate event regardless of how it spawned - for testing a forced drop.
+    /// </summary>
+    private void RunDebugCrates(BasePlayer player, bool adopt)
+    {
+        HackableLockedCrate nearest = null;
+        float nearestDistance = float.MaxValue;
+        int count = 0;
+
+        foreach (BaseNetworkable networkable in BaseNetworkable.serverEntities.ToList())
+        {
+            if (networkable is not HackableLockedCrate crate || crate.IsDestroyed)
+            {
+                continue;
+            }
+
+            count++;
+            float distance = Vector3.Distance(player.transform.position, crate.transform.position);
+            player.ChatMessage($"[LivingRust] crate at {crate.transform.position} ({distance:F0}m): dropped={crate.wasDropped}, locked={crate.IsLocked()}, hacking={crate.IsBeingHacked()}");
+
+            if (crate.IsLocked() && distance < nearestDistance)
+            {
+                nearest = crate;
+                nearestDistance = distance;
+            }
+        }
+
+        player.ChatMessage($"[LivingRust] {count} hackable crate(s) on the map.");
+
+        if (adopt && nearest != null)
+        {
+            RegisterChinookCrate(nearest, 0f);
+            player.ChatMessage($"[LivingRust] registered the nearest locked crate ({nearestDistance:F0}m away) as a hack event.");
         }
     }
 
