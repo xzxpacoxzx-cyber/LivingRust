@@ -502,7 +502,7 @@ public partial class LivingRust
                 || (info.Landed && now > info.ExpectedLandTime + (info.Drop is HackableLockedCrate ? AirdropHackEventLifetimeSeconds : AirdropPostLandLifetimeSeconds)))
             {
                 poll.Destroy();
-                EndAirdropParticipation(survivor, resume: true);
+                FinishAirdropAndBank(survivor, info);
                 return;
             }
 
@@ -644,58 +644,51 @@ public partial class LivingRust
 
         info.LooterId = characterId;
         Puts($"airdrop: '{survivor.Character.Alias}' got to the crate first and is looting it.");
-        LootContainerAndContinue(survivor, info.Drop, new LootTaskState());
-        LeaveAirdropSoon(survivor, info);
+        LootContainerDirectly(survivor, info.Drop, new LootTaskState(), onDone: () => FinishAirdropLoot(survivor, info));
     }
 
-    // The looter equips its best weapon and leaves once the crate is empty or a
-    // short grace period passes, but never mid-fight; the hot-zone on-sight rule
-    // stays active until it actually leaves.
-    private const float AirdropLeaveAfterLootSeconds = 20f;
-
-    private void LeaveAirdropSoon(Survivor survivor, AirdropInfo info)
+    /// <summary>
+    /// Called the moment the looter has emptied the crate into its inventory: re-equips its best weapon (waiting out
+    /// any fight first - it never leaves mid-fight), then takes the haul home.
+    /// </summary>
+    private void FinishAirdropLoot(Survivor survivor, AirdropInfo info)
     {
-        float startedAt = Time.realtimeSinceStartup;
-        bool armed = false;
-        Timer leaveTimer = null;
+        BasePlayer npc = survivor.Player;
 
-        leaveTimer = timer.Every(3f, () =>
+        if (npc == null || npc.IsDestroyed || survivor.Character.State == CharacterState.Dead || !_airdropParticipants.ContainsKey(survivor.Character.Id))
         {
-            BasePlayer npc = survivor.Player;
+            return;
+        }
 
-            if (npc == null || npc.IsDestroyed || survivor.Character.State == CharacterState.Dead || !_airdropParticipants.ContainsKey(survivor.Character.Id))
-            {
-                leaveTimer.Destroy();
-                return;
-            }
+        if (_activeCombat.ContainsKey(survivor.Character.Id))
+        {
+            timer.Once(3f, () => FinishAirdropLoot(survivor, info));
+            return;
+        }
 
-            if (!armed && Time.realtimeSinceStartup - startedAt >= 8f)
-            {
-                armed = true;
-                EquipBestWeaponForDisplay(survivor);
-            }
+        EquipBestWeaponForDisplay(survivor);
+        Puts($"airdrop: '{survivor.Character.Alias}' has what it came for - leaving the drop zone.");
+        FinishAirdropAndBank(survivor, info, force: true);
+    }
 
-            bool crateEmpty = info.Drop == null || info.Drop.IsDestroyed || info.Drop.inventory == null || info.Drop.inventory.itemList.Count == 0;
-            bool graceOver = Time.realtimeSinceStartup - startedAt >= AirdropLeaveAfterLootSeconds;
+    /// <summary>
+    /// Ends a survivor's part in an event. One that carries anything beyond its kit (the crate haul, loot from the
+    /// bodies it checked) and has a base walks home and deposits it; the rest simply go back to normal tasks.
+    /// </summary>
+    private void FinishAirdropAndBank(Survivor survivor, AirdropInfo info, bool force = false)
+    {
+        BasePlayer npc = survivor.Player;
 
-            if ((crateEmpty || graceOver) && !_activeCombat.ContainsKey(survivor.Character.Id))
-            {
-                leaveTimer.Destroy();
-                EquipBestWeaponForDisplay(survivor);
-                Puts($"airdrop: '{survivor.Character.Alias}' has what it came for - leaving the drop zone.");
+        if (npc != null && !npc.IsDestroyed && survivor.Character.State != CharacterState.Dead
+            && survivor.Character.Home != null && (force || CountChinookSurplusStacks(npc) >= 1))
+        {
+            EndAirdropParticipation(survivor, resume: false);
+            Puts($"airdrop: '{survivor.Character.Alias}' is taking the loot home.");
+            GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
+            return;
+        }
 
-                if (survivor.Character.Home != null)
-                {
-                    // The haul goes home and into storage (the normal base trip also handles gear upgrades).
-                    EndAirdropParticipation(survivor, resume: false);
-                    Puts($"airdrop: '{survivor.Character.Alias}' is taking the loot home.");
-                    GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
-                    return;
-                }
-
-                EndAirdropParticipation(survivor, resume: true);
-            }
-        });
+        EndAirdropParticipation(survivor, resume: true);
     }
 
     private const float AirdropLateArrivalRunAwayChance = 0.5f;
