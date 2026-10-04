@@ -263,6 +263,13 @@ public partial class LivingRust
     /// </summary>
     private bool TryPursueOutfitCraft(Survivor survivor, BasePlayer npc, LootTaskState state)
     {
+        // Clothing waits until the starter checklist (bag, bandages, bow, arrows) is done - it was eating the cloth those
+        // goals need and sending survivors on cloth-gathering trips (2026-10-04 log review).
+        if (_pursuingPrimitiveGoals.Contains(survivor.Character.Id))
+        {
+            return false;
+        }
+
         ItemCrafter crafter = npc.inventory.crafting;
 
         if (crafter == null || crafter.queue.Count > 0)
