@@ -32,6 +32,9 @@ public partial class LivingRust
         public float ExpectedLandTime;
         public LootContainer Drop;
         public Guid HackerId;
+        public readonly Dictionary<Guid, int> Deaths = new();
+        public readonly HashSet<Guid> ReturnQueue = new();
+        public float NextReturnCheck;
         public bool Landed;
         public bool Done;
         public Vector3 LastDropPosition;
@@ -174,10 +177,7 @@ public partial class LivingRust
 
     private int RecruitForAirdrop(AirdropInfo info, int maxNew = int.MaxValue)
     {
-        if (info.Drop is HackableLockedCrate)
-        {
-            LogCrateRecruitReasons(info);
-        }
+        LogCrateRecruitReasons(info);
 
         List<Survivor> candidates = _engine.SurvivorManager.GetAll()
             .Where(s => s.Player != null && !s.Player.IsDestroyed
@@ -186,7 +186,7 @@ public partial class LivingRust
                 && !_airdropParticipants.ContainsKey(s.Character.Id)
                 && !_activeCombat.ContainsKey(s.Character.Id)
                 && !IsBaseBuildInFlight(s.Character.Id)
-                && (!(info.Drop is HackableLockedCrate) || IsFitForCrateHack(s))
+                && IsFitForCrateHack(s)
                 && Vector3.Distance(s.Player.transform.position, info.Position) <= AirdropMaxTravelDistance)
             .OrderBy(_ => UnityEngine.Random.value)
             .ToList();
@@ -202,7 +202,7 @@ public partial class LivingRust
 
             // Weaker gear means more interest, though geared survivors are never fully disinterested.
             // A hack event is a fight for armed survivors, so well-geared ones are far keener on it than on a supply drop.
-            float interest = Mathf.Clamp(0.9f - GetGearScore(survivor.Player) / 100f, info.Drop is HackableLockedCrate ? 0.75f : 0.35f, 0.9f);
+            float interest = Mathf.Clamp(0.9f - GetGearScore(survivor.Player) / 100f, 0.75f, 0.9f);
 
             if (UnityEngine.Random.value > interest)
             {
@@ -228,6 +228,22 @@ public partial class LivingRust
             if (info.Done || !info.Participants.Remove(characterId))
             {
                 continue;
+            }
+
+            // King of the hill: a bot that dies at the event gears up again and comes back, up to three deaths,
+            // then gives up on this one for good.
+            int deaths = info.Deaths[characterId] = info.Deaths.GetValueOrDefault(characterId) + 1;
+            string alias = _engine.SurvivorManager.Get(characterId)?.Character.Alias ?? characterId.ToString();
+
+            if (deaths < AirdropMaxDeathsPerEvent)
+            {
+                info.ReturnQueue.Add(characterId);
+                Puts($"airdrop: '{alias}' died at the event (death {deaths}/{AirdropMaxDeathsPerEvent}) - it will gear back up and return.");
+            }
+            else
+            {
+                info.ReturnQueue.Remove(characterId);
+                Puts($"airdrop: '{alias}' has died {deaths} times at this event - giving up on it.");
             }
 
             // A hack event lasts 15+ minutes, so a lost participant is replaced even after the crate has landed.
@@ -320,22 +336,14 @@ public partial class LivingRust
 
         if (IsBaseBuildInFlight(survivor.Character.Id) || _activeCombat.ContainsKey(survivor.Character.Id))
         {
-            if (info.Drop is HackableLockedCrate)
-            {
-                // A hack event is long: finish the fight, then set out.
-                timer.Once(5f, () => BeginAirdropJourney(survivor, info, rally, scheduledNpc));
-                return;
-            }
-
-            // Mid-build or mid-fight: sits this drop out rather than abandoning it.
-            info.Participants.Remove(survivor.Character.Id);
+            // Finish the fight (or the build), then set out - an event is long enough to wait for.
+            timer.Once(5f, () => BeginAirdropJourney(survivor, info, rally, scheduledNpc));
             return;
         }
 
         // A hack event is a fight, not a loot run: a survivor with a base banks everything that is not weapon,
         // ammunition, clothing or medical supplies first, then sets out (2026-10-04, Lucas).
-        if (info.Drop is HackableLockedCrate
-            && !_chinookDepositDone.Contains(survivor.Character.Id)
+        if (!_chinookDepositDone.Contains(survivor.Character.Id)
             && CountChinookSurplusStacks(npc) >= ChinookSurplusStacksBeforeDeposit)
         {
             _chinookDepositDone.Add(survivor.Character.Id);
@@ -392,7 +400,7 @@ public partial class LivingRust
                     }
 
                     // A hack event is worth a few more tries before giving up on the walk.
-                    if (info.Drop is HackableLockedCrate && !info.Done && ++journeyRetries <= 4)
+                    if (!info.Done && ++journeyRetries <= 4)
                     {
                         timer.Once(3f, StartJourneyWalk);
                         return;
@@ -502,7 +510,6 @@ public partial class LivingRust
             // better weapon while idle and not moving in. At a hack event everyone checks the bodies around the
             // crate - ammo, medical supplies and gear - before starting the hack (2026-10-04, Lucas).
             if (!movingIn
-                && (info.Drop is HackableLockedCrate || !HasReadyRangedWeapon(npc))
                 && !_activeMovement.ContainsKey(survivor.Character.Id)
                 && !_activeCombat.ContainsKey(survivor.Character.Id)
                 && !_activeAttacks.ContainsKey(survivor.Character.Id)
@@ -540,15 +547,18 @@ public partial class LivingRust
             if (hackPending && info.Landed)
             {
                 DriveCrateHack(survivor, info, npc);
+            }
 
-                if (now >= nextRoamAt
-                    && !_activeMovement.ContainsKey(survivor.Character.Id)
-                    && !_activeCombat.ContainsKey(survivor.Character.Id)
-                    && !_activeAttacks.ContainsKey(survivor.Character.Id))
-                {
-                    nextRoamAt = now + UnityEngine.Random.Range(6f, 16f);
-                    RoamAroundCrate(survivor, info);
-                }
+            // Waiting for the drop to land, or for a hack to finish: patrol the area rather than stand still.
+            if ((!info.Landed || hackPending)
+                && !movingIn
+                && now >= nextRoamAt
+                && !_activeMovement.ContainsKey(survivor.Character.Id)
+                && !_activeCombat.ContainsKey(survivor.Character.Id)
+                && !_activeAttacks.ContainsKey(survivor.Character.Id))
+            {
+                nextRoamAt = now + UnityEngine.Random.Range(6f, 16f);
+                RoamAroundCrate(survivor, info);
             }
 
             bool cautious = GetGearScore(npc) > AirdropCautiousGearScore;
@@ -588,9 +598,11 @@ public partial class LivingRust
         monitor = timer.Every(AirdropPollSeconds, () =>
         {
             UpdateAirdropLanded(info);
+            ProcessAirdropReturns(info);
 
-            if (info.Done || Time.realtimeSinceStartup > info.ExpectedLandTime + 900f)
+            if (info.Done || Time.realtimeSinceStartup > info.ExpectedLandTime + (info.Drop is HackableLockedCrate ? AirdropHackEventLifetimeSeconds + 300f : 900f))
             {
+                info.ReturnQueue.Clear();
                 monitor.Destroy();
             }
         });
@@ -672,11 +684,11 @@ public partial class LivingRust
                 EquipBestWeaponForDisplay(survivor);
                 Puts($"airdrop: '{survivor.Character.Alias}' has what it came for - leaving the drop zone.");
 
-                if (info.Drop is HackableLockedCrate && survivor.Character.Home != null)
+                if (survivor.Character.Home != null)
                 {
                     // The haul goes home and into storage (the normal base trip also handles gear upgrades).
                     EndAirdropParticipation(survivor, resume: false);
-                    Puts($"chinook-crate: '{survivor.Character.Alias}' is taking the crate loot home.");
+                    Puts($"airdrop: '{survivor.Character.Alias}' is taking the loot home.");
                     GhostReturnHomeAndDeposit(survivor, () => StartLootForResourcesTask(survivor));
                     return;
                 }

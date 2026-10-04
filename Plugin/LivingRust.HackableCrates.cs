@@ -169,6 +169,72 @@ public partial class LivingRust
         }
     }
 
+    // ---- king of the hill: dead participants come back ----
+
+    private const int AirdropMaxDeathsPerEvent = 3;
+    private const float AirdropReturnCheckSeconds = 8f;
+
+    /// <summary>
+    /// A survivor that died at the event rejoins once it is alive again, geared (ready ranged weapon with ammo) and
+    /// not carrying a pack of loot - the same fit rules as the first time. It gives up after its third death.
+    /// </summary>
+    private void ProcessAirdropReturns(AirdropInfo info)
+    {
+        float now = Time.realtimeSinceStartup;
+
+        if (info.ReturnQueue.Count == 0 || now < info.NextReturnCheck)
+        {
+            return;
+        }
+
+        info.NextReturnCheck = now + AirdropReturnCheckSeconds;
+
+        // Nothing left to fight over: the crate is gone, empty, or the event has run its course.
+        bool crateGone = info.Drop != null && (info.Drop.IsDestroyed
+            || (IsLooseCrate(info.Drop) && info.Drop.inventory != null && info.Drop.inventory.itemList.Count == 0));
+        bool expired = info.Landed && now > info.ExpectedLandTime + (info.Drop is HackableLockedCrate ? AirdropHackEventLifetimeSeconds : AirdropPostLandLifetimeSeconds);
+
+        if (crateGone || expired)
+        {
+            info.ReturnQueue.Clear();
+            return;
+        }
+
+        foreach (Guid id in info.ReturnQueue.ToList())
+        {
+            Survivor survivor = _engine.SurvivorManager.Get(id);
+            BasePlayer npc = survivor?.Player;
+
+            if (survivor == null || npc == null || npc.IsDestroyed || survivor.Character.State == CharacterState.Dead || npc.IsWounded())
+            {
+                continue;
+            }
+
+            if (_airdropParticipants.ContainsKey(id) || info.Participants.Contains(id))
+            {
+                info.ReturnQueue.Remove(id);
+                continue;
+            }
+
+            if (_activeCombat.ContainsKey(id) || IsBaseBuildInFlight(id)
+                || Vector3.Distance(npc.transform.position, info.Position) > AirdropMaxTravelDistance
+                || !IsFitForCrateHack(survivor))
+            {
+                continue;
+            }
+
+            info.ReturnQueue.Remove(id);
+            Puts($"airdrop: '{survivor.Character.Alias}' is geared up again and heading back to the event (death {info.Deaths.GetValueOrDefault(id)}/{AirdropMaxDeathsPerEvent}).");
+            ScheduleAirdropJourney(survivor, info);
+        }
+    }
+
+    // A crate that was locked and is now open (or a supply drop) - one whose emptiness means it has been looted out.
+    private static bool IsLooseCrate(LootContainer drop)
+    {
+        return drop is not HackableLockedCrate locked || IsHackComplete(locked);
+    }
+
     // ---- what a hack-event participant carries ----
 
     private const int ChinookSurplusStacksBeforeDeposit = 3;
@@ -282,7 +348,7 @@ public partial class LivingRust
             }
         }
 
-        Puts($"chinook-crate: recruit check at {info.Position} - {alive} alive: {fit} eligible, {unarmed} without a ready ranged weapon + ammo, {tooFar} beyond {AirdropMaxTravelDistance:F0}m, {busy} fighting/building, {loaded} loaded with loot and no base nearby, {already} already in an event.");
+        Puts($"airdrop: recruit check at {info.Position} - {alive} alive: {fit} eligible, {unarmed} without a ready ranged weapon + ammo, {tooFar} beyond {AirdropMaxTravelDistance:F0}m, {busy} fighting/building, {loaded} loaded with loot and no base nearby, {already} already in an event.");
     }
 
     private static bool IsHackComplete(HackableLockedCrate crate)
