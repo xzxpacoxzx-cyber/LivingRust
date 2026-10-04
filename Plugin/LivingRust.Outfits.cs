@@ -191,6 +191,45 @@ public partial class LivingRust
     }
 
     /// <summary>
+    /// Puts a freshly crafted garment straight onto the survivor when it outranks everything it would replace
+    /// (displaced cheap clothing is destroyed). False when it is not an upgrade - the caller then keeps it in the
+    /// inventory for the normal armour evaluation.
+    /// </summary>
+    private bool TryWearCraftedGarment(BasePlayer npc, Item crafted)
+    {
+        ItemModWearable wearable = crafted.info.GetComponent<ItemModWearable>();
+
+        if (wearable == null)
+        {
+            return false;
+        }
+
+        int rank = OutfitCatalogue.Where(c => c.Shortname == crafted.info.shortname).Select(c => c.Rank).FirstOrDefault();
+
+        if (rank == 0)
+        {
+            ArmorTier tier = GetArmorTier(crafted.info.shortname);
+            rank = (int)tier * 10 + (tier == ArmorTier.Basic ? 4 : 0);
+        }
+
+        List<Item> conflicting = npc.inventory.containerWear.itemList
+            .Where(w => w.info.GetComponent<ItemModWearable>() is ItemModWearable ww && !wearable.CanExistWith(ww))
+            .ToList();
+
+        if (conflicting.Any(w => GetWornOutfitRank(w) >= rank || !IsLowTierArmor(w.info.shortname)))
+        {
+            return false;
+        }
+
+        foreach (Item displaced in conflicting)
+        {
+            displaced.Remove();
+        }
+
+        return crafted.MoveToContainer(npc.inventory.containerWear);
+    }
+
+    /// <summary>
     /// Field crafting for a survivor away from its workbench: only garments with no bench requirement and
     /// only from carried materials - it never goes gathering for them. Wood armour is left to survivors with
     /// a base (it would eat the wood a base build needs); cloth keeps a small reserve for bandages.

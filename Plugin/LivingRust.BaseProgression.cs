@@ -1969,9 +1969,22 @@ public partial class LivingRust
                     continue;
                 }
 
+                // A garment goes straight on when it is an upgrade, so a full inventory can't strand it on the floor.
+                if (crafted.info.GetComponent<ItemModWearable>() != null && TryWearCraftedGarment(liveNpc, crafted))
+                {
+                    continue;
+                }
+
                 if (!liveNpc.inventory.GiveItem(crafted))
                 {
-                    crafted.Drop(liveNpc.transform.position + Vector3.up, Vector3.zero);
+                    if (crafted.info.GetComponent<ItemModWearable>() != null && IsLowTierArmor(crafted.info.shortname))
+                    {
+                        crafted.Remove();
+                    }
+                    else
+                    {
+                        crafted.Drop(liveNpc.transform.position + Vector3.up, Vector3.zero);
+                    }
                 }
             }
 

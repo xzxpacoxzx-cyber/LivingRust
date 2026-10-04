@@ -4432,6 +4432,13 @@ public partial class LivingRust
                 // Drops the outclassed pieces for real instead of letting them pile up as clutter in main inventory.
                 foreach (Item displaced in conflicting)
                 {
+                    // Cheap clothing is simply discarded - it was being left lying around inside bases (2026-10-04).
+                    if (IsLowTierArmor(displaced.info.shortname))
+                    {
+                        displaced.Remove();
+                        continue;
+                    }
+
                     Vector3 dropPosition = npc.transform.position + Vector3.up * 1f + npc.eyes.BodyForward() * 0.5f;
                     Vector3 dropVelocity = npc.eyes.BodyForward() * 0.5f + Vector3.up * 0.5f;
 
@@ -4479,10 +4486,18 @@ public partial class LivingRust
                 continue;
             }
 
-            Vector3 dropPosition = npc.transform.position + Vector3.up * 1f + npc.eyes.BodyForward() * 0.5f;
-            Vector3 dropVelocity = npc.eyes.BodyForward() * 0.5f + Vector3.up * 0.5f;
+            if (IsLowTierArmor(item.info.shortname))
+            {
+                // Cheap clothing is discarded rather than dropped as litter on the ground.
+                item.Remove();
+            }
+            else
+            {
+                Vector3 dropPosition = npc.transform.position + Vector3.up * 1f + npc.eyes.BodyForward() * 0.5f;
+                Vector3 dropVelocity = npc.eyes.BodyForward() * 0.5f + Vector3.up * 0.5f;
 
-            item.Drop(dropPosition, dropVelocity);
+                item.Drop(dropPosition, dropVelocity);
+            }
 
             string reason = lowTierDuplicateOfWorn ? "a low-tier duplicate of what's already worn" : "worse than what's already worn";
             VerbosePuts($"'{survivor.Character.Alias}' dropped redundant '{item.info.shortname}' - {reason}.");
