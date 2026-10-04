@@ -58,8 +58,13 @@ public partial class LivingRust
 
     private void RegisterChinookCrate(HackableLockedCrate crate, float landsInSeconds)
     {
-        if (_airdrops.Any(a => !a.Done && a.Drop == crate))
+        // Already tracked: just try to bring in more survivors (an earlier call may have found none fit).
+        AirdropInfo existing = _airdrops.FirstOrDefault(a => !a.Done && a.Drop == crate);
+
+        if (existing != null)
         {
+            int more = RecruitForAirdrop(existing);
+            Puts($"chinook-crate: crate at {crate.transform.position} already tracked - recruited {more} more survivor(s) ({existing.Participants.Count} in total).");
             return;
         }
 
@@ -97,7 +102,9 @@ public partial class LivingRust
 
             total++;
 
-            if (crate.wasDropped && !crate.IsFullyHacked())
+            // Dry land only: a dropped crate that sank into the sea, or sits at an oil rig, is not worth a trip.
+            if (crate.wasDropped && !crate.IsFullyHacked()
+                && WaterLevel.GetWaterLevel(crate.transform.position, waves: false) <= crate.transform.position.y + 0.3f)
             {
                 RegisterChinookCrate(crate, 0f);
                 adopted++;

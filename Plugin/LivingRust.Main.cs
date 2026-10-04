@@ -90,7 +90,7 @@ public partial class LivingRust : CarbonPlugin
 
         // Bots run from the patrol helicopter.
         StartHeliAvoidance();
-        AdoptExistingDroppedCrates();
+        timer.Once(20f, AdoptExistingDroppedCrates);
 
         // One-line-a-minute summary of the routine log lines that are no longer printed individually.
         StartLogSummary();
