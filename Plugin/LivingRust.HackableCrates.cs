@@ -164,7 +164,7 @@ public partial class LivingRust
     // ---- what a hack-event participant carries ----
 
     private const int ChinookSurplusStacksBeforeDeposit = 3;
-    private const int ChinookSurplusStacksNoBaseCutoff = 6;
+    private const float ChinookMaxDepositDetour = 500f;
     private readonly HashSet<Guid> _chinookDepositDone = new();
 
     /// <summary>
@@ -205,7 +205,28 @@ public partial class LivingRust
             return false;
         }
 
-        return survivor.Character.Home != null || CountChinookSurplusStacks(npc) < ChinookSurplusStacksNoBaseCutoff;
+        // Travelling light already: fine. Otherwise it needs a base close enough to bank the loot on the way -
+        // a survivor miles from home would spend the whole hack timer on the detour.
+        return CountChinookSurplusStacks(npc) < ChinookSurplusStacksBeforeDeposit || CanBankBeforeCrate(survivor);
+    }
+
+    private bool CanBankBeforeCrate(Survivor survivor)
+    {
+        HomeBase home = survivor.Character.Home;
+
+        return home != null
+            && survivor.Player != null
+            && Vector3.Distance(survivor.Player.transform.position, home.Position) <= ChinookMaxDepositDetour;
+    }
+
+    // Survivors on their bank-first trip, and everyone in a hack event, ignore the loot they would normally detour
+    // for (ore, trees, containers on the way): they are travelling with kit only.
+    private readonly HashSet<Guid> _chinookDepositing = new();
+
+    private bool IsTravellingLightForCrate(Guid characterId)
+    {
+        return _chinookDepositing.Contains(characterId)
+            || (_airdropParticipants.TryGetValue(characterId, out AirdropInfo info) && info.Drop is HackableLockedCrate);
     }
 
     private static bool IsHackComplete(HackableLockedCrate crate)

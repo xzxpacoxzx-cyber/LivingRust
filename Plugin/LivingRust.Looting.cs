@@ -3138,6 +3138,14 @@ public partial class LivingRust
     /// </summary>
     private bool TryFindEnRouteLootCandidate(Survivor survivor, BasePlayer npc, out BaseEntity candidate, out EnRouteLootKind kind)
     {
+        // Travelling to a hack event with kit only: no detours for ore, trees, containers or dropped items.
+        if (IsTravellingLightForCrate(survivor.Character.Id))
+        {
+            candidate = null;
+            kind = default;
+            return false;
+        }
+
         if (_engine.NavigationManager.TryFindNearestLootContainer(
             npc.transform.position,
             EnRouteLootDetectionRadius,

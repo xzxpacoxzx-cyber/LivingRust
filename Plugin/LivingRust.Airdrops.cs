@@ -319,14 +319,28 @@ public partial class LivingRust
         // A hack event is a fight, not a loot run: a survivor with a base banks everything that is not weapon,
         // ammunition, clothing or medical supplies first, then sets out (2026-10-04, Lucas).
         if (info.Drop is HackableLockedCrate
-            && survivor.Character.Home != null
             && !_chinookDepositDone.Contains(survivor.Character.Id)
             && CountChinookSurplusStacks(npc) >= ChinookSurplusStacksBeforeDeposit)
         {
             _chinookDepositDone.Add(survivor.Character.Id);
-            Puts($"chinook-crate: '{survivor.Character.Alias}' is carrying loot it does not need - banking it at its base before heading to the crate.");
 
-            GhostReturnHomeAndDeposit(survivor, () => BeginAirdropJourney(survivor, info, rally, survivor.Player));
+            if (!CanBankBeforeCrate(survivor))
+            {
+                // Loaded with loot and no base close enough to bank it: it sits this one out rather than
+                // turning up to a hack with a pack full of wood and stone.
+                Puts($"chinook-crate: '{survivor.Character.Alias}' is carrying loot it cannot bank in time - sitting this one out.");
+                info.Participants.Remove(survivor.Character.Id);
+                return;
+            }
+
+            Puts($"chinook-crate: '{survivor.Character.Alias}' is carrying loot it does not need - banking it at its base before heading to the crate.");
+            _chinookDepositing.Add(survivor.Character.Id);
+
+            GhostReturnHomeAndDeposit(survivor, () =>
+            {
+                _chinookDepositing.Remove(survivor.Character.Id);
+                BeginAirdropJourney(survivor, info, rally, survivor.Player);
+            });
             return;
         }
 
@@ -676,6 +690,7 @@ public partial class LivingRust
         Guid characterId = survivor.Character.Id;
         _airdropLootAllowed.Remove(characterId);
         _chinookDepositDone.Remove(characterId);
+        _chinookDepositing.Remove(characterId);
 
         if (!_airdropParticipants.Remove(characterId, out AirdropInfo info))
         {
