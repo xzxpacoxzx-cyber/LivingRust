@@ -479,9 +479,10 @@ public partial class LivingRust
             }
 
             // A survivor with a primitive kit checks nearby lootable corpses for a
-            // better weapon while idle and not moving in.
+            // better weapon while idle and not moving in. At a hack event everyone checks the bodies around the
+            // crate - ammo, medical supplies and gear - before starting the hack (2026-10-04, Lucas).
             if (!movingIn
-                && !HasReadyRangedWeapon(npc)
+                && (info.Drop is HackableLockedCrate || !HasReadyRangedWeapon(npc))
                 && !_activeMovement.ContainsKey(survivor.Character.Id)
                 && !_activeCombat.ContainsKey(survivor.Character.Id)
                 && !_activeAttacks.ContainsKey(survivor.Character.Id)
