@@ -97,7 +97,7 @@ public partial class LivingRust
 
             total++;
 
-            if (crate.wasDropped && crate.IsLocked())
+            if (crate.wasDropped && !crate.IsFullyHacked())
             {
                 RegisterChinookCrate(crate, 0f);
                 adopted++;
@@ -143,9 +143,9 @@ public partial class LivingRust
 
             count++;
             float distance = Vector3.Distance(player.transform.position, crate.transform.position);
-            player.ChatMessage($"[LivingRust] crate at {crate.transform.position} ({distance:F0}m): dropped={crate.wasDropped}, locked={crate.IsLocked()}, hacking={crate.IsBeingHacked()}");
+            player.ChatMessage($"[LivingRust] crate at {crate.transform.position} ({distance:F0}m): dropped={crate.wasDropped}, locked={crate.IsLocked()}, hacking={crate.IsBeingHacked()}, fullyHacked={crate.IsFullyHacked()}");
 
-            if (crate.IsLocked() && distance < nearestDistance)
+            if (!crate.IsFullyHacked() && distance < nearestDistance)
             {
                 nearest = crate;
                 nearestDistance = distance;
@@ -157,7 +157,7 @@ public partial class LivingRust
         if (adopt && nearest != null)
         {
             RegisterChinookCrate(nearest, 0f);
-            player.ChatMessage($"[LivingRust] registered the nearest locked crate ({nearestDistance:F0}m away) as a hack event.");
+            player.ChatMessage($"[LivingRust] registered the nearest un-hacked crate ({nearestDistance:F0}m away) as a hack event.");
         }
     }
 
@@ -231,7 +231,9 @@ public partial class LivingRust
 
     private static bool IsHackComplete(HackableLockedCrate crate)
     {
-        return crate == null || crate.IsDestroyed || !crate.IsLocked();
+        // Keyed off the hack progress, not the Locked flag: a crate spawned by command (or by another plugin) is
+        // not always flagged locked even though it still has to be hacked.
+        return crate == null || crate.IsDestroyed || crate.IsFullyHacked();
     }
 
     /// <summary>

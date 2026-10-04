@@ -196,7 +196,8 @@ public partial class LivingRust
             }
 
             // Weaker gear means more interest, though geared survivors are never fully disinterested.
-            float interest = Mathf.Clamp(0.9f - GetGearScore(survivor.Player) / 100f, 0.35f, 0.9f);
+            // A hack event is a fight for armed survivors, so well-geared ones are far keener on it than on a supply drop.
+            float interest = Mathf.Clamp(0.9f - GetGearScore(survivor.Player) / 100f, info.Drop is HackableLockedCrate ? 0.75f : 0.35f, 0.9f);
 
             if (UnityEngine.Random.value > interest)
             {
