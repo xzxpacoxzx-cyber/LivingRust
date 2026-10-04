@@ -1066,7 +1066,8 @@ public partial class LivingRust
             StoneShortname => TryGatherViaCollectible(survivor, npc, state, StoneCollectablePrefabSubstring, "stone")
                 || TryGatherViaOre(survivor, npc, state),
             "metal.fragments" => TryGatherViaOre(survivor, npc, state, preferredYieldShortname: "metal.ore"),
-            ClothShortname => TryGatherViaCollectible(survivor, npc, state, HempCollectablePrefabSubstring, "cloth")
+            ClothShortname => TryRecycleForCloth(survivor, npc)
+                || TryGatherViaCollectible(survivor, npc, state, HempCollectablePrefabSubstring, "cloth")
                 || TryPursueAnimalHuntForCloth(survivor, npc, state),
 
             // Mines the matching ore node for metal/sulfur ore.
@@ -1095,6 +1096,27 @@ public partial class LivingRust
     }
 
     private const string HempCollectablePrefabSubstring = "hemp-collectable";
+
+    // Items that recycle into cloth (2026-10-04, Lucas): sewing kits, rope and tarps from barrels and crates.
+    private static readonly string[] ClothRecycleShortnames = { "sewingkit", "rope", "tarp" };
+
+    /// <summary>
+    /// A survivor short on cloth that is carrying sewing kits / rope / tarps heads for a recycler (the normal
+    /// recycling trip, so only when one is in range) before it goes foraging for hemp.
+    /// </summary>
+    private bool TryRecycleForCloth(Survivor survivor, BasePlayer npc)
+    {
+        bool carrying = npc.inventory.containerMain.itemList.Concat(npc.inventory.containerBelt.itemList)
+            .Any(i => Array.IndexOf(ClothRecycleShortnames, i.info.shortname) >= 0 && IsRecycleFodderFor(survivor, i));
+
+        if (!carrying || !TryStartRecyclingTask(survivor))
+        {
+            return false;
+        }
+
+        Puts($"craft-task: '{survivor.Character.Alias}' needs cloth and is carrying sewing kits/rope/tarps - recycling them for cloth.");
+        return true;
+    }
 
     private bool TryGatherViaCollectible(Survivor survivor, BasePlayer npc, LootTaskState state, string prefabSubstring, string logLabel)
     {

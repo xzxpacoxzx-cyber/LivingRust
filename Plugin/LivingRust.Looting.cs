@@ -8343,6 +8343,16 @@ public partial class LivingRust
         // filter already checks IsInMonumentAvoidZone, so a confirmed spot
         // is excluded everywhere for free.
         RecordPotentialAvoidZone(destination);
+
+        // A target point hanging well above any surface (a flank/cover point computed off a rock top, say) would
+        // leave the survivor stranded in mid-air on arrival - snap it down onto what is actually beneath it.
+        if (Physics.Raycast(destination + Vector3.up * 0.5f, Vector3.down, out RaycastHit supportHit, 80f, GravityGroundMask, QueryTriggerInteraction.Ignore)
+            && destination.y - supportHit.point.y > 1.5f)
+        {
+            VerbosePuts($"'{survivor.Character.Alias}' last-resort phase target was {destination.y - supportHit.point.y:F1}m above the surface - snapping it down.");
+            destination.y = supportHit.point.y;
+        }
+
         StartPhasingToDestination(survivor, destination, onArrived, onFailed);
     }
 

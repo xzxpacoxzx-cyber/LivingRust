@@ -695,7 +695,15 @@ public partial class LivingRust
     private const float GravitySweepIntervalSeconds = 0.25f;
     private const float GravityFallSpeed = 14f;
     private const float GravityMinGap = 0.35f;
-    private const float GravityMaxGap = 8f;
+    private const float GravityMaxGap = 80f;
+
+    // A bot that a movement system still "owns" but has not moved for this many sweeps (1s) is hanging in the
+    // air, not walking: the old rule skipped every bot with an active movement and capped the fall at 8m, so a
+    // phase that ended mid-air during a fight left it floating (2026-10-04: 38BoldScrapper, DirtyBandit).
+    private const int GravityOwnedStillTicks = 4;
+    private readonly Dictionary<Guid, Vector3> _gravityLastPosition = new();
+    private readonly Dictionary<Guid, int> _gravityStillTicks = new();
+    private readonly HashSet<Guid> _gravityFalling = new();
     private Timer _gravityTimer;
     private static readonly int GravityGroundMask = LayerMask.GetMask("Terrain", "World", "Construction");
 
@@ -722,20 +730,32 @@ public partial class LivingRust
         {
             BasePlayer npc = survivor.Player;
 
-            // Anything with a movement system driving it (walking, phasing, climbing) owns its own height.
             if (npc == null || npc.IsDestroyed || !npc.IsAlive() || npc.IsWounded()
                 || survivor.Character.State == CharacterState.Dead
-                || _activeMovement.ContainsKey(survivor.Character.Id)
                 || npc.WaterFactor() > 0.3f
                 || npc.isMounted)
             {
                 continue;
             }
 
+            Guid gravityId = survivor.Character.Id;
             Vector3 position = npc.transform.position;
+
+            bool still = _gravityLastPosition.TryGetValue(gravityId, out Vector3 lastPosition) && (lastPosition - position).sqrMagnitude < 0.0025f;
+            int stillTicks = still ? _gravityStillTicks.GetValueOrDefault(gravityId) + 1 : 0;
+            _gravityLastPosition[gravityId] = position;
+            _gravityStillTicks[gravityId] = stillTicks;
+
+            // A movement system driving the bot (walking, phasing, climbing) owns its height - unless it has
+            // stopped dead in the air, or this sweep already started it falling.
+            if (_activeMovement.ContainsKey(gravityId) && stillTicks < GravityOwnedStillTicks && !_gravityFalling.Contains(gravityId))
+            {
+                continue;
+            }
 
             if (!Physics.Raycast(position + Vector3.up * 0.3f, Vector3.down, out RaycastHit hit, GravityMaxGap + 0.3f, GravityGroundMask, QueryTriggerInteraction.Ignore))
             {
+                _gravityFalling.Remove(gravityId);
                 continue;
             }
 
@@ -743,8 +763,11 @@ public partial class LivingRust
 
             if (gap < GravityMinGap || gap > GravityMaxGap)
             {
+                _gravityFalling.Remove(gravityId);
                 continue;
             }
+
+            _gravityFalling.Add(gravityId);
 
             position.y = Mathf.Max(hit.point.y, position.y - GravityFallSpeed * GravitySweepIntervalSeconds);
             npc.transform.position = position;
@@ -993,6 +1016,8 @@ public partial class LivingRust
     private void WithdrawRecycleJunkFromBoxes(BasePlayer npc, List<StorageContainer> boxes, int maxStacks = 6)
     {
         int moved = 0;
+        ItemDefinition clothDef = ItemManager.FindItemDefinition(ClothShortname);
+        bool needsCloth = clothDef != null && npc.inventory.GetAmount(clothDef.itemid) < 100;
 
         foreach (StorageContainer box in boxes)
         {
@@ -1011,7 +1036,35 @@ public partial class LivingRust
                 if (IsExplicitRecycleItem(item) && item.MoveToContainer(npc.inventory.containerMain))
                 {
                     moved++;
+                    continue;
                 }
+
+                // Short on cloth: sewing kits, rope and tarps banked in storage are recycled for it too. Two ropes
+                // always stay behind - a crossbow needs them.
+                if (needsCloth && Array.IndexOf(ClothRecycleShortnames, item.info.shortname) >= 0)
+                {
+                    Item toMove = item;
+
+                    if (item.info.shortname == "rope")
+                    {
+                        if (item.amount <= 2)
+                        {
+                            continue;
+                        }
+
+                        toMove = item.SplitItem(item.amount - 2);
+                    }
+
+                    if (toMove != null && toMove.MoveToContainer(npc.inventory.containerMain))
+                    {
+                        moved++;
+                    }
+                    else if (toMove != null && toMove != item)
+                    {
+                        toMove.MoveToContainer(box.inventory);
+                    }
+                }
+
             }
         }
     }
