@@ -301,9 +301,9 @@ public partial class LivingRust
     /// </summary>
     private void OnEntityKill(BaseNetworkable entity)
     {
-        if (entity is SupplyDrop killedDrop)
+        if (entity is SupplyDrop or HackableLockedCrate)
         {
-            OnAirdropEntityKilled(killedDrop);
+            OnAirdropEntityKilled((LootContainer)entity);
             return;
         }
 

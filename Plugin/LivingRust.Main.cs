@@ -88,6 +88,10 @@ public partial class LivingRust : CarbonPlugin
         // Lets stationary survivors fall back to the ground (floating-bot fix).
         StartGravitySweep();
 
+        // Bots run from the patrol helicopter.
+        StartHeliAvoidance();
+        AdoptExistingDroppedCrates();
+
         // One-line-a-minute summary of the routine log lines that are no longer printed individually.
         StartLogSummary();
 
@@ -138,6 +142,7 @@ public partial class LivingRust : CarbonPlugin
         StopBaseReturnScheduler();
         StopDoorSweeper();
         StopGravitySweep();
+        StopHeliAvoidance();
         StopLogSummary();
         StopCraftQueueDriver();
 

@@ -30,7 +30,8 @@ public partial class LivingRust
     {
         public Vector3 Position;
         public float ExpectedLandTime;
-        public SupplyDrop Drop;
+        public LootContainer Drop;
+        public Guid HackerId;
         public bool Landed;
         public bool Done;
         public Vector3 LastDropPosition;
@@ -73,6 +74,14 @@ public partial class LivingRust
         else if (entity is SupplyDrop drop)
         {
             timer.Once(0.5f, () => OnSupplyDropSpawned(drop));
+        }
+        else if (entity is HackableLockedCrate crate)
+        {
+            timer.Once(1f, () => OnHackableCrateSpawned(crate));
+        }
+        else if (entity is PatrolHelicopter heli)
+        {
+            _patrolHelis.Add(heli);
         }
     }
 
@@ -152,7 +161,7 @@ public partial class LivingRust
         StartAirdropMonitor(match);
     }
 
-    private void OnAirdropEntityKilled(SupplyDrop drop)
+    private void OnAirdropEntityKilled(LootContainer drop)
     {
         foreach (AirdropInfo info in _airdrops)
         {
@@ -172,6 +181,7 @@ public partial class LivingRust
                 && !_airdropParticipants.ContainsKey(s.Character.Id)
                 && !_activeCombat.ContainsKey(s.Character.Id)
                 && !IsBaseBuildInFlight(s.Character.Id)
+                && (!(info.Drop is HackableLockedCrate) || IsFitForCrateHack(s))
                 && Vector3.Distance(s.Player.transform.position, info.Position) <= AirdropMaxTravelDistance)
             .OrderBy(_ => UnityEngine.Random.value)
             .ToList();
@@ -306,9 +316,24 @@ public partial class LivingRust
             return;
         }
 
+        // A hack event is a fight, not a loot run: a survivor with a base banks everything that is not weapon,
+        // ammunition, clothing or medical supplies first, then sets out (2026-10-04, Lucas).
+        if (info.Drop is HackableLockedCrate
+            && survivor.Character.Home != null
+            && !_chinookDepositDone.Contains(survivor.Character.Id)
+            && CountChinookSurplusStacks(npc) >= ChinookSurplusStacksBeforeDeposit)
+        {
+            _chinookDepositDone.Add(survivor.Character.Id);
+            Puts($"chinook-crate: '{survivor.Character.Alias}' is carrying loot it does not need - banking it at its base before heading to the crate.");
+
+            GhostReturnHomeAndDeposit(survivor, () => BeginAirdropJourney(survivor, info, rally, survivor.Player));
+            return;
+        }
+
         _airdropParticipants[survivor.Character.Id] = info;
 
         CancelActiveMovement(survivor);
+
         CancelActiveAttack(survivor.Character.Id);
         CancelActiveRecycling(survivor.Character.Id);
 
@@ -406,6 +431,7 @@ public partial class LivingRust
         Puts($"airdrop: '{survivor.Character.Alias}' reached its rally point near the drop and is holding.");
         float arrivedAt = Time.realtimeSinceStartup;
         Timer poll = null;
+        float nextRoamAt = 0f;
 
         poll = timer.Every(AirdropPollSeconds, () =>
         {
@@ -425,7 +451,7 @@ public partial class LivingRust
 
             if (info.Done || crateEmpty
                 || (info.Drop == null && now > info.ExpectedLandTime + AirdropGiveUpAfterExpectedLandSeconds)
-                || (info.Landed && now > info.ExpectedLandTime + AirdropPostLandLifetimeSeconds))
+                || (info.Landed && now > info.ExpectedLandTime + (info.Drop is HackableLockedCrate ? AirdropHackEventLifetimeSeconds : AirdropPostLandLifetimeSeconds)))
             {
                 poll.Destroy();
                 EndAirdropParticipation(survivor, resume: true);
@@ -467,9 +493,26 @@ public partial class LivingRust
                 movingIn = false;
             }
 
+            // A locked crate is hacked first (one survivor starts it, the rest hold) and only looted once it unlocks.
+            bool hackPending = info.Drop is HackableLockedCrate lockedCrate && !IsHackComplete(lockedCrate);
+
+            if (hackPending && info.Landed)
+            {
+                DriveCrateHack(survivor, info, npc);
+
+                if (now >= nextRoamAt
+                    && !_activeMovement.ContainsKey(survivor.Character.Id)
+                    && !_activeCombat.ContainsKey(survivor.Character.Id)
+                    && !_activeAttacks.ContainsKey(survivor.Character.Id))
+                {
+                    nextRoamAt = now + UnityEngine.Random.Range(6f, 16f);
+                    RoamAroundCrate(survivor, info);
+                }
+            }
+
             bool cautious = GetGearScore(npc) > AirdropCautiousGearScore;
 
-            if (info.Landed && !movingIn && !_activeCombat.ContainsKey(survivor.Character.Id)
+            if (info.Landed && !hackPending && !movingIn && !_activeCombat.ContainsKey(survivor.Character.Id)
                 && !(cautious && IsAirdropCrateContested(info, survivor.Character.Id)))
             {
                 movingIn = true;
@@ -632,6 +675,7 @@ public partial class LivingRust
     {
         Guid characterId = survivor.Character.Id;
         _airdropLootAllowed.Remove(characterId);
+        _chinookDepositDone.Remove(characterId);
 
         if (!_airdropParticipants.Remove(characterId, out AirdropInfo info))
         {
