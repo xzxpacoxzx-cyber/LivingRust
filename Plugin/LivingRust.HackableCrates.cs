@@ -237,6 +237,54 @@ public partial class LivingRust
             || (_airdropParticipants.TryGetValue(characterId, out AirdropInfo info) && info.Drop is HackableLockedCrate);
     }
 
+    /// <summary>
+    /// One always-shown line saying how many survivors each recruiting condition screened out for a hack event,
+    /// so a recruit count of zero is explainable.
+    /// </summary>
+    private void LogCrateRecruitReasons(AirdropInfo info)
+    {
+        int alive = 0, unarmed = 0, tooFar = 0, busy = 0, loaded = 0, already = 0, fit = 0;
+
+        foreach (Survivor s in _engine.SurvivorManager.GetAll())
+        {
+            BasePlayer p = s.Player;
+
+            if (p == null || p.IsDestroyed || s.Character.State == CharacterState.Dead || p.IsWounded())
+            {
+                continue;
+            }
+
+            alive++;
+
+            if (_airdropParticipants.ContainsKey(s.Character.Id))
+            {
+                already++;
+            }
+            else if (_activeCombat.ContainsKey(s.Character.Id) || IsBaseBuildInFlight(s.Character.Id))
+            {
+                busy++;
+            }
+            else if (Vector3.Distance(p.transform.position, info.Position) > AirdropMaxTravelDistance)
+            {
+                tooFar++;
+            }
+            else if (!HasReadyRangedWeapon(p))
+            {
+                unarmed++;
+            }
+            else if (!IsFitForCrateHack(s))
+            {
+                loaded++;
+            }
+            else
+            {
+                fit++;
+            }
+        }
+
+        Puts($"chinook-crate: recruit check at {info.Position} - {alive} alive: {fit} eligible, {unarmed} without a ready ranged weapon + ammo, {tooFar} beyond {AirdropMaxTravelDistance:F0}m, {busy} fighting/building, {loaded} loaded with loot and no base nearby, {already} already in an event.");
+    }
+
     private static bool IsHackComplete(HackableLockedCrate crate)
     {
         // Keyed off the hack progress, not the Locked flag: a crate spawned by command (or by another plugin) is

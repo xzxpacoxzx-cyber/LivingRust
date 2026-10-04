@@ -174,6 +174,11 @@ public partial class LivingRust
 
     private int RecruitForAirdrop(AirdropInfo info, int maxNew = int.MaxValue)
     {
+        if (info.Drop is HackableLockedCrate)
+        {
+            LogCrateRecruitReasons(info);
+        }
+
         List<Survivor> candidates = _engine.SurvivorManager.GetAll()
             .Where(s => s.Player != null && !s.Player.IsDestroyed
                 && s.Character.State != CharacterState.Dead
