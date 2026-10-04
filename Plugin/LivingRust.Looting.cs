@@ -2020,7 +2020,9 @@ public partial class LivingRust
     /// </summary>
     private void RegisterContainerRetry(LootTaskState state, StorageContainer container)
     {
-        if (container == null)
+        // A container destroyed mid-attempt (another bot looted and broke it, a decay) still exists as an object but
+        // has no network id any more - that null made this throw and aborted the whole loot chain (2026-10-04).
+        if (container == null || container.IsDestroyed || container.net == null)
         {
             return;
         }
