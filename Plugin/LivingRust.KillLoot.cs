@@ -24,7 +24,11 @@ public partial class LivingRust
         public float ExpiresAt;
         public int Steps;
         public int Waits;
+        public bool HighValue;
     }
+
+    // A victim above this gear score is a body worth chasing hard: longer to get to it, more patience, more steps.
+    private const int KillLootHighValueGearScore = 20;
 
     private readonly Dictionary<Guid, PriorityKillLoot> _priorityKillLoot = new();
 
@@ -40,18 +44,18 @@ public partial class LivingRust
             int victimGear = GetGearScore(victimPlayer);
             int killerGear = GetGearScore(killer.Player);
 
-            if (victimGear <= killerGear)
-            {
-                return;
-            }
+            // Every kill of a player or bot is worth a look at the body, whatever its gear (2026-10-04, Lucas: a
+            // same-gear AK bot's corpse was ignored). Above gear 20 the survivor wants it badly.
+            bool highValue = victimGear > KillLootHighValueGearScore;
 
             _priorityKillLoot[killer.Character.Id] = new PriorityKillLoot
             {
                 Position = victim.transform.position,
-                ExpiresAt = Time.realtimeSinceStartup + PriorityKillLootLifetimeSeconds,
+                ExpiresAt = Time.realtimeSinceStartup + PriorityKillLootLifetimeSeconds * (highValue ? 2f : 1f),
+                HighValue = highValue,
             };
 
-            Puts($"kill-loot: '{killer.Character.Alias}' (gear {killerGear}) just killed a higher-geared target (gear {victimGear}) - going straight for the body and whatever it dropped.");
+            Puts($"kill-loot: '{killer.Character.Alias}' (gear {killerGear}) just killed a {(highValue ? "well-geared " : string.Empty)}target (gear {victimGear}) - going straight for the body and whatever it dropped.");
             return;
         }
 
@@ -359,7 +363,7 @@ public partial class LivingRust
             return false;
         }
 
-        if (Time.realtimeSinceStartup >= entry.ExpiresAt || entry.Steps >= PriorityKillLootMaxSteps)
+        if (Time.realtimeSinceStartup >= entry.ExpiresAt || entry.Steps >= PriorityKillLootMaxSteps * (entry.HighValue ? 2 : 1))
         {
             _priorityKillLoot.Remove(characterId);
             return false;
@@ -371,12 +375,15 @@ public partial class LivingRust
         // holds and re-assesses a few times before giving up.
         if (_activeCombat.ContainsKey(characterId))
         {
+            // The want survives the fight: it is not allowed to run out while the survivor is busy, so the body is
+            // still gone for as soon as the fight is over.
+            entry.ExpiresAt = Mathf.Max(entry.ExpiresAt, Time.realtimeSinceStartup + 30f);
             return false;
         }
 
         if (!IsPriorityKillLootSafe(survivor, npc, entry, out string unsafeReason))
         {
-            if (++entry.Waits > PriorityKillLootMaxWaits)
+            if (++entry.Waits > PriorityKillLootMaxWaits * (entry.HighValue ? 2 : 1))
             {
                 Puts($"kill-loot: '{survivor.Character.Alias}' gave up waiting to loot the body ({unsafeReason}).");
                 _priorityKillLoot.Remove(characterId);
